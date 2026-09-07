@@ -4,7 +4,7 @@
 
 export type Phase = 'day' | 'night'
 
-export type BuildingKind = 'mine' | 'furnace' | 'turret' | 'booster'
+export type BuildingKind = 'mine' | 'furnace' | 'turret' | 'booster' | 'platform'
 
 /** 摆放在网格上的建筑实例 */
 export interface Building {
@@ -42,9 +42,9 @@ export interface Projectile {
   targetMonsterId: string | null
 }
 
-/** 列车（镇中心上绕圈的炮台） */
+/** 列车（沿铁轨环绕的移动炮台） */
 export interface Train {
-  angle: number
+  t: number // 在铁轨环路上的归一化位置 [0,1)
   speedMult: number // 蒸汽加速带来的倍率
   boostTimer: number
   cooldown: number

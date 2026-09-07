@@ -2,16 +2,17 @@
 //  渲染层：把 GameState 画到 canvas（纯函数，无副作用保存）
 //  扁平卡通占位美术：建筑/怪物用圆角几何 + 简单绘制，改起来快
 // ============================================================
-import { FIELD, GRID, TRACK, CENTER as CENTER_CFG } from '../config/game'
+import { FIELD, GRID, CENTER as CENTER_CFG } from '../config/game'
 import { MONSTERS } from '../config/units'
-import type { GameState, Phase, BuildingKind } from '../game/types'
-import { gridOrigin } from '../game/engine'
+import type { GameState, Phase, BuildingKind, Building } from '../game/types'
+import { gridOrigin, cellCenter, CENTER_INDEX, isRailCell, adjacentToRail, trainPos } from '../game/engine'
 
 const COLORS: Record<BuildingKind, { main: string; dark: string; label: string }> = {
   mine: { main: '#8d9a5a', dark: '#6b7842', label: '矿' },
   furnace: { main: '#e0834f', dark: '#b9622f', label: '冶' },
   turret: { main: '#5b7db1', dark: '#3f5c8a', label: '炮' },
   booster: { main: '#7b5ca6', dark: '#5a3f86', label: '核' },
+  platform: { main: '#b58a53', dark: '#8a6238', label: '站' },
 }
 
 function roundRect(
@@ -52,42 +53,75 @@ function drawBackground(ctx: CanvasRenderingContext2D, phase: Phase) {
 }
 
 function drawTrack(ctx: CanvasRenderingContext2D) {
-  ctx.strokeStyle = 'rgba(120,110,90,0.6)'
-  ctx.lineWidth = 6
-  ctx.beginPath()
-  ctx.ellipse(FIELD.width / 2, FIELD.height / 2, TRACK.rx, TRACK.ry, 0, 0, Math.PI * 2)
-  ctx.stroke()
-  // 轨道点缀
-  ctx.strokeStyle = 'rgba(255,255,255,0.4)'
-  ctx.lineWidth = 2
-  ctx.setLineDash([8, 12])
-  ctx.beginPath()
-  ctx.ellipse(FIELD.width / 2, FIELD.height / 2, TRACK.rx, TRACK.ry, 0, 0, Math.PI * 2)
-  ctx.stroke()
-  ctx.setLineDash([])
+  const o = gridOrigin()
+  for (let r = 0; r < GRID.rows; r++) {
+    for (let c = 0; c < GRID.cols; c++) {
+      const index = r * GRID.cols + c
+      if (!isRailCell(index)) continue
+      const x = o.x + c * GRID.pitch
+      const y = o.y + r * GRID.pitch
+      // 铁轨格底色
+      ctx.fillStyle = 'rgba(126,108,74,0.9)'
+      ctx.fillRect(x, y, GRID.cellSize, GRID.cellSize)
+      // 枕木（虚线内框）
+      ctx.strokeStyle = 'rgba(255,255,255,0.35)'
+      ctx.lineWidth = 2
+      ctx.setLineDash([9, 7])
+      ctx.strokeRect(x + 7, y + 7, GRID.cellSize - 14, GRID.cellSize - 14)
+      ctx.setLineDash([])
+      // 两条钢轨（贯穿整格）
+      ctx.strokeStyle = 'rgba(55,46,32,0.95)'
+      ctx.lineWidth = 4
+      ctx.beginPath()
+      ctx.moveTo(x + 12, y + 26)
+      ctx.lineTo(x + GRID.cellSize - 12, y + 26)
+      ctx.moveTo(x + 12, y + GRID.cellSize - 26)
+      ctx.lineTo(x + GRID.cellSize - 12, y + GRID.cellSize - 26)
+      ctx.stroke()
+    }
+  }
 }
 
 function drawGrid(ctx: CanvasRenderingContext2D, state: GameState) {
   const o = gridOrigin()
-  ctx.strokeStyle = 'rgba(120,150,120,0.25)'
-  ctx.lineWidth = 1
-  for (let c = 0; c < GRID.cols; c++) {
-    for (let r = 0; r < GRID.rows; r++) {
+  const placing = state.placing
+  for (let r = 0; r < GRID.rows; r++) {
+    for (let c = 0; c < GRID.cols; c++) {
+      const index = r * GRID.cols + c
       const x = o.x + c * GRID.pitch
       const y = o.y + r * GRID.pitch
-      // 高亮待摆放格
-      if (state.placing) {
-        ctx.fillStyle = 'rgba(120,200,255,0.12)'
+      if (placing) {
+        let style = 'ok'
+        const occupied = state.buildings.some(
+          (b) => Math.abs(b.gridX - (x + GRID.cellSize / 2)) < 1 && Math.abs(b.gridY - (y + GRID.cellSize / 2)) < 1,
+        )
+        if (index === CENTER_INDEX) style = 'blocked'
+        else if (isRailCell(index)) style = 'rail'
+        else if (occupied) style = 'occupied'
+        else if (placing === 'platform' && !adjacentToRail(index)) style = 'invalid'
+        switch (style) {
+          case 'ok':
+            ctx.fillStyle = 'rgba(120,200,120,0.18)'
+            break
+          case 'invalid':
+            ctx.fillStyle = 'rgba(255,80,80,0.16)'
+            break
+          default:
+            ctx.fillStyle = 'rgba(120,130,140,0.10)'
+        }
         ctx.fillRect(x, y, GRID.cellSize, GRID.cellSize)
       }
+      ctx.strokeStyle = 'rgba(120,150,120,0.25)'
+      ctx.lineWidth = 1
       ctx.strokeRect(x, y, GRID.cellSize, GRID.cellSize)
     }
   }
 }
 
 function drawCenter(ctx: CanvasRenderingContext2D, state: GameState) {
+  const ctr = cellCenter(CENTER_INDEX)
   ctx.save()
-  ctx.translate(FIELD.width / 2, FIELD.height / 2)
+  ctx.translate(ctr.x, ctr.y)
   // 阴影
   ctx.fillStyle = 'rgba(0,0,0,0.15)'
   ctx.beginPath()
@@ -122,6 +156,10 @@ function drawCenter(ctx: CanvasRenderingContext2D, state: GameState) {
 
 function drawBuildings(ctx: CanvasRenderingContext2D, state: GameState) {
   for (const b of state.buildings) {
+    if (b.kind === 'platform') {
+      drawPlatform(ctx, b)
+      continue
+    }
     const c = COLORS[b.kind]
     ctx.save()
     ctx.translate(b.gridX, b.gridY)
@@ -152,6 +190,36 @@ function drawBuildings(ctx: CanvasRenderingContext2D, state: GameState) {
     }
     ctx.restore()
   }
+}
+
+/** 站台：紧邻铁轨的装卸码头，无生命、不被攻击，仅渲染外观 */
+function drawPlatform(ctx: CanvasRenderingContext2D, b: Building) {
+  ctx.save()
+  ctx.translate(b.gridX, b.gridY)
+  // 阴影
+  ctx.fillStyle = 'rgba(0,0,0,0.12)'
+  roundRect(ctx, -25, -19, 50, 38, 7)
+  ctx.fill()
+  // 木质站台面
+  ctx.fillStyle = '#b58a53'
+  roundRect(ctx, -23, -15, 46, 30, 7)
+  ctx.fill()
+  ctx.strokeStyle = '#8a6238'
+  ctx.lineWidth = 3
+  ctx.stroke()
+  // 站牌旗
+  ctx.fillStyle = '#5f7f4f'
+  roundRect(ctx, -6, -26, 12, 13, 3)
+  ctx.fill()
+  ctx.fillStyle = '#8a6238'
+  ctx.fillRect(-7, -13, 14, 3)
+  // 中央"站"字
+  ctx.fillStyle = '#6b4c2c'
+  ctx.font = 'bold 15px sans-serif'
+  ctx.textAlign = 'center'
+  ctx.textBaseline = 'middle'
+  ctx.fillText('站', 0, 1)
+  ctx.restore()
 }
 
 function drawMonsters(ctx: CanvasRenderingContext2D, state: GameState) {
@@ -210,15 +278,15 @@ function drawProjectiles(ctx: CanvasRenderingContext2D, state: GameState) {
 
 function drawTrain(ctx: CanvasRenderingContext2D, state: GameState) {
   const t = state.train
-  const pos = {
-    x: FIELD.width / 2 + TRACK.rx * Math.cos(t.angle),
-    y: FIELD.height / 2 + TRACK.ry * Math.sin(t.angle),
-  }
+  const pos = trainPos(t.t)
+  // 车头朝向 = 铁轨环路切线方向
+  const ahead = trainPos((t.t + 0.01) % 1)
+  const heading = Math.atan2(ahead.y - pos.y, ahead.x - pos.x)
   ctx.save()
   ctx.translate(pos.x, pos.y)
   const boosting = t.boostTimer > 0
   // 车头方向（沿轨道切线）
-  ctx.rotate(t.angle + Math.PI / 2)
+  ctx.rotate(heading + Math.PI / 2)
   ctx.fillStyle = 'rgba(0,0,0,0.2)'
   roundRect(ctx, -16, -10, 32, 46, 8)
   ctx.fill()

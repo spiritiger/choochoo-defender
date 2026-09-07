@@ -2,7 +2,7 @@
 //  游戏主引擎：持有状态、推进昼夜、调度各系统
 //  （纯 TS，不依赖渲染；渲染层只读 state）
 // ============================================================
-import { FIELD, GRID, RULE, ECONOMY, TRAIN_BASE, CENTER, TRACK } from '../config/game'
+import { FIELD, GRID, RULE, ECONOMY, TRAIN_BASE, CENTER, RAIL, CENTER_CELL } from '../config/game'
 import { BUILDINGS, MONSTERS } from '../config/units'
 import type {
   GameState,
@@ -39,11 +39,90 @@ export function cellCenter(index: number): { x: number; y: number } {
 
 export { gridOrigin }
 
+/** 城镇中心所占格位索引（该格不可建造） */
+export const CENTER_INDEX = CENTER_CELL.row * GRID.cols + CENTER_CELL.col
+
+function inBounds(r: number, c: number): boolean {
+  return r >= 0 && r < GRID.rows && c >= 0 && c < GRID.cols
+}
+
+/** 铁轨格位集合：环绕镇中心外扩 RAIL.ringDist 层的矩形环，每段铁轨占 1 格 */
+function buildRailSet(): Set<number> {
+  const s = new Set<number>()
+  const { row, col } = CENTER_CELL
+  for (let r = row - RAIL.ringDist; r <= row + RAIL.ringDist; r++) {
+    for (let c = col - RAIL.ringDist; c <= col + RAIL.ringDist; c++) {
+      if (!inBounds(r, c)) continue
+      const onRing = Math.max(Math.abs(r - row), Math.abs(c - col)) === RAIL.ringDist
+      if (onRing) s.add(r * GRID.cols + c)
+    }
+  }
+  return s
+}
+const RAIL_CELLS = buildRailSet()
+
+/** 该格子是否为铁轨格位（不可建造） */
+export function isRailCell(index: number): boolean {
+  return RAIL_CELLS.has(index)
+}
+
+/** 该格子是否与铁轨正交相邻（站台建筑放置前提） */
+export function adjacentToRail(index: number): boolean {
+  const c = index % GRID.cols
+  const r = Math.floor(index / GRID.cols)
+  const neighbors = [
+    { r: r - 1, c },
+    { r: r + 1, c },
+    { r, c: c - 1 },
+    { r, c: c + 1 },
+  ]
+  return neighbors.some((n) => inBounds(n.r, n.c) && RAIL_CELLS.has(n.r * GRID.cols + n.c))
+}
+
+/** 铁轨环路（顺时针）的格心路径，列车沿其移动 */
+function buildTrainPath(): Array<{ x: number; y: number }> {
+  const { row, col } = CENTER_CELL
+  const top = row - RAIL.ringDist
+  const bottom = row + RAIL.ringDist
+  const left = col - RAIL.ringDist
+  const right = col + RAIL.ringDist
+  const idx = (r: number, c: number) => r * GRID.cols + c
+  const inds: number[] = []
+  for (let c = left; c <= right; c++) inds.push(idx(top, c))
+  for (let r = top + 1; r <= bottom; r++) inds.push(idx(r, right))
+  for (let c = right - 1; c >= left; c--) inds.push(idx(bottom, c))
+  for (let r = bottom - 1; r >= top + 1; r--) inds.push(idx(r, left))
+  return inds.map(cellCenter)
+}
+const TRAIN_PATH = buildTrainPath()
+const TRAIN_PATH_LEN = TRAIN_PATH.reduce((acc, p, i) => {
+  const n = TRAIN_PATH[(i + 1) % TRAIN_PATH.length]
+  return acc + Math.hypot(n.x - p.x, n.y - p.y)
+}, 0)
+
+/** 列车在铁轨上的像素位置（t ∈ [0,1) 为环上归一化进度） */
+export function trainPos(t: number): { x: number; y: number } {
+  if (TRAIN_PATH.length === 0 || TRAIN_PATH_LEN <= 0) return TRAIN_PATH[0] ?? { x: 0, y: 0 }
+  let d = (((t % 1) + 1) % 1) * TRAIN_PATH_LEN
+  for (let i = 0; i < TRAIN_PATH.length; i++) {
+    const p = TRAIN_PATH[i]
+    const n = TRAIN_PATH[(i + 1) % TRAIN_PATH.length]
+    const seg = Math.hypot(n.x - p.x, n.y - p.y)
+    if (d <= seg) {
+      const k = seg > 0 ? d / seg : 0
+      return { x: p.x + (n.x - p.x) * k, y: p.y + (n.y - p.y) * k }
+    }
+    d -= seg
+  }
+  const f = TRAIN_PATH[0]
+  return { x: f.x, y: f.y }
+}
+
 const CENTER_X = FIELD.width / 2
 const CENTER_Y = FIELD.height / 2
 
 function createTrain(): Train {
-  return { angle: 0, speedMult: 1, boostTimer: 0, cooldown: 0 }
+  return { t: Math.random(), speedMult: 1, boostTimer: 0, cooldown: 0 }
 }
 
 export function createInitialState(): GameState {
@@ -90,6 +169,19 @@ export class GameEngine {
     const kind = s.placing
     if (!kind || s.gameOver) return
     const spec = BUILDINGS.find((b) => b.id === kind)!
+    // 规则：镇中心格、铁轨格不可建造；站台必须紧邻铁轨
+    if (index === CENTER_INDEX) {
+      this.toast('此处为镇中心')
+      return
+    }
+    if (isRailCell(index)) {
+      this.toast('铁轨上无法建造')
+      return
+    }
+    if (kind === 'platform' && !adjacentToRail(index)) {
+      this.toast('站台需紧邻铁轨')
+      return
+    }
     if (s.coins < spec.cost) {
       this.toast('金币不足')
       return
@@ -184,12 +276,6 @@ export class GameEngine {
     return { dmg, rate, steamRegen }
   }
 
-  /** 列车位置（沿椭圆轨道） */
-  trainPos(): { x: number; y: number } {
-    const t = this.state.train.angle
-    return { x: CENTER_X + TRACK.rx * Math.cos(t), y: CENTER_Y + TRACK.ry * Math.sin(t) }
-  }
-
   update(dt: number) {
     const s = this.state
     if (s.gameOver) return
@@ -258,12 +344,13 @@ export class GameEngine {
     }
   }
 
-  /** 怪物优先攻击最近的建筑，其次冲向镇中心 */
+  /** 怪物优先攻击普通建筑，其次冲向镇中心（站台不会被攻击） */
   private pickMonsterTarget(): string | null {
     const s = this.state
-    if (s.buildings.length === 0) return null
-    // 随机指向一个建筑，避免全挤向同一目标
-    return s.buildings[Math.floor(Math.random() * s.buildings.length)].id
+    const targetable = s.buildings.filter((b) => b.kind !== 'platform')
+    if (targetable.length === 0) return null
+    // 随机指向一个可攻击建筑，避免全挤向同一目标
+    return targetable[Math.floor(Math.random() * targetable.length)].id
   }
 
   private updateBuildings(dt: number) {
@@ -308,6 +395,13 @@ export class GameEngine {
           }
         }
       }
+      // 站台建筑：周期性为列车补给蒸汽（无生命、不被攻击）
+      if (b.kind === 'platform' && spec.steamPerCycle && spec.cycleInterval) {
+        if (b.cooldown <= 0) {
+          s.steam = Math.min(TRAIN_BASE.steamMax, s.steam + spec.steamPerCycle)
+          b.cooldown = spec.cycleInterval
+        }
+      }
     }
   }
 
@@ -344,7 +438,8 @@ export class GameEngine {
   private updateTrain(dt: number) {
     const s = this.state
     const boost = s.train.boostTimer > 0 ? s.train.speedMult : 1
-    s.train.angle += TRAIN_BASE.speedRadPerSec * boost * dt
+    const travelled = (TRAIN_BASE.speed * boost * dt) / TRAIN_PATH_LEN
+    s.train.t = (s.train.t + travelled) % 1
     if (s.train.boostTimer > 0) s.train.boostTimer -= dt
     // 能量恢复
     const { steamRegen } = this.trainBuffs()
@@ -353,7 +448,7 @@ export class GameEngine {
     // 列车开火（夜晚才攻击）
     if (s.phase === 'night') {
       const { dmg, rate } = this.trainBuffs()
-      const pos = this.trainPos()
+      const pos = trainPos(s.train.t)
       s.train.cooldown -= dt
       if (s.train.cooldown <= 0) {
         const target = this.nearestMonster(pos.x, pos.y, TRAIN_BASE.fireRange + rate * 30)

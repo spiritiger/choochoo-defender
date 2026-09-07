@@ -16,10 +16,13 @@ export const GRID = {
   pitch: 74, // 格心间距(px)
 } as const
 
-/** 列车轨道（椭圆），围绕城镇中心 */
-export const TRACK = {
-  rx: 205,
-  ry: 300,
+/** 城镇中心占用的网格格位（行、列） */
+export const CENTER_CELL = { row: 2, col: 2 } as const
+
+/** 铁轨环：环绕镇中心、呈矩形的环状格位（每 1 段铁轨占据 1 个格子） */
+export const RAIL = {
+  // 铁轨环距镇中心的扩张层数（L∞ 距离为 1，即紧邻中心的外圈一周）
+  ringDist: 1,
 } as const
 
 /** 城镇中心 */
@@ -45,7 +48,7 @@ export const ECONOMY = {
 
 /** 列车属性（蒸汽核心建筑可在此基础上加成） */
 export const TRAIN_BASE = {
-  speedRadPerSec: 0.9, // 绕轨道角速度(弧度/秒)
+  speed: 90, // 沿铁轨路径移动速度(px/s)
   boostMultiplier: 1.7, // 蒸汽加速倍数
   boostDuration: 3, // 单次加速时长
   steamMax: 100, // 蒸汽能量上限

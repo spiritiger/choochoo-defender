@@ -22,9 +22,11 @@ export interface BuildingSpec {
   trainDamageBonus?: number
   trainFireRateBonus?: number
   trainSteamBonus?: number
+  // 站台专用（补给蒸汽）
+  steamPerCycle?: number
 }
 
-/** 四类建筑，MVP 各 1 种 */
+/** 建筑数值，MVP 各 1 种 */
 export const BUILDINGS: BuildingSpec[] = [
   {
     id: 'mine',
@@ -59,6 +61,14 @@ export const BUILDINGS: BuildingSpec[] = [
     trainDamageBonus: 0.25,
     trainFireRateBonus: 0.15,
     trainSteamBonus: 15,
+  },
+  {
+    id: 'platform',
+    name: '装卸站台',
+    cost: 35,
+    description: '必须紧邻铁轨；不在战斗中被攻击，周期性为列车补给蒸汽',
+    steamPerCycle: 20,
+    cycleInterval: 4,
   },
 ]
 
