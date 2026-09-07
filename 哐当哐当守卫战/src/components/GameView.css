@@ -1,0 +1,193 @@
+/* ============ 竖屏游戏布局 ============ */
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  font-family: 'system-ui', 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  background: #0f1620;
+  color: #eaf0f7;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  min-height: 100vh;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+html, body, #root { height: 100%; }
+#root { display: flex; justify-content: center; align-items: center; }
+
+.game-view {
+  position: relative;
+  width: min(480px, 100vw);
+  max-width: 480px;
+  height: min(760px + 150px, 100vh);
+  max-height: 910px;
+  display: flex;
+  flex-direction: column;
+  background: #1a2230;
+  border-radius: 16px;
+  overflow: hidden;
+  border: 2px solid #2c3a4f;
+  box-shadow: 0 0 40px rgba(0,0,0,0.6);
+  touch-action: none;
+}
+
+/* ---- 顶部资源栏 ---- */
+.hud-top {
+  display: flex;
+  gap: 10px;
+  padding: 10px 12px;
+  background: linear-gradient(#232d3d, #1c2431);
+  border-bottom: 2px solid #33415a;
+  align-items: center;
+  flex-wrap: wrap;
+  min-height: 58px;
+}
+
+.hud-resource {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  background: #2a3547;
+  padding: 4px 8px;
+  border-radius: 20px;
+  font-size: 14px;
+}
+.hud-resource .val { font-weight: bold; min-width: 22px; }
+
+.sell-btn {
+  background: #e8b53a;
+  border: none;
+  color: #222;
+  font-weight: bold;
+  border-radius: 10px;
+  padding: 1px 7px;
+  font-size: 12px;
+  cursor: pointer;
+}
+.sell-btn:hover { background: #f4c95d; }
+
+.hud-night {
+  margin-left: auto;
+  font-size: 13px;
+  background: #2a3547;
+  padding: 4px 10px;
+  border-radius: 20px;
+  color: #a5c2ff;
+}
+
+/* ---- 画布 ---- */
+.game-canvas {
+  width: 100%;
+  flex: 1;
+  display: block;
+  cursor: pointer;
+  background: #ddeee0;
+  min-height: 0;
+}
+
+/* ---- 底部建筑面板 ---- */
+.hud-bottom {
+  display: flex;
+  gap: 6px;
+  padding: 10px 10px;
+  background: #1c2431;
+  border-top: 2px solid #33415a;
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+.build-btn {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  background: #2a3547;
+  color: #eaf0f7;
+  border: 2px solid transparent;
+  border-radius: 10px;
+  padding: 6px 10px;
+  cursor: pointer;
+  font-size: 12px;
+  min-width: 62px;
+}
+
+.build-btn .build-name { font-weight: bold; }
+.build-btn .build-cost { font-size: 11px; color: #f4c95d; }
+.build-btn:hover { background: #33415a; }
+.build-btn.active { border-color: #7cc4ff; background: #33415a; box-shadow: 0 0 8px #7cc4ff88; }
+
+.action-btn {
+  flex: 1;
+  min-width: 86px;
+  padding: 8px 6px;
+  border: none;
+  border-radius: 10px;
+  font-weight: bold;
+  cursor: pointer;
+  font-size: 13px;
+}
+.night-btn { background: #4a3a8f; color: #fff; }
+.night-btn:hover { background: #5b4aa6; }
+.night-btn:disabled { background: #3a3f52; color: #6a7588; cursor: not-allowed; }
+.boost-btn { background: #d05a5a; color: #fff; }
+.boost-btn:hover { background: #dc6b6b; }
+.boost-btn:disabled { background: #3a3f52; color: #6a7588; cursor: not-allowed; }
+
+/* ---- Toast ---- */
+.toast {
+  position: absolute;
+  left: 50%;
+  top: 24%;
+  transform: translateX(-50%);
+  background: rgba(20,24,34,0.92);
+  color: #ffd35c;
+  padding: 8px 18px;
+  border-radius: 20px;
+  pointer-events: none;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.4);
+  animation: toastFade 1.4s ease forwards;
+}
+@keyframes toastFade {
+  0% { opacity: 0; transform: translate(-50%, 8px); }
+  15% { opacity: 1; transform: translate(-50%, 0); }
+  80% { opacity: 1; }
+  100% { opacity: 0; transform: translate(-50%, -8px); }
+}
+
+/* ---- 结算弹窗 ---- */
+.game-over-overlay {
+  position: absolute;
+  inset: 0;
+  background: rgba(6,10,16,0.7);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 10;
+}
+.game-over-box {
+  background: #1c2431;
+  border-radius: 16px;
+  padding: 30px 40px;
+  text-align: center;
+  border: 2px solid #33415a;
+  box-shadow: 0 10px 40px rgba(0,0,0,0.5);
+}
+.game-over-box h2 { margin: 0 0 10px; font-size: 28px; }
+.game-over-box p { margin: 6px 0; color: #a9b6c9; }
+.restart-btn {
+  margin-top: 16px;
+  padding: 10px 28px;
+  background: #4a8dcf;
+  color: #fff;
+  border: none;
+  border-radius: 12px;
+  font-size: 16px;
+  font-weight: bold;
+  cursor: pointer;
+}
+.restart-btn:hover { background: #5fa0dc; }
+
+#root {
+  --tw-ring-inset: initial;
+}
