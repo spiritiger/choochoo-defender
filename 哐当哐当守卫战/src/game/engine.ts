@@ -2,7 +2,7 @@
 //  游戏主引擎：持有状态、推进昼夜、调度各系统
 //  （纯 TS，不依赖渲染；渲染层只读 state）
 // ============================================================
-import { FIELD, GRID, RULE, ECONOMY, TRAIN_BASE, CENTER, RAIL, CENTER_CELL } from '../config/game'
+import { FIELD, GRID, RULE, ECONOMY, TRAIN_BASE, CENTER, INTERIOR, CENTER_CELL } from '../config/game'
 import { BUILDINGS, MONSTERS } from '../config/units'
 import type {
   GameState,
@@ -46,15 +46,17 @@ function inBounds(r: number, c: number): boolean {
   return r >= 0 && r < GRID.rows && c >= 0 && c < GRID.cols
 }
 
-/** 铁轨格位集合：环绕镇中心外扩 RAIL.ringDist 层的矩形环，每段铁轨占 1 格 */
+function inInterior(r: number, c: number): boolean {
+  return r >= INTERIOR.top && r <= INTERIOR.bottom && c >= INTERIOR.left && c <= INTERIOR.right
+}
+
+/** 铁轨格位集合：紧邻安全区外侧的 1 格宽矩形环，每段铁轨占 1 格 */
 function buildRailSet(): Set<number> {
   const s = new Set<number>()
-  const { row, col } = CENTER_CELL
-  for (let r = row - RAIL.ringDist; r <= row + RAIL.ringDist; r++) {
-    for (let c = col - RAIL.ringDist; c <= col + RAIL.ringDist; c++) {
+  for (let r = INTERIOR.top - 1; r <= INTERIOR.bottom + 1; r++) {
+    for (let c = INTERIOR.left - 1; c <= INTERIOR.right + 1; c++) {
       if (!inBounds(r, c)) continue
-      const onRing = Math.max(Math.abs(r - row), Math.abs(c - col)) === RAIL.ringDist
-      if (onRing) s.add(r * GRID.cols + c)
+      if (!inInterior(r, c)) s.add(r * GRID.cols + c)
     }
   }
   return s
@@ -70,7 +72,7 @@ export function isRailCell(index: number): boolean {
 export function isSafeCell(index: number): boolean {
   const c = index % GRID.cols
   const r = Math.floor(index / GRID.cols)
-  return Math.max(Math.abs(r - CENTER_CELL.row), Math.abs(c - CENTER_CELL.col)) < RAIL.ringDist
+  return inInterior(r, c)
 }
 
 /** 该格子是否与铁轨正交相邻（站台建筑放置前提） */
@@ -86,13 +88,12 @@ export function adjacentToRail(index: number): boolean {
   return neighbors.some((n) => inBounds(n.r, n.c) && RAIL_CELLS.has(n.r * GRID.cols + n.c))
 }
 
-/** 铁轨环路（顺时针）的格心路径，列车沿其移动 */
+/** 铁轨环路（顺时针，沿矩形环外圈）的格心路径，列车沿其移动 */
 function buildTrainPath(): Array<{ x: number; y: number }> {
-  const { row, col } = CENTER_CELL
-  const top = row - RAIL.ringDist
-  const bottom = row + RAIL.ringDist
-  const left = col - RAIL.ringDist
-  const right = col + RAIL.ringDist
+  const top = INTERIOR.top - 1
+  const bottom = INTERIOR.bottom + 1
+  const left = INTERIOR.left - 1
+  const right = INTERIOR.right + 1
   const idx = (r: number, c: number) => r * GRID.cols + c
   const inds: number[] = []
   for (let c = left; c <= right; c++) inds.push(idx(top, c))
