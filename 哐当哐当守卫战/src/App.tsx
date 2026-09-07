@@ -14,7 +14,7 @@ function App() {
       </header>
       <GameView engineRef={engineRef} />
       <footer className="app-footer">
-        白天建造 · 夜晚战斗 · 守住 10 个夜晚
+        铁轨内是安全区 · 铁轨外是危险区 · 守住 10 个夜晚
       </footer>
     </div>
   )

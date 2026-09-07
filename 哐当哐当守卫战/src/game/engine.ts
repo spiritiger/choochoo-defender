@@ -66,6 +66,13 @@ export function isRailCell(index: number): boolean {
   return RAIL_CELLS.has(index)
 }
 
+/** 该格子是否位于铁轨内（火车保护的安全区），用于区域渲染区分 */
+export function isSafeCell(index: number): boolean {
+  const c = index % GRID.cols
+  const r = Math.floor(index / GRID.cols)
+  return Math.max(Math.abs(r - CENTER_CELL.row), Math.abs(c - CENTER_CELL.col)) < RAIL.ringDist
+}
+
 /** 该格子是否与铁轨正交相邻（站台建筑放置前提） */
 export function adjacentToRail(index: number): boolean {
   const c = index % GRID.cols

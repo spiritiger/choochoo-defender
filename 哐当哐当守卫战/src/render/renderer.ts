@@ -5,7 +5,7 @@
 import { FIELD, GRID, CENTER as CENTER_CFG } from '../config/game'
 import { MONSTERS } from '../config/units'
 import type { GameState, Phase, BuildingKind, Building } from '../game/types'
-import { gridOrigin, cellCenter, CENTER_INDEX, isRailCell, adjacentToRail, trainPos } from '../game/engine'
+import { gridOrigin, cellCenter, CENTER_INDEX, isRailCell, isSafeCell, adjacentToRail, trainPos } from '../game/engine'
 
 const COLORS: Record<BuildingKind, { main: string; dark: string; label: string }> = {
   mine: { main: '#8d9a5a', dark: '#6b7842', label: '矿' },
@@ -38,6 +38,7 @@ export function render(ctx: CanvasRenderingContext2D, state: GameState) {
   ctx.clearRect(0, 0, W, H)
 
   drawBackground(ctx, state.phase)
+  drawZones(ctx)
   drawTrack(ctx)
   drawGrid(ctx, state)
   drawCenter(ctx, state)
@@ -50,6 +51,21 @@ export function render(ctx: CanvasRenderingContext2D, state: GameState) {
 function drawBackground(ctx: CanvasRenderingContext2D, phase: Phase) {
   ctx.fillStyle = phase === 'night' ? '#1c2333' : '#ddeee0'
   ctx.fillRect(0, 0, FIELD.width, FIELD.height)
+}
+
+/** 区域底色：铁轨内为安全区（偏绿），铁轨外为危险区（偏红），提示摆位风险 */
+function drawZones(ctx: CanvasRenderingContext2D) {
+  const o = gridOrigin()
+  for (let r = 0; r < GRID.rows; r++) {
+    for (let c = 0; c < GRID.cols; c++) {
+      const index = r * GRID.cols + c
+      if (isRailCell(index)) continue
+      const x = o.x + c * GRID.pitch
+      const y = o.y + r * GRID.pitch
+      ctx.fillStyle = isSafeCell(index) ? 'rgba(105,190,130,0.10)' : 'rgba(220,100,80,0.10)'
+      ctx.fillRect(x, y, GRID.cellSize, GRID.cellSize)
+    }
+  }
 }
 
 function drawTrack(ctx: CanvasRenderingContext2D) {
