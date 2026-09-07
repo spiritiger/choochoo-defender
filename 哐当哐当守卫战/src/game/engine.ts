@@ -7,6 +7,7 @@ import { BUILDINGS, MONSTERS } from '../config/units'
 import type {
   GameState,
   BuildingKind,
+  Building,
   Monster,
   Projectile,
   Train,
@@ -41,6 +42,9 @@ export { gridOrigin }
 
 /** 城镇中心所占格位索引（该格不可建造） */
 export const CENTER_INDEX = CENTER_CELL.row * GRID.cols + CENTER_CELL.col
+
+/** 初始站台所占格位索引（开局即拥有，紧邻铁轨右侧） */
+const INITIAL_PLATFORM_INDEX = 5 * GRID.cols + 6
 
 function inBounds(r: number, c: number): boolean {
   return r >= 0 && r < GRID.rows && c >= 0 && c < GRID.cols
@@ -133,6 +137,21 @@ function createTrain(): Train {
   return { t: Math.random(), speedMult: 1, boostTimer: 0, cooldown: 0 }
 }
 
+/** 创建开局自带的站台建筑（紧邻铁轨，无生命、不被攻击） */
+function createInitialPlatform(): Building {
+  const { x, y } = cellCenter(INITIAL_PLATFORM_INDEX)
+  return {
+    id: nextId(),
+    kind: 'platform',
+    gridX: x,
+    gridY: y,
+    hp: 1,
+    cooldown: 0,
+    rawStock: 0,
+    prodStock: 0,
+  }
+}
+
 export function createInitialState(): GameState {
   return {
     phase: 'day',
@@ -143,7 +162,7 @@ export function createInitialState(): GameState {
     nightTimer: 0,
     spawnTimer: 0,
     centerHp: CENTER.maxHp,
-    buildings: [],
+    buildings: [createInitialPlatform()],
     monsters: [],
     projectiles: [],
     train: createTrain(),
