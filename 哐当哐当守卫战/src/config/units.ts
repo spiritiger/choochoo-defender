@@ -31,7 +31,7 @@ export const BUILDINGS: BuildingSpec[] = [
   {
     id: 'mine',
     name: '采矿机',
-    cost: 30,
+    cost: 40,
     description: '每 5 秒产出 1 单位基础资源',
     resourcePerCycle: 1,
     cycleInterval: 5,
@@ -39,7 +39,7 @@ export const BUILDINGS: BuildingSpec[] = [
   {
     id: 'furnace',
     name: '冶炼炉',
-    cost: 50,
+    cost: 40,
     description: '每 6 秒将 1 资源加工为 1 成品',
     inputPerCycle: 1,
     outputPerCycle: 1,
@@ -56,7 +56,7 @@ export const BUILDINGS: BuildingSpec[] = [
   {
     id: 'booster',
     name: '蒸汽核心',
-    cost: 60,
+    cost: 40,
     description: '提升列车火力 +25% 与能量恢复',
     trainDamageBonus: 0.25,
     trainFireRateBonus: 0.15,
@@ -65,7 +65,7 @@ export const BUILDINGS: BuildingSpec[] = [
   {
     id: 'platform',
     name: '装卸站台',
-    cost: 35,
+    cost: 40,
     description: '必须紧邻铁轨；不在战斗中被攻击，周期性为列车补给蒸汽',
     steamPerCycle: 20,
     cycleInterval: 4,
