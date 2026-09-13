@@ -13,7 +13,8 @@ BUILD.DEF = {
   turret: {
     id:'turret', name:'炮台', cost:40, hpMax:60, shape:'turret', buildable:true,
     zones:[CFG.ZONE.OUTER, CFG.ZONE.INNER, CFG.ZONE.TOWN],
-    damage:12, range:132, cooldown:0.95
+    damage:12, range:132, cooldown:0.95,
+    ammoMax:30, ammoPerCargo:8   // 弹药原型：开火消耗，列车补货转为弹药
   },
   mine: {
     id:'mine', name:'矿机', cost:60, hpMax:50, shape:'mine', buildable:true,

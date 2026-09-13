@@ -30,6 +30,7 @@ ENG.place = function (type, c, r) {
     hp: def.hpMax, hpMax: def.hpMax,
     invincible: !!def.invincible,
     stock: def.stockCap ? 0 : 0,
+    ammo: def.ammoMax ? def.ammoMax : 0,
     timer: 0, cd: 0,
     def: def
   };
@@ -172,15 +173,16 @@ ENG.shoot = function (sx, sy, target, dmg) {
 };
 
 ENG.tickCombat = function (dt) {
-  // 炮台
+  // 炮台（需弹药）
   for (var k = 0; k < GS.buildings.length; k++) {
     var b = GS.buildings[k];
     if (b.type !== 'turret' || b.hp <= 0 || b.invincible) continue;
+    if (b.ammo <= 0) continue;   // 弹药用尽则哑火
     b.cd -= dt;
     if (b.cd <= 0) {
       var px = CFG.ccx(LAY, b.c), py = CFG.ccy(LAY, b.r);
       var t = ENG.findMonster(px, py, b.def.range);
-      if (t) { ENG.shoot(px, py, t, b.def.damage); b.cd = b.def.cooldown; }
+      if (t) { ENG.shoot(px, py, t, b.def.damage); b.cd = b.def.cooldown; b.ammo--; }
     }
   }
   // 怪物移动/攻击

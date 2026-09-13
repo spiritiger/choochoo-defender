@@ -107,6 +107,20 @@ REND.draw = function (ctx, L, hover) {
   // 夜晚染色
   if (GS.phase === 'night') { ctx.fillStyle = REND.C.night; ctx.fillRect(0, 0, CFG.CANVAS_W, CFG.CANVAS_H); }
 
+  // 地块网格线（辅助观察每个地块边界）
+  ctx.strokeStyle = 'rgba(255,255,255,0.14)';
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  for (var gc = 0; gc <= CFG.MAP_COLS; gc++) {
+    var gx = L.x + gc * L.cell;
+    ctx.moveTo(gx, L.y); ctx.lineTo(gx, L.y + L.h);
+  }
+  for (var gr = 0; gr <= CFG.MAP_ROWS; gr++) {
+    var gy = L.y + gr * L.cell;
+    ctx.moveTo(L.x, gy); ctx.lineTo(L.x + L.w, gy);
+  }
+  ctx.stroke();
+
   // 放置提示
   if (GS.selOffer) REND.placeGhost(ctx, L, hover);
 };
@@ -142,6 +156,11 @@ REND.building = function (ctx, L, b) {
   } else if (b.type === 'turret') {
     ctx.fillStyle = REND.C.turret; ctx.beginPath(); ctx.arc(cx, cy, s * 0.36, 0, 7); ctx.fill();
     ctx.fillStyle = '#2c3038'; ctx.beginPath(); ctx.arc(cx, cy, s * 0.16, 0, 7); ctx.fill();
+    // 弹药条
+    var ar = b.ammoMax ? Math.max(0, b.ammo / b.ammoMax) : 0;
+    ctx.fillStyle = '#a0202060'; ctx.fillRect(cx - s / 2, cy + s * 0.42, s, 3);
+    ctx.fillStyle = ar > 0.25 ? '#ffd96a' : '#e8463a';
+    ctx.fillRect(cx - s / 2, cy + s * 0.42, s * ar, 3);
   } else if (b.type === 'mine') {
     ctx.fillStyle = REND.C.mine; ctx.fillRect(cx - s / 2, cy - s / 2, s, s);
     ctx.fillStyle = '#fff'; ctx.font = 'bold 8px sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
