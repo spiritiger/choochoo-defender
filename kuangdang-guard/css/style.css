@@ -1,0 +1,61 @@
+:root {
+  --brand:#4B3FE3;
+  --bg:#14161d;
+  --panel:#1e2130;
+  --panel2:#2a2e42;
+  --line:rgba(255,255,255,0.08);
+  --text:#e8ebf4;
+  --muted:#9aa0b4;
+  --gold:#f0b429;
+  --hp:#e8463a;
+}
+* { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+html,body { margin:0; padding:0; height:100%; background:#0b0c12; overflow:hidden;
+  font-family:"SF Pro Text","PingFang SC",system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+  color:var(--text); -webkit-user-select:none; user-select:none; touch-action:manipulation; }
+
+#stage { position:fixed; inset:0; display:flex; align-items:center; justify-content:center; }
+#app { position:relative; width:390px; height:844px; background:var(--bg);
+  transform-origin:center center; box-shadow:0 0 40px rgba(0,0,0,0.5); }
+
+/* HUD */
+#hud { height:52px; display:flex; align-items:center; justify-content:space-around;
+  background:var(--panel); border-bottom:1px solid var(--line); }
+.hud-cell { display:flex; flex-direction:column; align-items:center; line-height:1; }
+.hud-key { font-size:11px; color:var(--muted); margin-bottom:4px; }
+.hud-val { font-size:18px; font-weight:700; }
+#hudGold .hud-val { color:var(--gold); }
+#hudHp .hud-val { color:var(--hp); }
+
+/* Field */
+#fieldWrap { position:relative; height:560px; background:var(--bg); overflow:hidden; }
+#game { position:absolute; left:0; top:0; display:block; touch-action:none; }
+
+/* Footer */
+#footer { position:absolute; left:0; right:0; bottom:0; height:232px; background:var(--panel);
+  border-top:1px solid var(--line); padding:10px 12px; display:flex; flex-direction:column; }
+.phase { font-size:13px; font-weight:600; color:var(--muted); margin:2px 2px 8px; }
+#cards { display:flex; gap:8px; flex:1 1 auto; min-height:0; }
+.card { flex:1; border:1px solid var(--line); border-radius:10px; background:var(--panel2);
+  display:flex; flex-direction:column; align-items:center; justify-content:center; cursor:pointer; }
+.card .c-name { font-size:13px; font-weight:600; margin-top:6px; }
+.card .c-meta { font-size:11px; color:var(--muted); margin-top:3px; text-align:center; padding:0 4px; }
+.card .c-cost { font-size:14px; font-weight:700; color:var(--gold); margin-top:4px; }
+.card.disabled { opacity:.45; cursor:default; }
+.card.selected { border-color:var(--brand); box-shadow:0 0 0 2px var(--brand); }
+.card .c-ico { font-size:22px; line-height:1; }
+.actionRow { display:flex; gap:8px; margin-top:10px; }
+.btn { flex:1; height:40px; border-radius:10px; border:1px solid var(--line); background:var(--panel2);
+  color:var(--text); font-size:14px; font-weight:600; cursor:pointer; }
+.btn.primary { background:var(--brand); border-color:transparent; }
+.btn:disabled { opacity:.45; cursor:default; }
+#status { min-height:16px; margin-top:6px; font-size:11px; color:var(--muted); text-align:center; }
+
+/* Overlay */
+#overlay { position:absolute; inset:0; background:rgba(0,0,0,0.6); display:flex;
+  align-items:center; justify-content:center; z-index:20; }
+#overlay.hidden { display:none; }
+.ov-card { width:240px; padding:24px 20px; border-radius:14px; background:var(--panel);
+  border:1px solid var(--line); text-align:center; }
+.ov-title { font-size:22px; font-weight:800; margin-bottom:8px; }
+.ov-sub { font-size:13px; color:var(--muted); margin-bottom:18px; }
