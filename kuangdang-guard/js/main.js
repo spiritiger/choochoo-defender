@@ -10,10 +10,9 @@
   window.LAY = CFG.layout();
 
   ENG.init();
-  UI.init(ctx, canvas);
+  UI.init(canvas);
   UI.resize();
   UI.tick();
-  UI.renderCards();
 
   var last = performance.now();
   function frame(now) {
