@@ -11,8 +11,6 @@
   <div id="app">
     <header id="hud">
       <div class="hud-cell"><span class="hud-key">金币</span><span id="hudGold" class="hud-val">0</span></div>
-      <div class="hud-cell"><span class="hud-key">夜晚</span><span id="hudNight" class="hud-val">1/3</span></div>
-      <div class="hud-cell"><span class="hud-key">镇心</span><span id="hudHp" class="hud-val">100</span></div>
     </header>
 
     <div id="fieldWrap">
@@ -20,32 +18,17 @@
     </div>
 
     <footer id="footer">
-      <div id="phaseTitle" class="phase">第 1 白昼 · 建造</div>
       <div id="cards"></div>
       <div class="actionRow">
-        <button id="btnNight" class="btn primary">入夜</button>
-        <button id="btnSteam" class="btn">蒸汽加速</button>
+        <button id="btnRoll" class="btn">重抽</button>
       </div>
       <div id="status"></div>
     </footer>
-
-    <div id="overlay" class="hidden">
-      <div class="ov-card">
-        <div id="ovTitle" class="ov-title"></div>
-        <div id="ovSub" class="ov-sub"></div>
-        <button id="btnRestart" class="btn primary">再来一局</button>
-      </div>
-    </div>
   </div>
 </div>
 
 <script src="js/config/map.js"></script>
-<script src="js/config/terrain.js"></script>
-<script src="js/config/buildings.js"></script>
-<script src="js/config/units.js"></script>
-<script src="js/config/levels.js"></script>
 <script src="js/state.js"></script>
-<script src="js/spawn.js"></script>
 <script src="js/transport.js"></script>
 <script src="js/engine.js"></script>
 <script src="js/renderer.js"></script>

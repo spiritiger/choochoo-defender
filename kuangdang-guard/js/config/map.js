@@ -1,4 +1,4 @@
-// 地图与地块（同心环规则，11x15 竖长）
+// 地图布局与网格 / 俄罗斯方块清理形状
 window.CFG = {
   CANVAS_W: 390,
   CANVAS_H: 844,
@@ -6,22 +6,16 @@ window.CFG = {
   FOOTER_H: 232,
   MAP_COLS: 11,
   MAP_ROWS: 15,
-  ZONE: { ENV: 0, OUTER: 1, TRACK: 2, INNER: 3, TOWN: 4 },
-  ZONE_NAME: ['外部环境', '铁轨外圈', '铁轨', '铁轨内圈', '城镇内部']
+  TRAIN_SPEED: 2.6,   // 格/秒
+  ECON_RATE: 6   // 列车每经过一次贴轨经济建筑 +6 金币
 };
 
-// 到最近边缘的同心层数（0=外部环境 ... >=4=城镇内部）
-CFG.zoneAt = function (c, r) {
-  var d = Math.min(c, CFG.MAP_COLS - 1 - c, r, CFG.MAP_ROWS - 1 - r);
-  return d >= 4 ? CFG.ZONE.TOWN : d;
-};
-CFG.isTrack = function (c, r) { return CFG.zoneAt(c, r) === CFG.ZONE.TRACK; };
 CFG.inBounds = function (c, r) { return c >= 0 && c < CFG.MAP_COLS && r >= 0 && r < CFG.MAP_ROWS; };
 
 // 场地区高度（HUD/底部面板为 HTML，画布仅覆盖此区域）
 CFG.fieldH = function () { return CFG.CANVAS_H - CFG.HUD_H - CFG.FOOTER_H; };
 
-// 画布内地图布局（含 HUD/底部面板偏移）
+// 画布内地图布局
 CFG.layout = function () {
   var fieldH = CFG.fieldH();
   var availW = CFG.CANVAS_W - 16;
@@ -32,7 +26,7 @@ CFG.layout = function () {
   return {
     cell: cell,
     x: Math.floor((CFG.CANVAS_W - w) / 2),
-    y: Math.floor((fieldH - h) / 2),   // 相对画布(地图区)左上角
+    y: Math.floor((fieldH - h) / 2),
     w: w, h: h
   };
 };
@@ -44,22 +38,12 @@ CFG.pickCell = function (L, mx, my) {
   return CFG.inBounds(c, r) ? { c: c, r: r } : null;
 };
 
-// 铁轨闭环（铁路 = 区域 cols2..8 行 rows2..12 的外围一周）
-CFG.ringPath = function () {
-  var path = [];
-  var cs = 2, ce = 8, rs = 2, re = 12;
-  for (var c = cs; c <= ce; c++) path.push({ c: c, r: rs });
-  for (var r = rs + 1; r <= re; r++) path.push({ c: ce, r: r });
-  for (var c2 = ce - 1; c2 >= cs; c2--) path.push({ c: c2, r: re });
-  for (var r2 = re - 1; r2 >= rs + 1; r2--) path.push({ c: cs, r: r2 });
-  return path;
-};
-
-// 所有外部环境(含边缘)格子，供怪物出生
-CFG.envCells = function () {
-  var out = [];
-  for (var r = 0; r < CFG.MAP_ROWS; r++)
-    for (var c = 0; c < CFG.MAP_COLS; c++)
-      if (CFG.zoneAt(c, r) === CFG.ZONE.ENV) out.push({ c: c, r: r });
-  return out;
-};
+// 俄罗斯方块形状（清理工具作用范围）
+CFG.SHAPES = [
+  { name: '长条', cells: [[0, 0], [1, 0], [2, 0], [3, 0]] },
+  { name: '方块', cells: [[0, 0], [1, 0], [0, 1], [1, 1]] },
+  { name: 'L 形', cells: [[0, 0], [1, 0], [2, 0], [0, 1]] },
+  { name: 'T 形', cells: [[0, 0], [1, 0], [2, 0], [1, 1]] },
+  { name: 'Z 形', cells: [[1, 0], [2, 0], [0, 1], [1, 1]] },
+  { name: '直角', cells: [[0, 0], [1, 0], [1, 1]] }
+];
