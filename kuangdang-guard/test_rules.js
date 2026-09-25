@@ -1,0 +1,154 @@
+// ============================================================================
+// 规则回归测试（Node 直接跑，不需要浏览器）：node test_rules.js
+//
+// 覆盖大王 2026-09-21 的 5 条新规则：
+//   1) 开局 3×5（宽3 高5，含镇中心）内无任何障碍物
+//   2) 外圈 5×7（减去内区）全部是障碍物
+//   3) 开局不生成经济建筑，改为 10 个金币地块（都在 5×7 圈外）
+//   4) 金币地块**初始即障碍物**（废墟 + 金币，v0.6.12）：开局不可铺轨，
+//      用清理形状清出来（金币保留）之后才可铺轨；列车驶入 +5，十字一圈只算一次
+//   5) 列车跑完一圈，金币地块全部重置
+// ============================================================================
+'use strict';
+const fs = require('fs');
+const path = require('path');
+const vm = require('vm');
+
+const ROOT = __dirname;
+const sandbox = {};
+sandbox.window = sandbox;
+sandbox.console = console;
+vm.createContext(sandbox);
+for (const f of ['js/config/map.js', 'js/state.js', 'js/transport.js', 'js/engine.js']) {
+  vm.runInContext(fs.readFileSync(path.join(ROOT, f), 'utf8'), sandbox, { filename: f });
+}
+const CFG = sandbox.window.CFG, GS = sandbox.window.GS, TRANS = sandbox.window.TRANS, ENG = sandbox.window.ENG;
+GS.debugNoDeadline = true;   // 测试确定性：跳过 400ms 墙钟（防重负载下偶发掐断求解）
+
+let pass = 0, fail = 0;
+function check(name, ok, detail) {
+  if (ok) { pass++; console.log('  [通过] ' + name); }
+  else { fail++; console.log('  [失败] ' + name + (detail ? ' —— ' + detail : '')); }
+}
+const cC = Math.floor(CFG.MAP_COLS / 2), cR = Math.floor(CFG.MAP_ROWS / 2);
+const inInner = (c, r) => Math.abs(c - cC) <= 1 && Math.abs(r - cR) <= 2;   // 3×5
+const inRing5x7 = (c, r) => Math.abs(c - cC) <= 2 && Math.abs(r - cR) <= 3; // 5×7
+
+// ---- 每条规则都重开一局，多跑几局抗随机 ----
+const ROUNDS = 20;
+for (let round = 0; round < ROUNDS; round++) {
+  GS.newGame();
+
+  // 规则 1：3×5 内区全部 blank
+  let bad = [];
+  for (let r = 0; r < CFG.MAP_ROWS; r++) for (let c = 0; c < CFG.MAP_COLS; c++) {
+    if (inInner(c, r) && GS.grid[r][c].t !== 'blank') bad.push(c + ',' + r);
+  }
+  if (round === 0) check('规则1：开局 3×5 内区无障碍（20 局抽查）', bad.length === 0, bad.join(' '));
+
+  // 规则 2：5×7 外圈（减内区）全部废墟
+  bad = [];
+  for (let r = 0; r < CFG.MAP_ROWS; r++) for (let c = 0; c < CFG.MAP_COLS; c++) {
+    if (inRing5x7(c, r) && !inInner(c, r) && GS.grid[r][c].t !== 'rubble') bad.push(c + ',' + r);
+  }
+  if (round === 0) check('规则2：5×7 外圈全部是障碍物（20 局抽查）', bad.length === 0, bad.join(' '));
+
+  // 规则 3：无经济建筑 + 10 个金币地块，且都在 5×7 圈外
+  const econN = GS.buildings.filter(b => b.type === 'econ').length;
+  if (round === 0) check('规则3a：开局无经济建筑', econN === 0, '实际 ' + econN);
+  if (round === 0) check('规则3b：开局金币地块数 = CFG.GOLD_TILES（' + CFG.GOLD_TILES + ' 个）',
+    GS.goldTiles.length === CFG.GOLD_TILES, '实际 ' + GS.goldTiles.length);
+  bad = GS.goldTiles.filter(t => inRing5x7(t.c, t.r));
+  if (round === 0) check('规则3c：金币地块都在 5×7 圈外', bad.length === 0,
+    bad.map(t => t.c + ',' + t.r).join(' '));
+  // v0.6.12：金币地块初始是「废墟 + 金币」—— 视为障碍物，需清理后才能铺轨
+  bad = GS.goldTiles.filter(t => { const g = GS.grid[t.r][t.c]; return !g.gold || g.t !== 'rubble'; });
+  if (round === 0) check('规则3d：金币地块初始埋在废墟里（t=rubble，视为障碍物）', bad.length === 0);
+
+  if (round === 0) {
+    // 规则 4a：金币地块（已清出=空地）可以被铺轨 —— 在内区右侧接一块 2×3 空地，
+    // 末端放金币格，环应当能长过去并把金币格包进 railSet。
+    // ⚠️ v0.6.14：地图收成 9×13 后内区右边界只剩 1 格余量（列 5..7），
+    //    所以补丁必须压在内区外沿上、不能往外铺 3 列（旧版 cC+2..cC+4 会越界）。
+    //    金币格取 (7, cR+1)：它在补丁 2×3 的右列，且与内区格 (6,cR+1) 4 向相邻。
+    const gc = cC + 2, gr = cR + 1;   // 金币格（补丁右列）
+    for (let dr = 0; dr <= 1; dr++) for (let dc = 1; dc <= 2; dc++) {
+      const rr = cR + dr, cc2 = cC + dc;
+      if (!CFG.inBounds(cc2, rr)) continue;
+      GS.grid[rr][cc2].t = 'blank';   // 内区右列 + 外沿一列 → 供铁轨扩出去
+    }
+    GS.grid[gr][gc].gold = true; GS.grid[gr][gc].harvested = false;
+    GS.grid[gr][gc].t = 'blank';
+    GS.recomputeRails();
+    check('规则4a：金币地块可以被铺设轨道',
+      !!GS.railSet[gc + ',' + gr], GS.railSet[gc + ',' + gr] ? '' : '金币格未进环');
+
+    // 规则 4d（v0.6.12）：同一格退回"废墟 + 金币" 状态 → 视作障碍物，不进环
+    GS.grid[gr][gc].t = 'rubble';
+    GS.recomputeRails();
+    check('规则4d：未清理的金币格不可铺轨（视作障碍物）',
+      GS.railPath.length >= 4 && !GS.railSet[gc + ',' + gr],
+      '步数 ' + GS.railPath.length + '，入环=' + !!GS.railSet[gc + ',' + gr]);
+    GS.grid[gr][gc].t = 'blank';   // 复原，供后续用例继续
+    GS.recomputeRails();
+
+    // 规则 4b：驶入收款 + 十字一圈只算一次
+    //   注意：gt 必须在上面的"试验补丁"之后再挑 —— 补丁可能刚好盖住某枚随机金币格，
+    //   挑完再改地形就会让下面"未清理"的断言偶发失败（19 局里会碰上一次）。
+    const gt = GS.goldTiles.find(t => GS.grid[t.r][t.c].t === 'rubble') || GS.goldTiles[0];
+    const before = GS.gold;
+    TRANS.serviceCell({ c: gt.c, r: gt.r });
+    TRANS.serviceCell({ c: gt.c, r: gt.r });   // 模拟十字格被进入第二次
+    check('规则4b：驶入金币地块 +5，同圈第二次进入不再计费',
+      GS.gold === before + CFG.GOLD_RATE && GS.grid[gt.r][gt.c].harvested === true,
+      '增量 ' + (GS.gold - before));
+
+    // 规则 5：跑完一圈重置
+    TRANS.resetGoldLap();
+    check('规则5a：resetGoldLap 后地块恢复可收', GS.grid[gt.r][gt.c].harvested === false);
+    const before2 = GS.gold;
+    TRANS.serviceCell({ c: gt.c, r: gt.r });
+    check('规则5b：重置后可再次收款', GS.gold === before2 + CFG.GOLD_RATE);
+
+    // 规则 4c：金币地块不可建经济建筑
+    //   v0.6.12：未清理时它是废墟 → 先报"这里是废墟，先清理"；
+    //   清出来（空地 + 金币）之后 → 报"金币地块，不可建造"。
+    const res1 = ENG.placeEcon(gt.c, gt.r);
+    check('规则4c：未清理的金币格不可建造（视作废墟）', res1 === '这里是废墟，先清理', String(res1));
+    const gtT = GS.grid[gt.r][gt.c].t;
+    GS.grid[gt.r][gt.c].t = 'blank';
+    const res = ENG.placeEcon(gt.c, gt.r);
+    GS.grid[gt.r][gt.c].t = gtT;
+    check('规则4c2：金币地块（已清出）不可建造经济建筑', res === '金币地块，不可建造', String(res));
+  }
+}
+
+// ---- 端到端：把金币放在初始环上，让列车真实跑两圈，验证“每圈各收一次 + 圈末重置” ----
+GS.newGame();
+const ring = GS.railPath.slice();
+const marks = [ring[2], ring[5], ring[9]];   // 挑 3 个环格改成金币地块
+for (const m of marks) {
+  const cell = GS.grid[m.r][m.c];
+  cell.gold = true; cell.harvested = false; cell.flash = 0;
+  if (!GS.goldTiles.some(t => t.c === m.c && t.r === m.r)) GS.goldTiles.push({ c: m.c, r: m.r });
+}
+const gold0 = GS.gold;
+const laps = 2;
+// dt=0.5 → 每次 tick 前进 2.6×0.5 = 1.3 格；19 tick = 24.7 格 → 恰好 24 次进格 = 2 圈整，
+// 且第 24 次进格正好触发 index 回绕（跑完一圈重置）。不能多走：多走进第 3 圈会再收一次钱。
+for (let s = 0; s < 19; s++) ENG.tickTrain(0.5);
+const gained = GS.gold - gold0;
+check('端到端：跑 2 圈恰收 3 块 × 5 金币 × 2 圈 = 30', gained === 30, '实际 +' + gained);
+const anyHarvested = GS.goldTiles.some(t => GS.grid[t.r][t.c].harvested === true);
+check('端到端：圈末所有金币地块已重置', !anyHarvested);
+
+// ---- 初始环形状（新开局地形下的固定小环）----
+// 开局 3×5 内区 = 12 格外圈，无十字 → 步数 = 格数 = 12
+GS.newGame();
+check('开局铁轨 = 3×5 内区的 12 步小环（无十字，故步数=格数）', GS.railPath.length === 12,
+  '实际 ' + GS.railPath.length + '：' + GS.railPath.map(p => p.c + ',' + p.r).join(' '));
+
+console.log('\n' + '='.repeat(64));
+console.log(pass + ' 通过 / ' + fail + ' 失败');
+console.log('='.repeat(64));
+process.exit(fail ? 1 : 0);

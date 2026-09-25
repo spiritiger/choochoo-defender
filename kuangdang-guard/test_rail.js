@@ -1,443 +1,696 @@
-// JScript (cscript) harness replicating buildOutline to debug rail path.
-// Run: cscript //nologo test_rail.js [all|fixed|stress|real]
-var MODE = (WScript.Arguments.length > 0) ? String(WScript.Arguments(0)) : "all";
-var W, H, cleared;
+// ============================================================================
+// 铁轨算法回归测试（Node 直接跑，不需要浏览器）
+//   node test_rail.js
+//
+// 铁轨模型 v0.6：沿「已清空空白区 U 的外轮廓」走一圈的**欧拉式单线大环**
+//   · 规则 3：先削掉 U 里的 1 格宽脖子（U 邻居恰好 2 个 + 割点）
+//   · 规则 5：允许十字交叉（同一格最多走 2 次 = 度数 ≤4），主解每条边只走一次
+//   · v0.8.0 往返支线：主解之后追加"每边 ≤2 次、第 2 次必反向"的支线解，
+//     只有覆盖数严格更大才采纳（挂在单条桥边上的半岛组件由此收编）
+//   · v0.8.2 桥边约束：双走（重数 2）的边必须是搜索图的桥边（割边）——
+//     非桥边双走不产生新覆盖，只会织辫子（10:42 盘教训：44步/7十字 → 36步/2十字）
+//   · 优先「每格只走一次」的干净方案，无解才放开十字
+//
+// 覆盖：
+//   1) 黄金用例 —— 大王的 26 格「外轮廓大环」，必须逐格一致
+//   2) 开局 3x3 —— 必须是一个 8 格小环
+//   3) 边界情况 —— 全空白 / 全废墟 / 1 格宽走廊
+//   4) 随机地图压力 —— 200 张，环必须合法或干脆为空
+//   5) 细脖子局面 —— 一片带 1 格宽脖子的零散空白区，环必须合法（长度只记录）
+//      ⚠️ 这张盘面**不是**大王截图那张，v0.6.1 下也能解出 22 格环，盖不住缩圈 bug；
+//         真正的截图盘面见 [10]。
+//   6) 单调性 —— 只清不建时，环不会缩水
+//   7) 顺序生长 —— 在同一张图上连续清格，环不应中途塌缩
+//   8) 台阶/斜切角 —— 外轮廓 1 格错位的盘面，必须解出大环而不是塌成核心小环
+//  10) 缩圈 bug 真实盘面 —— 2026-09-20 截图逐格还原；v0.6.1 塌成 8 格，v0.6.2 必须是 ≥20 格大环
+// ============================================================================
+'use strict';
+const fs = require('fs');
+const path = require('path');
+const vm = require('vm');
 
-var PRUNED = [];
-function inb(c, r) { return c >= 0 && c < W && r >= 0 && r < H; }
-function interior(c, r) { return inb(c, r) && PRUNED[r][c]; }
-function outFlood() {
-  // outside = non-PRUNED cells 4-reachable from border
-  var out = []; for (var r = 0; r < H; r++) { out.push([]); for (var c = 0; c < W; c++) out[r].push(false); }
-  var st = [];
-  for (var r = 0; r < H; r++) for (var c = 0; c < W; c++)
-    if (!PRUNED[r][c] && (r === 0 || c === 0 || r === H - 1 || c === W - 1)) { out[r][c] = true; st.push([r, c]); }
-  var d4 = [[1,0],[-1,0],[0,1],[0,-1]];
-  while (st.length) { var p = st.pop(); for (var k = 0; k < 4; k++) { var nr = p[0]+d4[k][0], nc = p[1]+d4[k][1]; if (nr<0||nr>=H||nc<0||nc>=W) continue; if (PRUNED[nr][nc] || out[nr][nc]) continue; out[nr][nc]=true; st.push([nr,nc]); } }
-  return out;
+const ROOT = __dirname;
+
+// ---- 在沙箱里加载游戏的 CFG + GS（window 指向沙箱自身，模拟浏览器全局） ----
+const sandbox = {};
+sandbox.window = sandbox;
+sandbox.console = console;
+vm.createContext(sandbox);
+for (const f of ['js/config/map.js', 'js/state.js', 'js/engine.js']) {
+  vm.runInContext(fs.readFileSync(path.join(ROOT, f), 'utf8'), sandbox, { filename: f });
 }
-function external(c, r, out) { return !inb(c, r) || (!cleared[r][c] && out[r][c]); }
-function leftCell(px, py, ux, uy) { var lx = uy, ly = -ux; var cx = px + ux*0.5 + lx*0.5; var cy = py + uy*0.5 + ly*0.5; return [Math.floor(cx), Math.floor(cy)]; }
-function rightCell(px, py, ux, uy) { var lx = uy, ly = -ux; var cx = px + ux*0.5 - lx*0.5; var cy = py + uy*0.5 - ly*0.5; return [Math.floor(cx), Math.floor(cy)]; }
+const CFG = sandbox.CFG, GS = sandbox.GS, ENG = sandbox.ENG;   // ENG 供 [11] 的相接口径断言用
+GS.debugNoDeadline = true;   // 测试确定性：跳过 400ms 墙钟（防重负载下偶发掐断求解）
 
-function buildOutline(out) {
-  var sc = -1, sr = -1, rr, cc, done = false;
-  for (rr = 0; rr < H && !done; rr++) for (cc = 0; cc < W && !done; cc++) if (interior(cc, rr)) { sc = cc; sr = rr; done = true; }
-  if (sc < 0) return [];
-  var outList = [];
-  var px = sc + 1, py = sr, ux = -1, uy = 0;
-  var guard = 0, maxIt = W*H*20 + 200;
-  do {
-    var lc = leftCell(px, py, ux, uy);
-    var last = outList[outList.length - 1];
-    if (!last || last[0] !== lc[0] || last[1] !== lc[1]) outList.push([lc[0], lc[1]]);
-    var nx = px + ux, ny = py + uy;
-    var cands = [[ux,uy],[uy,-ux],[-uy,ux]];   // crossroad: straight first, then left, then right
-    var chosen = null;
-    for (var i = 0; i < 3 && !chosen; i++) {
-      var dux = cands[i][0], duy = cands[i][1];
-      var li = leftCell(nx, ny, dux, duy);
-      if (!interior(li[0], li[1])) continue;
-      var ri = rightCell(nx, ny, dux, duy);
-      if (!external(ri[0], ri[1], out)) continue;
-      chosen = cands[i];
-    }
-    if (!chosen) chosen = [ux, uy];
-    px = nx; py = ny; ux = chosen[0]; uy = chosen[1];
-  } while (!(px === sc + 1 && py === sr && ux === -1 && uy === 0) && guard++ < maxIt);
-  return outList;
+// 地图尺寸与镇中心坐标（v0.6.14 起按 CFG 派生，别再写死 11×15 / 7,5）
+const COLS = CFG.MAP_COLS, ROWS = CFG.MAP_ROWS;
+const CC = Math.floor(COLS / 2), CR = Math.floor(ROWS / 2);
+
+// ---- 测试工具 ----
+let pass = 0, fail = 0;
+const failures = [];
+function check(name, cond, detail) {
+  if (cond) { pass++; }
+  else { fail++; failures.push(name + (detail ? '  → ' + detail : '')); console.log('  ✗ ' + name + (detail ? '  → ' + detail : '')); }
 }
 
-function trimNeedles(cells) {
-  var changed = true;
-  while (changed && cells.length > 2) {
-    changed = false; var m = cells.length; var del = {};
-    for (var i = 0; i < m; i++) {
-      var prev = cells[(i-1+m)%m], next = cells[(i+1)%m];
-      if (prev[0] === next[0] && prev[1] === next[1]) { del[i] = true; changed = true; }
+// 支持字符：'#'=废墟 '.'=空地 'C'=镇中心 'E'=经济建筑
+//           'G'=金币地块（已清出=空地+金币）'g'=金币地块（仍在废墟中）（与游戏内导出按钮一致）
+function setupFromRows(rows) {
+  GS.grid = [];
+  GS.goldTiles = [];
+  for (let r = 0; r < ROWS; r++) {
+    const row = [];
+    for (let c = 0; c < COLS; c++) {
+      const ch = rows[r][c];
+      const isGold = ch === 'G' || ch === 'g';
+      row.push({
+        t: (ch === '#' || ch === 'X' || ch === 'g') ? 'rubble' : 'blank',
+        gold: isGold, harvested: false,
+        b: ch === 'E' ? { type: 'econ', c: c, r: r } : (ch === 'C' ? { type: 'core', c: c, r: r } : null)
+      });
+      if (ch === 'C') GS.core = { type: 'core', c: c, r: r };
+      if (isGold) GS.goldTiles.push({ c: c, r: r });
     }
-    if (!changed) break;
-    var nxt = [];
-    for (var j = 0; j < m; j++) if (!del[j]) nxt.push(cells[j]);
-    cells = nxt;
+    GS.grid.push(row);
   }
-  // merge consecutive dup
-  if (cells.length > 1) { var mg = [cells[0]]; for (var q = 1; q < cells.length; q++) if (cells[q][0]!==mg[mg.length-1][0]||cells[q][1]!==mg[mg.length-1][1]) mg.push(cells[q]); cells = mg; }
-  return cells;
-}
-function smoothDiag(cells, out) {
-  var res = [];
-  for (var i = 0; i < cells.length; i++) {
-    var A = cells[i], B = cells[(i+1)%cells.length];
-    res.push(A);
-    if (Math.abs(A[0]-B[0]) === 1 && Math.abs(A[1]-B[1]) === 1) {
-      var c1 = [A[0], B[1]], c2 = [B[0], A[1]], br = null;
-      if (cleared[c1[1]] && cleared[c1[1]][c1[0]]) br = c1;
-      else if (cleared[c2[1]] && cleared[c2[1]][c2[0]]) br = c2;
-      if (!br) continue;   // bridge only on a blank cell — never place rail on rubble
-      if (br[0]===A[0]&&br[1]===A[1]) continue;
-      if (br[0]===B[0]&&br[1]===B[1]) continue;
-      res.push(br);
-    }
-  }
-  return res;
+  GS.buildings = [GS.core];
+  GS.railPath = []; GS.railSet = {}; GS.railRect = null; GS.railGrowHints = [];
 }
 
-// Strip any residual diagonal-adjacent rail step so a true 45 deg segment is IMPOSSIBLE.
-// At a diagonal pinch, borrow nothing and never place on rubble: first bridge on a blank
-// corner if one exists (handled by smoothDiag); else CUT THE NOTCH — remove the offending
-// blank cell so the loop routes around, keeping each remaining step orthogonally adjacent.
-function adjPos(a, b) { var dx = Math.abs(a[0]-b[0]); var dy = Math.abs(a[1]-b[1]); return dx + dy === 1; }   // strictly orthogonal: diagonal rejoin cascades and eats cells
-function delIdx(cells, idx) { var out = []; for (var j = 0; j < cells.length; j++) if (j !== idx) out.push(cells[j]); return out; }
-function stripDiag(cells) {
-  var guarded = 0;
-  while (cells.length > 3 && guarded++ < 2000) {
-    var n = cells.length, acted = false;
-    for (var i = 0; i < n; i++) {
-      var A = cells[i], B = cells[(i + 1) % n];
-      if (!(Math.abs(A[0]-B[0]) === 1 && Math.abs(A[1]-B[1]) === 1)) continue;
-      var P = cells[(i - 1 + n) % n], C = cells[(i + 2) % n];
-      if (adjPos(A, C)) { cells = delIdx(cells, (i + 1) % n); acted = true; break; }   // remove B, reconnect P-A-C
-      else if (adjPos(P, B)) { cells = delIdx(cells, i); acted = true; break; }        // remove A, reconnect P-B-C
-      else if (adjPos(P, C)) {                                                          // cut the notch: remove A & B, route P-C
-        var nxt = []; for (var j = 0; j < n; j++) { if (j === i || j === (i + 1) % n) continue; nxt.push(cells[j]); }
-        cells = nxt; acted = true; break;
+function key(p) { return p.c + ',' + p.r; }
+
+// 同一格出现几次（1 = 普通通行格，2 = 十字）
+function visitMap(ring) {
+  const m = {};
+  for (const p of ring) { const k = key(p); m[k] = (m[k] || 0) + 1; }
+  return m;
+}
+// 十字数 = 出现 ≥2 次的格数
+function crossCount(ring) {
+  const m = visitMap(ring);
+  let n = 0;
+  for (const k in m) if (m[k] >= 2) n++;
+  return n;
+}
+// ---- ⚠️ 三个量的口径（v0.6.18 明确，别再混；详见 state.js 顶部同名小节）----
+//   steps(ring) = ring.length        —— 步数（序列长度，含重复经过的格）＝导出 rail(N) 的 N
+//   cells(ring) = 去重后的格数
+//   crossCount  = 被走 ≥2 次的格数（十字）
+//   关系：steps ≥ cells；steps − cells = crossCount
+//   ⚠️ 断言里写 `GS.railPath.length` 时，文案请说"步数"，别说"格数/环长"——
+//      过去的用例正因措辞含糊，把两者混过一轮（v0.6.17 那轮）。
+function stepsOf(ring) { return ring ? ring.length : 0; }
+function cellsOf(ring) {
+  const m = visitMap(ring || []);
+  return Object.keys(m).length;
+}
+
+// 环的合法性（v0.6 欧拉版 → v0.8.0 往返支线版）：
+//   能铺轨 / 相邻正交 / **每条边最多走 2 次、且第 2 次必须与第 1 次反向**
+//   （= 往返支线：进桥绕一圈原路出桥，列车全程不倒车；同向重走仍非法） /
+//   每格最多走 2 次（边使用次数 ≤4）/ 整体连通（只有一条走线）/ 把镇中心围在里面
+function ringError(ring) {
+  if (!ring) return 'ring 为空';
+  if (ring.length < 4) return '环太短 ' + ring.length;
+
+  for (const p of ring) {
+    if (!CFG.inBounds(p.c, p.r)) return '越界 ' + key(p);
+    const cell = GS.grid[p.r][p.c];
+    if (cell.t !== 'blank' || cell.b) return '压了不可铺轨格 ' + key(p);
+  }
+
+  const edges = {}, directed = {};
+  for (let i = 0; i < ring.length; i++) {
+    const a = ring[i], b = ring[(i + 1) % ring.length];
+    if (Math.abs(a.c - b.c) + Math.abs(a.r - b.r) !== 1) return '非正交 ' + key(a) + '→' + key(b);
+    const ka = key(a), kb = key(b);
+    const e = ka < kb ? ka + '|' + kb : kb + '|' + ka;
+    edges[e] = (edges[e] || 0) + 1;
+    if (edges[e] > 2) return '同一条边走了 ' + edges[e] + ' 次（上限 2）' + e;
+    const dk = ka + '>' + kb;
+    if (directed[dk]) return '同向重走同一条边（违反往返必反向）' + dk;
+    directed[dk] = 1;
+  }
+
+  const vm2 = visitMap(ring);
+  for (const k in vm2) {
+    if (vm2[k] * 2 > 4) return '格 ' + k + ' 度数 ' + (vm2[k] * 2) + ' 超过 4（走了 ' + vm2[k] + ' 次）';
+  }
+
+  // 连通性：边集必须连成一片（否则是多个环）
+  const adj = {};
+  for (const e in edges) {
+    const parts = e.split('|');
+    (adj[parts[0]] = adj[parts[0]] || []).push(parts[1]);
+    (adj[parts[1]] = adj[parts[1]] || []).push(parts[0]);
+  }
+  const keys = Object.keys(vm2);
+  const seen = {}; seen[keys[0]] = 1;
+  const st = [keys[0]];
+  while (st.length) {
+    const u = st.pop();
+    for (const v of (adj[u] || [])) if (!seen[v]) { seen[v] = 1; st.push(v); }
+  }
+  for (const k of keys) if (!seen[k]) return '不连通（分成多片）';
+
+  // 围住镇中心：把环当墙，从地图边界 4 连通泛洪，看镇中心还通不通到外面
+  const wall = {};
+  for (const p of ring) wall[key(p)] = 1;
+  const flood = {};
+  const q = [];
+  const push = (c, r) => {
+    if (!CFG.inBounds(c, r)) return;
+    const k = c + ',' + r;
+    if (wall[k] || flood[k]) return;
+    flood[k] = 1; q.push([c, r]);
+  };
+  for (let c = 0; c < COLS; c++) { push(c, 0); push(c, ROWS - 1); }
+  for (let r = 0; r < ROWS; r++) { push(0, r); push(COLS - 1, r); }
+  while (q.length) {
+    const cur = q.shift();
+    push(cur[0] + 1, cur[1]); push(cur[0] - 1, cur[1]);
+    push(cur[0], cur[1] + 1); push(cur[0], cur[1] - 1);
+  }
+  if (flood[key(GS.core)]) return '没围住镇中心';
+  return null;
+}
+
+function gridText(title, f) {
+  const L = [title, '     ' + Array.from({ length: COLS }, (_, c) => String(c % 10)).join(' ')];
+  for (let r = 0; r < ROWS; r++) {
+    let s = 'r' + String(r).padStart(2, ' ') + '  ';
+    for (let c = 0; c < COLS; c++) s += f(c, r) + ' ';
+    L.push(s);
+  }
+  return L.join('\n');
+}
+
+console.log('='.repeat(64));
+console.log('铁轨算法回归测试（v0.8.0 往返支线版）');
+console.log('='.repeat(64));
+
+// ---------------------------------------------------------------------------
+// 1) 黄金用例：大王画的 26 格外轮廓大环
+//    这条走的是「每格只走一次」的哈密顿分支（补格 5 个、十字 0 个），必须逐格一致
+// ---------------------------------------------------------------------------
+const GOLDEN = [
+  '#00#0#11#E#', '0#000#11#0#', '0##0#1110#0', '0000#101#00', '00##E1#1###',
+  '#0##1101#0#', '###11001#00', '0##11C0110#', '####11111#0', '###0#####00',
+  '###00000#0#', '00E0000000#', '#000#00##0#', '##0##0#0#00', '#00#00##E#0'];
+console.log('\n[1] 黄金用例：大王的 26 格「外轮廓大环」');
+{
+  const t = Date.now();
+  setupFromRows(GOLDEN);
+  GS.recomputeRails();
+  const ms = Date.now() - t;
+
+  const expect = [], got = [];
+  for (let r = 0; r < ROWS; r++) for (let c = 0; c < COLS; c++) if (GOLDEN[r][c] === '1') expect.push(c + ',' + r);
+  for (const p of GS.railPath) got.push(key(p));
+  const gset = new Set(got);
+
+  // 黄金用例是 26 格的外轮廓大环：此处 26 格恰好无十字 → 步数 == 格数 == 26
+  check('步数 = 26（该盘面无十字，故步数=格数）', stepsOf(GS.railPath) === 26,
+    '实际 ' + stepsOf(GS.railPath) + ' 步 / ' + cellsOf(GS.railPath) + ' 格');
+  check('逐格与大王一致', expect.length === got.length && expect.every(k => gset.has(k)),
+    '缺 ' + expect.filter(k => !gset.has(k)).join(' ') + ' / 多 ' + got.filter(k => expect.indexOf(k) < 0).join(' '));
+  check('环合法（正交/无往返/围住镇中心）', !ringError(GS.railPath), ringError(GS.railPath));
+  check('无十字（干净外轮廓）', crossCount(GS.railPath) === 0, '十字 ' + crossCount(GS.railPath) + ' 个');
+  console.log('    耗时 ' + ms + 'ms，十字 ' + crossCount(GS.railPath) + ' 个');
+  console.log('    ' + gridText('【输出】O=铁轨', (c, r) => GOLDEN[r][c] === '1' ? 'O' : (GOLDEN[r][c] === '#' ? '#' : (GOLDEN[r][c] === 'E' ? 'E' : (GOLDEN[r][c] === 'C' ? 'C' : '.')))));
+}
+
+// ---------------------------------------------------------------------------
+// 2) 开局：只有镇中心 3x3
+// ---------------------------------------------------------------------------
+console.log('\n[2] 开局局面（只有 3x3 空白）');
+{
+  const rows = [];
+  for (let r = 0; r < ROWS; r++) { let s = ''; for (let c = 0; c < COLS; c++) s += '#'; rows.push(s.split('')); }
+  for (let dr = -1; dr <= 1; dr++) for (let dc = -1; dc <= 1; dc++) rows[CR + dr][CC + dc] = '0';
+  rows[CR][CC] = 'C';
+  setupFromRows(rows.map(a => a.join('')));
+  GS.recomputeRails();
+  check('开局环 8 步（3x3 外圈，无十字故步数=格数）', stepsOf(GS.railPath) === 8,
+    '实际 ' + stepsOf(GS.railPath) + ' 步 / ' + cellsOf(GS.railPath) + ' 格');
+  check('开局环合法', !ringError(GS.railPath), ringError(GS.railPath));
+}
+
+// ---------------------------------------------------------------------------
+// 3) 边界情况
+// ---------------------------------------------------------------------------
+console.log('\n[3] 边界情况');
+{
+  // 全空白
+  const all = [];
+  for (let r = 0; r < ROWS; r++) { let s = ''; for (let c = 0; c < COLS; c++) s += '0'; all.push(s); }
+  const a = all.map(s => s.split('')); a[CR][CC] = 'C';
+  setupFromRows(a.map(x => x.join('')));
+  GS.recomputeRails();
+  check('全空白 → 合法环', !ringError(GS.railPath), ringError(GS.railPath));
+  console.log('    全空白 步数 = ' + stepsOf(GS.railPath) + ' / 格数 ' + cellsOf(GS.railPath) +
+    '，十字 ' + crossCount(GS.railPath) + ' 个');
+
+  // 全废墟（只有镇中心，四周没空白）
+  const b = [];
+  for (let r = 0; r < ROWS; r++) { let s = ''; for (let c = 0; c < COLS; c++) s += '#'; b.push(s); }
+  const b2 = b.map(s => s.split('')); b2[CR][CC] = 'C';
+  setupFromRows(b2.map(x => x.join('')));
+  GS.recomputeRails();
+  check('全废墟 → 无环且不报错', stepsOf(GS.railPath) === 0, '实际 ' + stepsOf(GS.railPath));
+
+  // 3x3 + 1 格宽走廊（走廊会被规则 3 削掉，环应保持核心那 8 格）
+  const c = [];
+  for (let r = 0; r < ROWS; r++) { let s = ''; for (let k = 0; k < COLS; k++) s += '#'; c.push(s); }
+  const c2 = c.map(s => s.split(''));
+  for (let dr = -1; dr <= 1; dr++) for (let dc = -1; dc <= 1; dc++) c2[CR + dr][CC + dc] = '0';
+  c2[CR][CC] = 'C';
+  for (let k = 1; k <= 3; k++) c2[CR][k] = '0';
+  setupFromRows(c2.map(x => x.join('')));
+  GS.recomputeRails();
+  check('3x3 + 1格宽走廊 → 环仍合法', !ringError(GS.railPath), ringError(GS.railPath));
+  check('1 格宽走廊被削掉、环 = 核心 8 步', stepsOf(GS.railPath) === 8,
+    '实际 ' + stepsOf(GS.railPath) + ' 步 / ' + cellsOf(GS.railPath) + ' 格');
+  console.log('    步数 = ' + stepsOf(GS.railPath) + '（走廊 1 格宽，规则 3 提前削掉，符合预期）');
+}
+
+// ---------------------------------------------------------------------------
+// 4) 随机地图压力
+// ---------------------------------------------------------------------------
+console.log('\n[4] 随机地图压力（200 张，45% 废墟）');
+{
+  let noRing = 0, total = 0, maxMs = 0, bad = 0, withCross = 0, crossSum = 0;
+  for (let iter = 0; iter < 200; iter++) {
+    const rows = [];
+    for (let r = 0; r < ROWS; r++) { let s = ''; for (let c = 0; c < COLS; c++) s += (Math.random() < 0.45 ? '#' : '0'); rows.push(s); }
+    const A = rows.map(s => s.split(''));
+    for (let dr = -1; dr <= 1; dr++) for (let dc = -1; dc <= 1; dc++) A[CR + dr][CC + dc] = '0';
+    A[CR][CC] = 'C';
+    setupFromRows(A.map(x => x.join('')));
+    const t = Date.now();
+    GS.recomputeRails();
+    const ms = Date.now() - t;
+    total += ms; if (ms > maxMs) maxMs = ms;
+    if (!GS.railPath.length) { noRing++; continue; }
+    const err = ringError(GS.railPath);
+    if (err) { bad++; if (bad <= 3) console.log('    ✗ 非法环: ' + err); }
+    const cc = crossCount(GS.railPath);
+    if (cc > 0) { withCross++; crossSum += cc; }
+  }
+  check('随机地图无非法环', bad === 0, bad + ' 张非法');
+  console.log('    无环 ' + noRing + '/200，平均 ' + (total / 200).toFixed(1) + 'ms，最大 ' + maxMs + 'ms');
+  console.log('    含十字的局面 ' + withCross + '/200，平均十字 ' + (withCross ? (crossSum / withCross).toFixed(1) : 0) + ' 个');
+}
+
+// ---------------------------------------------------------------------------
+// 5) 细脖子局面（大王截图的真实盘面）
+//    地形是一条带 1 格宽脖子的零散空白区。环必须合法；长度只记录、不断言，
+//    这样能直接看见"规则 3 削掉脖子之后剩下多大一块"。
+// ---------------------------------------------------------------------------
+console.log('\n[5] 细脖子局面（截图盘面）');
+{
+  const SHOT = [
+    '###..#..##.', '.#..#...#..', '###E###..##', '#.##..##.#.', '...#..##.##',
+    '#...#.#...#', '#..#...#...', '..#..C..E.E', '#.#.....#..', '.###..#.###',
+    '#.....#..#.', '..#..###...', '##...#.###.', '###E.#..#.#', '#.#.##.#...'];
+  setupFromRows(SHOT);
+  GS.recomputeRails();
+  check('细脖子局面 → 环合法', !ringError(GS.railPath), ringError(GS.railPath));
+  check('扩张提示已移除（GS.railGrowHints 恒为空数组）',
+    Array.isArray(GS.railGrowHints) && GS.railGrowHints.length === 0,
+    '实际 ' + JSON.stringify(GS.railGrowHints));
+  console.log('    步数 = ' + stepsOf(GS.railPath) + ' / 格数 ' + cellsOf(GS.railPath) +
+    '，十字 ' + crossCount(GS.railPath) + ' 个'
+    + '（规则 3 会先削掉 1 格宽脖子，剩下的就是"处处 ≥2 格宽"那块地）');
+  console.log('    ' + gridText('【输出】O=铁轨 #=废墟 .=空白', (c, r) =>
+    GS.railSet[c + ',' + r] ? 'O' : (SHOT[r][c] === '#' ? '#' : (SHOT[r][c] === 'E' ? 'E' : ' '))));
+}
+
+// 覆盖数：环压住「当前轮廓位图 GS.contourB」里多少个格（十字重复经过只计一次）。
+// 这是反缩水的正确度量（v0.6.4）：旧环是否留用、新环是否换上，都以此为准 ——
+// 「步数」口径是错的：区域长大後旧环不合身但更长，按长度比会一直压过更贴合的新解
+// （2026-09-21 大王导出盘面复现：旧 58 步环覆盖 43/85，一直压着 56 步 46/85 的新解）。
+function contourCovTest(ring) {
+  const seen = {}; let cov = 0;
+  for (const p of ring) {
+    const z = p.r * COLS + p.c;
+    if (GS.contourB[z] && !seen[z]) { seen[z] = 1; cov++; }
+  }
+  return cov;
+}
+
+// ---------------------------------------------------------------------------
+// 6) 单调性：只清不建，环的「轮廓覆盖数」不下降
+//    （覆盖数口径：换环只允许发生在新环覆盖数 ≥ 旧环覆盖数时；
+//      旧版按「步数」比较，会保留更长但早已不合身的旧环 —— 已废弃）
+// ---------------------------------------------------------------------------
+console.log('\n[6] 单调性（只清废墟，覆盖数不下降）');
+{
+  let regress = 0, updated = 0, steps = 0;
+  for (let iter = 0; iter < 60; iter++) {
+    const rows = [];
+    for (let r = 0; r < ROWS; r++) { let s = ''; for (let c = 0; c < COLS; c++) s += (Math.random() < 0.55 ? '#' : '0'); rows.push(s); }
+    const A = rows.map(s => s.split(''));
+    for (let dr = -1; dr <= 1; dr++) for (let dc = -1; dc <= 1; dc++) A[CR + dr][CC + dc] = '0';
+    A[CR][CC] = 'C';
+    setupFromRows(A.map(x => x.join('')));
+    GS.recomputeRails();
+    for (let step = 0; step < 4; step++) {
+      // 随机清掉一格废墟（不动建筑、不动铁轨所在格）
+      const cand = [];
+      for (let r = 0; r < ROWS; r++) for (let c = 0; c < COLS; c++) if (GS.grid[r][c].t === 'rubble' && !GS.grid[r][c].b) cand.push({ c: c, r: r });
+      if (!cand.length) break;
+      const pick = cand[Math.floor(Math.random() * cand.length)];
+      GS.grid[pick.r][pick.c].t = 'blank';
+      const keep = GS.railPath.slice();
+      GS.recomputeRails();                       // 重算后 GS.contourB 即清完后的新轮廓
+      steps++;
+      const covRef = contourCovTest(keep);       // 旧环在新轮廓上的覆盖数
+      const covNew = contourCovTest(GS.railPath);
+      if (covNew < covRef) {
+        regress++;
+        if (regress <= 3) console.log('    ✗ 清 (' + pick.c + ',' + pick.r + ') 后覆盖数 ' + covRef + ' 降到 ' + covNew);
       }
-      // unfixable here: keep scanning later diagonals, never give up on the whole list
-    }
-    if (!acted) break;
-  }
-  return cells;
-}
-function arrStr(a) {
-  var s = "[";
-  for (var i = 0; i < a.length; i++) { if (i) s += ","; s += "[" + a[i][0] + "," + a[i][1] + "]"; }
-  return s + "]";
-}
-function backForth(cc) {
-  var cnt = {}, dup = 0;
-  for (var i = 0; i < cc.length; i++) {
-    var A = cc[i], B = cc[(i+1)%cc.length];
-    var ka = A[0]+","+A[1], kb = B[0]+","+B[1];
-    var k = (ka < kb ? ka + "|" + kb : kb + "|" + ka);
-    cnt[k] = (cnt[k]||0)+1;
-  }
-  for (var x in cnt) if (cnt[x] > 1) dup += (cnt[x]-1);
-  return dup;
-}
-function pruneDeadEnds(cl) {
-  var H = cl.length, W = cl[0].length;
-  var mark = [];
-  for (var r = 0; r < H; r++) { mark.push([]); for (var c = 0; c < W; c++) mark[r].push(cl[r][c]); }
-  var d4 = [[1,0],[-1,0],[0,1],[0,-1]];
-  var changed = true;
-  while (changed) {
-    changed = false;
-    for (var r = 0; r < H; r++) for (var c = 0; c < W; c++) {
-      if (!mark[r][c]) continue;
-      var deg = 0;
-      for (var d = 0; d < 4; d++) { var nr = r + d4[d][0], nc = c + d4[d][1];
-        if (nr >= 0 && nr < H && nc >= 0 && nc < W && mark[nr][nc]) deg++; }
-      if (deg <= 1) { mark[r][c] = false; changed = true; }
+      if (GS.railPath.length !== keep.length) updated++;
     }
   }
-  return mark;
-}
-// Cut the smaller arc between two traversals of the same undirected edge (a reversal
-// pair). This removes 1-wide-stem pendant detours that force outline to re-walk cells.
-// The splice seam must stay orthogonally adjacent — if a cut would create a diagonal
-// step / jump (renderer pen-break + train diagonal), skip the cut and keep the doubled edge.
-function unCyc(cells) {
-  function orthAdj2(a, b) { return Math.abs(a[0]-b[0]) + Math.abs(a[1]-b[1]) === 1; }
-  function validCycle2(cs) {
-    if (cs.length < 4) return false;
-    for (var i = 0; i < cs.length; i++) if (!orthAdj2(cs[i], cs[(i+1)%cs.length])) return false;
-    return true;
-  }
-  function dedup2(arr) {
-    var out = [];
-    for (var q = 0; q < arr.length; q++) {
-      var cur = arr[q], prv = arr[(q-1+arr.length)%arr.length];
-      if (!(cur[0]===prv[0] && cur[1]===prv[1])) out.push(cur);
-    }
-    return out;
-  }
-  var changed = true;
-  while (changed && cells.length > 3) {
-    changed = false;
-    var n = cells.length;
-    var first = {};   // undirected-edge key -> first segment index
-    outer:
-    for (var i = 0; i < n; i++) {
-      var A = cells[i], B = cells[(i + 1) % n];
-      var ka = A[0] + "," + A[1], kb = B[0] + "," + B[1];
-      var key = (ka < kb) ? (ka + "|" + kb) : (kb + "|" + ka);
-      var j = first[key];
-      if (j === undefined) { first[key] = i; continue; }
-      // doubled edge: segments at j and i. arcs: (j+1..i) size=i-j; rest wraps size=n-(i-j).
-      var cutA = [], cutB = [];
-      for (var t = 0; t <= j; t++) cutA.push(cells[t]);
-      for (var t2 = i + 1; t2 < n; t2++) cutA.push(cells[t2]);
-      for (var t3 = 0; t3 <= i; t3++) cutB.push(cells[t3]);
-      for (var t4 = j + 1; t4 < n; t4++) cutB.push(cells[t4]);
-      var mA = dedup2(cutA), mB = dedup2(cutB);
-      var pick = null;
-      if (i - j <= n - (i - j)) pick = validCycle2(mA) ? mA : (validCycle2(mB) ? mB : null);
-      else pick = validCycle2(mB) ? mB : (validCycle2(mA) ? mA : null);
-      if (!pick) break outer;   // seam unclean: keep the doubled edge, never splice a diagonal
-      changed = true;
-      cells = pick;
-      break outer;
-    }
-  }
-  return cells;
+  check('只清不建时覆盖数不下降', regress === 0, regress + ' 次下降');
+  console.log('    覆盖数口径下发生换环的步数: ' + updated + ' / ' + steps);
 }
 
-function trace(name, seed) {
-  W = seed[0], H = seed[1];
-  var rows = seed.slice(2);
-  cleared = [];
-  for (var r = 0; r < H; r++) { cleared.push([]); for (var c = 0; c < W; c++) cleared[r].push(rows[r].charAt(c) === '#'); }
-  PRUNED = pruneDeadEnds(cleared);
-  cleared = PRUNED;   // downstream (external / smoothDiag) operate on pruned grid
-  var out = outFlood();
-  var cells = buildOutline(out);
-  // convert {c,r} to [c,r] then post-process
-  var cc = [];
-  for (var i2 = 0; i2 < cells.length; i2++) cc.push([cells[i2][0], cells[i2][1]]);
-  cc = trimNeedles(cc);
-  cc = smoothDiag(cc, out);
-  cc = trimNeedles(cc);
-  // cut 1-wide-stem pendant detours (reversal pairs) — fixes true back-and-forth
-  cc = unCyc(cc);
-  cc = trimNeedles(cc);
-  cc = smoothDiag(cc, out);
-  cc = trimNeedles(cc);
-  // last-resort: never leave a true 45 deg step
-  cc = stripDiag(cc);
-  // report
-  var errs = { diag: [], back: [] };
-  for (var i = 0; i < cc.length; i++) {
-    var A = cc[i], B = cc[(i+1)%cc.length];
-    if (Math.abs(A[0]-B[0]) === 1 && Math.abs(A[1]-B[1]) === 1) errs.diag.push([A[0],A[1]]);
+// ---------------------------------------------------------------------------
+// 7) 顺序生长：玩家一格一格清，环只能长不能塌
+// ---------------------------------------------------------------------------
+console.log('\n[7] 顺序生长不塌陷');
+{
+  setupFromRows(GOLDEN);
+  GS.recomputeRails();
+  const len0 = GS.railPath.length;
+  const seq = [[8, 5], [8, 6], [8, 1], [8, 3], [3, 5], [8, 0], [8, 4], [2, 5]];
+  let collapsed = 0, illegal = 0;
+  const trace = [len0], covTrace = [contourCovTest(GS.railPath)];
+  for (const pair of seq) {
+    const c = pair[0], r = pair[1];
+    if (GS.grid[r][c].t !== 'rubble') continue;
+    GS.grid[r][c].t = 'blank';
+    const keep = GS.railPath.slice();
+    GS.recomputeRails();
+    const len = GS.railPath.length;
+    trace.push(len);
+    const covRef = contourCovTest(keep), covNew = contourCovTest(GS.railPath);
+    covTrace.push(covNew);
+    const err = ringError(GS.railPath);
+    if (err) { illegal++; console.log('    ✗ 清 (' + c + ',' + r + ') 后环非法: ' + err); }
+    if (covNew < covRef) { collapsed++; console.log('    ✗ 清 (' + c + ',' + r + ') 后覆盖数从 ' + covRef + ' 降到 ' + covNew); }
   }
-  WScript.Echo("=== [" + name + "] WxH=" + W + "x" + H + " len=" + cc.length + " diagCorners=" + arrStr(errs.diag) + " backForth=" + backForth(cc));
-  WScript.Echo("path=" + arrStr(cc));
+  check('顺序清格时覆盖数不塌陷', collapsed === 0, collapsed + ' 次塌陷');
+  check('顺序清格时环始终合法', illegal === 0, illegal + ' 次非法');
+  console.log('    步数轨迹: ' + trace.join(' → '));
+  console.log('    覆盖数轨迹: ' + covTrace.join(' → '));
 }
 
-// test1: simple 3x3 block
-if (MODE === "all" || MODE === "fixed") {
-trace("test1",[5,5, ".....", ".###.", ".###.", ".###.", "....."]);
-// test2: diagonal-cut staircase region
-trace("test2",[6,6, "......", ".#....", ".##...", ".###..", ".####.", "......"]);
-// test3: a C-shape (deep concavity opening up, blank is interior)
-trace("test3",[7,6, "#######", "##....#", "#.....#", "#.....#", "#.....#", "#######"]);
-// test4: L-shape (concave corner)
-trace("test4",[6,6, "......", "......", "..####", "..####", "..####", "..####"]);
-// test5: 1-wide vertical neck tip (dead end) — cause of 往返
-trace("test5",[3,4, ".#.", ".#.", ".#.", ".#."]);
-// test7: 2-wide dangling arm off a horizontal bar (peninsula -> U-detour)
-trace("test7",[7,8, ".......", ".#####.", ".#####.", ".#####.", "..##...", "..##...", "..##...", "......."]);
-// test8: two 2-wide arms (screenshot-like winding)
-trace("test8",[11,9, "...........", ".########..", ".........#.", ".........#.", ".........#.", ".#####...#.", ".#####...#.", ".....##....", "..........."]);
-// test9: donut-ish / concave with hole (must NOT over-shortcut)
-trace("test9",[7,6, ".#####.", ".#...#.", ".#...#.", ".#...#.", ".#####.", "......."]);
-// test10: 2x2 dead-end lobe hanging off a 2-high block via a 1-wide neck (真 去返)
-trace("test10",[11,7, "...........", ".#########.", ".#########.", "........#..", "........##.", "........##.", "..........."]);
-// test6: 1-wide neck with econ-like side bump
-trace("test6",[5,7, "..#..", "..#..", "..#..", "..#..", "#.#..", "...#.", "....."]);
-// test11: dumbbell — two 2x2 blocks linked by a 1-wide neck
-trace("test11",[8,5, "........", ".##..##.", ".##..##.", "..#..#..", "........"]);
-// test12: teardrop/lobe — 2x2 lobe hanging from a 2-high block by a 1-wide stem (screenshot-like)
-trace("test12",[8,7, "........", ".#######", ".####...", "........", ".....###", ".....###", "........"]);
-// test13: three pendants around one block (multiple stems)
-trace("test13",[9,8, ".........", ".###.###.", ".###...##", "..#....#.", ".........", "...####..", "...####..", "........."]);
-
-// test14: checkerboard diagonal pinch — two blanks touching only at a corner, both L-corners rubble.
-// This is the exact "priority deadlock"; the loop must route around (cut the notch), never a 45°, never on rubble.
-trace("test14",[6,6, "......", "..#...", "..#...", "...#..", "..#...", "......"]);
+// ---------------------------------------------------------------------------
+// 8) 台阶 / 斜切角：外轮廓在相邻两行错位一格的盘面
+//    这是「哈密顿无解、必须靠十字」的那类形状（大王给的 011/111/110 就是最小例子）。
+//    盘面：中间一条 4 格宽的竖长空地，上下两端各收窄一格 → 轮廓上出现两处 1 格台阶。
+// ---------------------------------------------------------------------------
+console.log('\n[8] 台阶 / 斜切角盘面');
+{
+  const STEP = [
+    '###########', '###########', '###########', '######...##', '######....#',
+    '######....#', '######....#', '######.C..#', '######....#', '######....#',
+    '######...##', '###########', '###########', '###########', '###########'];
+  setupFromRows(STEP);
+  const t = Date.now();
+  GS.recomputeRails();
+  const ms = Date.now() - t;
+  const err = ringError(GS.railPath);
+  const cc = crossCount(GS.railPath);
+  check('台阶盘面 → 环合法', !err, err);
+  check('台阶盘面 → 解出大环（不塌成核心小环）', stepsOf(GS.railPath) > 8, '实际 ' + stepsOf(GS.railPath));
+  console.log('    步数 ' + stepsOf(GS.railPath) + ' / 格数 ' + cellsOf(GS.railPath) +
+    '，十字 ' + cc + ' 个，耗时 ' + ms + 'ms');
+  const vmStep = visitMap(GS.railPath);
+  console.log('    ' + gridText('【输出】O=铁轨 X=十字 #=废墟 .=空白', (c, r) => {
+    const k = c + ',' + r;
+    if (GS.railSet[k]) return vmStep[k] >= 2 ? 'X' : 'O';
+    return STEP[r][c] === '#' ? '#' : (STEP[r][c] === 'C' ? 'C' : ' ');
+  }));
 }
 
-// ---- stress: random connected regions, verify NO diagonal step & NO back-and-forth in ANY case ----
-function runGrid(name, cl) {
-  W = cl[0].length; H = cl.length;
-  cleared = cl;
-  PRUNED = pruneDeadEnds(cleared);
-  cleared = PRUNED;
-  var out = outFlood();
-  var cells = buildOutline(out);
-  var cc = []; for (var i0 = 0; i0 < cells.length; i0++) cc.push([cells[i0][0], cells[i0][1]]);
-  cc = trimNeedles(cc); cc = smoothDiag(cc, out); cc = trimNeedles(cc);
-  cc = unCyc(cc); cc = trimNeedles(cc); cc = smoothDiag(cc, out); cc = trimNeedles(cc);
-  cc = stripDiag(cc);
-  var diag = [];
-  for (var i = 0; i < cc.length; i++) {
-    var A = cc[i], B = cc[(i + 1) % cc.length];
-    if (Math.abs(A[0]-B[0]) === 1 && Math.abs(A[1]-B[1]) === 1) diag.push(A);
-  }
-  var bf = backForth(cc);
-  return { cc: cc, diag: diag, bf: bf };
-}
-function gridConnected(cl) {
-  var H = cl.length, W = cl[0].length, seen = [];
-  for (var r = 0; r < H; r++) { seen.push([]); for (var c = 0; c < W; c++) seen[r].push(false); }
-  var st = null;
-  outer: for (var rr = 0; rr < H; rr++) for (var cc = 0; cc < W; cc++) if (cl[rr][cc]) { st = [rr, cc]; break outer; }
-  if (!st) return true;
-  var cnt = 0, q = [st]; seen[st[0]][st[1]] = true;
-  while (q.length) { var p = q.pop(); cnt++; for (var d = 0; d < 4; d++) { var nr = p[0] + (d===0?1:d===1?-1:0), nc = p[1] + (d===2?1:d===3?-1:0); if (nr>=0&&nr<H&&nc>=0&&nc<W && !seen[nr][nc] && cl[nr][nc]) { seen[nr][nc] = true; q.push([nr,nc]); } } }
-  var total = 0; for (var a = 0; a < H; a++) for (var b = 0; b < W; b++) if (cl[a][b]) total++;
-  return cnt === total;
-}
-function genRegion(W, H, keep) {
-  var cl = []; for (var r = 0; r < H; r++) { cl.push([]); for (var c = 0; c < W; c++) cl[r].push(true); }
-  var order = []; for (var rr = 0; rr < H; rr++) for (var cc = 0; cc < W; cc++) order.push([cc, rr]);
-  for (var i = order.length - 1; i > 0; i--) { var j = Math.floor(Math.random() * (i + 1)); var t = order[i]; order[i] = order[j]; order[j] = t; }
-  var target = Math.floor(W * H * keep);
-  for (var k = 0; k < order.length && target < W * H; k++) {
-    // count true
-    var tc = 0; for (var a = 0; a < H; a++) for (var b = 0; b < W; b++) if (cl[a][b]) tc++;
-    if (tc <= target) break;
-    var x = order[k][0], y = order[k][1];
-    var was = cl[y][x];
-    cl[y][x] = false;
-    if (!gridConnected(cl)) { cl[y][x] = was; }
-  }
-  return cl;
-}
-var BAD = 0, RUNS = 0;
-if (MODE === "all" || MODE === "stress") {
-for (var s = 0; s < 4; s++) {
-  for (var w = 5; w <= 11; w += 2) for (var h = 5; h <= 11; h += 2) for (var it = 0; it < 3; it++) {
-    var keep = 0.35 + (s * 0.15);
-    var gl = genRegion(w, h, keep);
-    var R = runGrid("s", gl);
-    RUNS++;
-    if ((R.diag.length || R.bf) && R.cc.length >= 4) {   // len<4 degenerate hair: game falls back to euler
-      BAD++;
-      WScript.Echo("BAD keep=" + keep + " WxH=" + w + "x" + h + " diag=" + arrStr(R.diag) + " backForth=" + R.bf + " len=" + R.cc.length);
-    }
-  }
-}
-WScript.Echo("STRESS total=" + RUNS + " bad=" + BAD);
+// ---------------------------------------------------------------------------
+// 9) 斜切角（真的需要十字的盘面）
+//    这是从随机图里捞出来的真实局面，也是「哈密顿无解、必须欧拉」的实证：
+//      r6  ##.#OOO##..
+//      r7  .###OCO.###      C = 镇中心
+//      r8  .OOOXOO#.#.      X = 十字，(4,8) 格度数 = 4
+//      r9  #OOOO#...##
+//    环从镇中心正下方 (4,7) 下来、左边 (3,8) 横过来、右下方 (4,9) 还要继续 ——
+//    那个格必须"竖穿一次 + 横穿一次"，每格只走一次的哈密顿回路在这里无解。
+// ---------------------------------------------------------------------------
+console.log('\n[9] 斜切角盘面（必须用十字的实证）');
+{
+  const CROSSCASE = [
+    '00000####00', '####0#00##0', '00###0#0###', '###00#00##0', '#00#000#000',
+    '00##0####0#', '##0#000##00', '0###0C00###', '0000000#0#0', '#0000#000##',
+    '#0#000###00', '0#000###000', '00#0#0###00', '0###00##0#0', '0###0000##0'];
+  setupFromRows(CROSSCASE);
+  const t = Date.now();
+  GS.recomputeRails();
+  const ms = Date.now() - t;
+  const err = ringError(GS.railPath);
+  const cc = crossCount(GS.railPath);
+  check('斜切角盘面 → 环合法', !err, err);
+  check('斜切角盘面 → 用到至少 1 个十字', cc >= 1, '十字 ' + cc + ' 个');
+  // v0.6.10：十字上的通行方式由"直行优先"搜索决定（GS.straightenRing）。
+  // 该盘面的十字是直穿的（穷举 3 种配对验证过：只有直行那一种能保持单环）。
+  check('斜切角盘面 → 十字直行（拐弯数 0）', GS.countTurns(GS.railPath) === 0,
+    '拐弯数 ' + GS.countTurns(GS.railPath));
+  check('斜切角盘面 → 环只有一个（连通）', !err || err.indexOf('不连通') < 0, err);
+  console.log('    步数 ' + stepsOf(GS.railPath) + ' / 格数 ' + cellsOf(GS.railPath) +
+    '，十字 ' + cc + ' 个，耗时 ' + ms + 'ms');
+  const vmCross = visitMap(GS.railPath);
+  console.log('    ' + gridText('【输出】O=铁轨 X=十字 #=废墟 .=空白', (c, r) => {
+    const k = c + ',' + r;
+    if (GS.railSet[k]) return vmCross[k] >= 2 ? 'X' : 'O';
+    return CROSSCASE[r][c] === '#' ? '#' : (CROSSCASE[r][c] === 'C' ? 'C' : ' ');
+  }));
 }
 
-// ---- REAL-MODE: faithful port of state.js recomputeRails + buildOutline on the ACTUAL
-//      initial map (45% rubble, 3x3 core cleared, then BFS cleared region) ----
-// Detects: (a) any diagonal-consecutive step in the final railPath,
-//          (b) any renderer corner-borrow landing on a NON-blank cell.
-function realGrid() {
-  var W = 11, H = 15;
-  var t = []; for (var r = 0; r < H; r++) { t.push([]); for (var c = 0; c < W; c++) t[r].push((Math.random() < 0.45) ? 0 : 1); } // 0=rubble 1=blank
-  var cC = Math.floor(W / 2), cR = Math.floor(H / 2);
-  for (var dr = -1; dr <= 1; dr++) for (var dc = -1; dc <= 1; dc++) if (cC + dc >= 0 && cC + dc < W && cR + dr >= 0 && cR + dr < H) t[cR + dr][cC + dc] = 1;
-  // buildings: town center (core) + 4 initial econ buildings (chebyshev dist >= 3 from core)
-  var b = []; for (var r2 = 0; r2 < H; r2++) { b.push([]); for (var c2 = 0; c2 < W; c2++) b[r2][c2] = 0; }
-  b[cR][cC] = 1;
-  var placed = 0, attempts = 0;
-  while (placed < 4 && attempts < 500) {
-    attempts++;
-    var pc = Math.floor(Math.random() * W), pr = Math.floor(Math.random() * H);
-    if (b[pr][pc] || !t[pr][pc]) continue;
-    if (Math.max(Math.abs(pc - cC), Math.abs(pr - cR)) < 3) continue;
-    b[pr][pc] = 1; placed++;
-  }
-  return { W: W, H: H, t: t, b: b };
-  function R() { return Math.random; }
+// ---------------------------------------------------------------------------
+// 10) 缩圈 bug 的**真实**盘面（大王 2026-09-20 截图逐格还原）
+//     ⚠️ 注意[5]那张盘面并不是这张 —— [5]的盘面在 v0.6.1 下本来就能解出 22 格大环，
+//        所以它**盖不住**这个 bug。这张才是：容差阶梯 tol=0..6 全部无解，
+//        v0.6.1 只能退回"剥层"，把清空区从 42 格削到镇中心附近、铁轨塌成 8 格小环。
+//     v0.6.2 的「精确兜底」在同一张图上给出覆盖 21/32 轮廓格的 26 步大环（无十字，故步数=格数）。
+//     断言用"步数"做代理：轮廓格数在 recomputeRails 内部，测试侧拿不到。
+// ---------------------------------------------------------------------------
+console.log('\n[10] 缩圈 bug 真实盘面（截图逐格还原）');
+{
+  const SHOTBUG = [
+    '##.#.E....#', '.##......#.', '.##.###..##', '.#..#...#.#', '#.#.#.....#',
+    '#.##....##.', '.###...#E..', '.....C.....', '..##.....##', '#..#....E#.',
+    '...###..#.#', '.##..#....#', '####...###.', '##..###.##.', '#..#.E..#..'];
+  setupFromRows(SHOTBUG);
+  GS.recomputeRails();
+  const err = ringError(GS.railPath);
+  check('缩圈盘面 → 环合法', !err, err);
+  check('缩圈盘面 → 解出大环（不塌成 8 步小环）', stepsOf(GS.railPath) >= 20,
+    '实际 ' + stepsOf(GS.railPath) + ' 步（v0.6.1 只有 8 步）');
+  const vmBug = visitMap(GS.railPath);
+  console.log('    步数 = ' + stepsOf(GS.railPath) + ' / 格数 ' + cellsOf(GS.railPath) +
+    '，十字 ' + crossCount(GS.railPath) + ' 个'
+    + '（v0.6.1 在这张盘面上只有 8 步）');
+  console.log('    ' + gridText('【输出】O=铁轨 X=十字 #=废墟 .=空白', (c, r) => {
+    const k = c + ',' + r;
+    if (GS.railSet[k]) return vmBug[k] >= 2 ? 'X' : 'O';
+    return SHOTBUG[r][c] === '#' ? '#' : (SHOTBUG[r][c] === 'C' ? 'C' : (SHOTBUG[r][c] === 'E' ? 'E' : ' '));
+  }));
 }
-function realPort(g) {
-  var W = g.W, H = g.H, t = g.t, bl = g.b;
-  // 1) cleared = BFS blanks from core; building cells are obstacles, core cell itself unmarked
-  //    (mirror of fixed state.js: rail never passes through buildings)
-  var cleared = []; for (var r = 0; r < H; r++) { cleared.push([]); for (var c = 0; c < W; c++) cleared[r].push(false); }
-  var cC = Math.floor(W / 2), cR = Math.floor(H / 2);
-  var st = [[cC, cR]];
-  while (st.length) { var cur = st.pop(); var nb = [[cur[0]-1,cur[1]],[cur[0]+1,cur[1]],[cur[0],cur[1]-1],[cur[0],cur[1]+1]];
-    for (var i = 0; i < 4; i++) { var nx = nb[i][0], ny = nb[i][1];
-      if (nx < 0 || nx >= W || ny < 0 || ny >= H || cleared[ny][nx]) continue;
-      if (!t[ny][nx] || bl[ny][nx]) continue; cleared[ny][nx] = true; st.push([nx, ny]); } }
-  var clearedF = cleared;
-  // 2) prune
-  var pruned = pruneDeadEnds(clearedF);
-  // 3) outside
-  var outside = []; for (var a = 0; a < H; a++) { outside.push([]); for (var b = 0; b < W; b++) outside[a].push(false); }
-  var os = [];
-  for (var br = 0; br < H; br++) for (var bc = 0; bc < W; bc++)
-    if (!pruned[br][bc] && (br === 0 || bc === 0 || br === H - 1 || bc === W - 1)) { outside[br][bc] = true; os.push([br, bc]); }
-  while (os.length) { var op = os.pop(); var n4 = [[op[0]+1,op[1]],[op[0]-1,op[1]],[op[0],op[1]+1],[op[0],op[1]-1]];
-    for (var q = 0; q < 4; q++) { var orr = n4[q][0], occ = n4[q][1];
-      if (orr < 0 || orr >= H || occ < 0 || occ >= W || pruned[orr][occ] || outside[orr][occ]) continue;
-      outside[orr][occ] = true; os.push([orr, occ]); } }
-  // 4) outline via harness buildOutline (uses global PRUNED/cleared). Set globals to full-cleared semantics
-  //    to mirror state.js passing oriCleared=full for bridging.
-  W2 = W; H2 = H; PRUNED = pruned; cleared = clearedF;
-  var cells = buildOutlineApply(outside);
-  var cc = []; for (var i2 = 0; i2 < cells.length; i2++) cc.push([cells[i2][0], cells[i2][1]]);
-  cc = trimNeedles(cc); cc = smoothDiag(cc, outside); cc = trimNeedles(cc);
-  cc = unCyc(cc); cc = trimNeedles(cc); cc = smoothDiag(cc, outside); cc = trimNeedles(cc);
-  cc = stripDiag(cc);
-  // 5) checks
-  var diag = [];
-  for (var i = 0; i < cc.length; i++) {
-    var A = cc[i], B = cc[(i + 1) % cc.length];
-    if (Math.abs(A[0]-B[0]) === 1 && Math.abs(A[1]-B[1]) === 1) diag.push(A);
-  }
-  // each step distance must be exactly 1: diagonal (=2) makes the train run a 45-deg line and the renderer break the pen; >2 is a jump
-  var gap = [];
-  for (var g1 = 0; g1 < cc.length; g1++) {
-    var GA = cc[g1], GB = cc[(g1 + 1) % cc.length];
-    var gd = Math.abs(GA[0]-GB[0]) + Math.abs(GA[1]-GB[1]);
-    if (gd !== 1) gap.push([GA[0], GA[1], gd]);
-  }
-  // rail cells must never sit on a building cell (econ building / town center)
-  var onB = [];
-  for (var g2 = 0; g2 < cc.length; g2++) if (g.b[cc[g2][1]][cc[g2][0]]) onB.push(cc[g2]);
-  // renderer corner-borrow sim: for each diagonal pair pick corner like renderer, report if non-blank
-  var overRubble = [];
-  for (var k = 0; k < cc.length; k++) {
-    var a = cc[k], b = cc[(k + 1) % cc.length];
-    if (Math.abs(a[0]-b[0]) !== 1 || Math.abs(a[1]-b[1]) !== 1) continue;
-    var k1c = b[0], k1r = a[1], k2c = a[0], k2r = b[1];
-    var kc = k1c, kr = k1r;
-    if (!(t[k1r] && k1r < H && k1c < W && t[k1r][k1c] && !bl[k1r][k1c])) { kc = k2c; kr = k2r; }
-    if (!(t[kr] && kr < H && kc < W && t[kr][kc] && !bl[kr][kc])) overRubble.push([[a[0],a[1]],[b[0],b[1]]]);
-  }
-  return { cc: cc, diag: diag, overRubble: overRubble, gap: gap, onB: onB };
+
+// ---------------------------------------------------------------------------
+// 11) 金币格「在铁轨上 / 圈内」= 当前区域（v0.6.13，大王定案）
+//     依据大王 2026-09-23 导出的真实地图：最右两列想放 2 宽形状，唯一够格的
+//     第二个邻格就是 (8,8) 那枚**已铺轨的金币**。
+//     旧口径一律排除金币 → 相接只有 1 → 被拒；新口径应放行。
+//     反向断言：荒野里的孤立金币仍不算区域（防清飞地，v0.6.9b）。
+//     ⚠️ v0.6.14：地图收成 9×13，原 11×15 盘面按同构平移（镇中心 (4,6)、内区 col3-5
+//        row4-8、金币挖出后环贴着最右两列），断言结构不变。
+// ---------------------------------------------------------------------------
+console.log('\n[11] 金币格在铁轨上/圈内 → 算当前区域');
+{
+  const GOLDMAP = [
+    '###g###g#',   // r0
+    '#########',   // r1
+    '#########',   // r2
+    '#g#####.#',   // r3 (7,3) 邻接来源（在轨金币 (7,4) 的正上方）
+    '###.....G',   // r4 大空地（列 3-7）；(7,4) 已铺轨的金币
+    '###.....O',   // r5
+    '###.C...O',   // r6 镇中心 (4,6)
+    '###.....O',   // r7
+    '##.G....O',   // r8 (3,8) 圈内金币
+    '#g#####.#',   // r9
+    '#########',   // r10
+    '####g####',   // r11
+    '#########'    // r12
+  ];
+  const S2 = [[0, 0], [1, 0], [0, 1], [1, 1]];    // 2×2
+  setupFromRows(GOLDMAP);
+  GS.recomputeRails();
+
+  check('金币盘面 → 开局环合法', !ringError(GS.railPath), ringError(GS.railPath));
+  check('(7,4) 已铺轨的金币 → 算区域', GS.onRail(7, 4) === true && GS.goldInRegion(7, 4) === true,
+    '环上=' + GS.onRail(7, 4) + ' 步数=' + stepsOf(GS.railPath));
+  check('(3,8) 圈内金币 → 算区域', GS.goldInRegion(3, 8) === true, 'railInner=' + !!GS.railInner['3,8']);
+  check('(3,0) 荒野金币 → 不算区域', GS.goldInRegion(3, 0) === false);
+
+  const ct = ENG.shapeContacts(7, 3, S2);          // 2×2 落最右两列、row3-4
+  check('2×2 落最右两列 → 相接 ≥2（含在轨金币）', ct.count >= ENG.MIN_CONTACT, '相接 ' + ct.count);
+  check('2×2 落最右两列 → 可放置', ENG.applyShape(7, 3, S2) === true);
+
+  // 反面：荒野金币不能当落脚点 —— (2,0) 2×2 盖住荒野金币 (3,0)，四周全废墟
+  setupFromRows(GOLDMAP);
+  GS.recomputeRails();
+  const bad = ENG.applyShape(2, 0, S2);
+  check('荒野金币旁 → 仍被拒（防清飞地）',
+    ENG.shapeContacts(2, 0, S2).count < ENG.MIN_CONTACT && bad !== true, String(bad));
+  check('  被拒时地形不变（(2,0)/(3,0) 仍是废墟）',
+    GS.grid[0][2].t === 'rubble' && GS.grid[0][3].t === 'rubble');
 }
-var W2, H2;
-function buildOutlineApply(out) {
-  { var sc = -1, sr = -1, done = false, rr_, cc_;
-    for (rr_ = 0; rr_ < H2 && !done; rr_++) for (cc_ = 0; cc_ < W2 && !done; cc_++) if (interior(cc_, rr_)) { sc = cc_; sr = rr_; done = true; }
-    if (sc < 0) return [];
-    var outL = [];
-    var px = sc + 1, py = sr, ux = -1, uy = 0, guard = 0, maxIt = W2*H2*20 + 200;
-    do {
-      var lc = leftCell(px, py, ux, uy);
-      var last = outL[outL.length - 1];
-      if (!last || last[0] !== lc[0] || last[1] !== lc[1]) outL.push([lc[0], lc[1]]);
-      var nx = px + ux, ny = py + uy;
-      var cands = [[ux,uy],[uy,-ux],[-uy,ux]], chosen = null;   // crossroad: straight first
-      for (var i = 0; i < 3 && !chosen; i++) { var dux = cands[i][0], duy = cands[i][1];
-        var li = leftCell(nx, ny, dux, duy); if (!interior(li[0], li[1])) continue;
-        var ri = rightCell(nx, ny, dux, duy); if (!external(ri[0], ri[1], out)) continue;
-        chosen = cands[i]; }
-      if (!chosen) chosen = [ux, uy];
-      px = nx; py = ny; ux = chosen[0]; uy = chosen[1];
-    } while (!(px === sc + 1 && py === sr && ux === -1 && uy === 0) && guard++ < maxIt);
-    return outL;
-  }
+
+// ---------------------------------------------------------------------------
+// 12) 起点敏感盘面：DFS 起点写死 Bl[0] 会多出 2 个十字（v0.6.20）
+//     依据大王 2026-09-23 第二次导出（KDG-MAP v1 10:26:42）：
+//       轮廓 42 格、补格 20 个，唯一有解档 hLimit=11。
+//       逐起点实测：起点 (0,3)/(1,3)/(2,3) → 十字 1；Bl[0]=(2,0) 等 14 个 → 十字 3；
+//       其余 25 个 → 十字 4。写死起点恰好选中了较差的那一类。
+//     v0.6.18 在这张盘上解出 3 个十字（1,6 / 2,2 / 3,2）——大王指出左上两个是多余的。
+//     v0.6.20（起点在最外层、k* 档内多起点按三级字典序择优）→ 十字 1，只剩 1,6。
+//     穷举验证：A=B∪H 内所有合法欧拉环（632,674 个去重环）中最优就是十字 1（11 个解达到），
+//     十字 0 确实不存在 ⇒ 断言"十字 ≤ 1"（而非 ==0）才是正确口径。
+//     ⚠️ 断言选"十字数"而不是"步数"：步数是走法口径，会随起点变（54 vs 56 步），
+//        而玩家关心的是"轨道有没有多余的交叉"。
+// ---------------------------------------------------------------------------
+console.log('\n[12] 起点敏感盘面（DFS 起点决定十字数）');
+{
+  const STARTSENS = [
+    '##G.###g#',   // r0
+    '##..#####',   // r1
+    '....G.###',   // r2
+    'G.....###',   // r3
+    '###....G#',   // r4
+    '#G......#',   // r5
+    '....C...#',   // r6
+    'G.#....G#',   // r7
+    '###...###',   // r8
+    '###....#g',   // r9
+    '###G...##',   // r10
+    '......G#g',   // r11
+    'G...G####'];  // r12
+  setupFromRows(STARTSENS);
+  GS.recomputeRails();
+  const err12 = ringError(GS.railPath);
+  check('起点敏感盘面 → 环合法', !err12, err12);
+  const cc12 = crossCount(GS.railPath);
+  check('起点敏感盘面 → 十字 ≤ 1（写死 Bl[0] 时是 3）', cc12 <= 1, '实际 ' + cc12 + ' 个');
+  check('起点敏感盘面 → 覆盖不缩水（步数 ≥ 50）', stepsOf(GS.railPath) >= 50,
+    '实际 ' + stepsOf(GS.railPath) + ' 步');
+  console.log('    步数 = ' + stepsOf(GS.railPath) + ' / 格数 ' + cellsOf(GS.railPath) +
+    '，十字 ' + cc12 + ' 个' + (cc12 ? '（v0.6.18 是 3 个）' : ''));
+  const vm12 = visitMap(GS.railPath);
+  console.log('    ' + gridText('【输出】O=铁轨 X=十字 #=废墟 .=空白 G=金币 g=金币(埋)', (c, r) => {
+    const k = c + ',' + r;
+    if (GS.railSet[k]) return vm12[k] >= 2 ? 'X' : 'O';
+    return STARTSENS[r][c] === '#' ? '#' : (STARTSENS[r][c] === 'C' ? 'C' : STARTSENS[r][c]);
+  }));
 }
-var REALBAD = 0, ERR = null;
-if (MODE === "all" || MODE === "real") {
-for (var ri = 0; ri < 150; ri++) {
-  try {
-    var g = realGrid();
-    var R = realPort(g);
-    if (R.diag.length || R.overRubble.length || R.gap.length || R.onB.length) {
-      REALBAD++;
-      if (REALBAD <= 30) WScript.Echo("REAL BAD diag=" + arrStr(R.diag) + " overRubble=" + arrStr(R.overRubble) + " gap=" + arrStr(R.gap) + " onB=" + arrStr(R.onB) + " len=" + R.cc.length);
-    }
-  } catch (e) { ERR = "it=" + ri + " " + (e && e.message ? e.message : String(e)); if (ERR.indexOf("firsttime") < 0) { WScript.Echo("ERR " + ERR); ERR = "firsttime"; } }
+
+// ---------------------------------------------------------------------------
+// [13] 单边半岛往返支线（v0.8.0，大王 2026-09-24 07:21 盘的骨架复刻）
+//   右下 2×3 凸块挂在唯一桥边 (5,8)-(6,8) 上：闭合迹（每边 ≤1 次）数学上围不进去，
+//   旧解只能放弃 6 格（rail(12)）；v0.8.0 支线"桥边走 2 次（反向）"把它收编。
+//   理论最优 = 主环 12 + 桥边往返 2 + 半岛周环 6 = 20 步 / 18 格 / 2 十字（桥头 2 格）。
+// ---------------------------------------------------------------------------
+console.log('\n[13] 单边半岛往返支线（0721 盘骨架）');
+{
+  const PENIN = [
+    '#########',
+    '#########',
+    '#########',
+    '#########',
+    '###...###',
+    '###...###',
+    '###.C.###',
+    '###...###',
+    '###.....#',
+    '######..#',
+    '######..#',
+    '#########',
+    '#########'];
+  setupFromRows(PENIN);
+  GS.recomputeRails();
+  const err13 = ringError(GS.railPath);
+  check('单边半岛 → 走线合法（每边 ≤2 次且往返必反向）', !err13, err13);
+  check('单边半岛 → 半岛被收编（步数 ≥ 20）', stepsOf(GS.railPath) >= 20,
+    '实际 ' + stepsOf(GS.railPath) + ' 步（旧版只能 rail(12)）');
+  const cov13 = Object.keys(GS.railSet || {}).length;
+  check('单边半岛 → 覆盖 18 格（12 主环 + 6 半岛）', cov13 === 18, '实际 ' + cov13 + ' 格');
+  check('单边半岛 → 十字 = 2（桥头两格，不许多余折返）', crossCount(GS.railPath) === 2,
+    '实际 ' + crossCount(GS.railPath) + ' 个');
+  console.log('    步数 = ' + stepsOf(GS.railPath) + ' / 格数 ' + cellsOf(GS.railPath) +
+    '，十字 ' + crossCount(GS.railPath) + ' 个（旧版 rail(12)，放弃 6 格）');
 }
-WScript.Echo("REAL total=150 bad=" + REALBAD);
+
+// [14] 桥边约束（v0.8.2，大王 2026-09-24 10:42 盘的骨架复刻）
+//   主环南缘已盖住走廊，唯一欠收 = 西侧 2×4 金币半岛（挂单桥边 (1,9)-(1,10)）。
+//   v0.8.1 的 spur 会把三条非桥边各走两遍织成辫子（44 步/7 十字）；
+//   v0.8.2 桥边约束后应为干净解：主环 + 西半岛环 + 桥边往返 = 36 步 / 2 十字。
+// ---------------------------------------------------------------------------
+console.log('\n[14] 桥边约束（10:42 盘骨架）');
+{
+  const B1042 = [
+    '#g######g', '#########', '##g##g###', '#########',
+    'g##...##g', '###...###', '..#.C.#g#', 'G.#...###',
+    '..#...##g', '..#....##', '#G..G.G##', '#.....###', '#..G..#g#'];
+  setupFromRows(B1042);
+  GS.debugNoDeadline = true;
+  GS.recomputeRails();
+  const err14 = ringError(GS.railPath);
+  check('桥边约束 → 走线合法', !err14, err14);
+  check('桥边约束 → 西半岛被收编（覆盖 ≥ 30 格）', Object.keys(GS.railSet).length >= 30,
+    '实际 ' + Object.keys(GS.railSet).length + ' 格');
+  check('桥边约束 → 十字 ≤ 2（不织辫子）', crossCount(GS.railPath) <= 2,
+    '实际 ' + crossCount(GS.railPath) + ' 个（v0.8.1 编织解 7 个）');
+  console.log('    步数 = ' + stepsOf(GS.railPath) + ' / 格数 ' + cellsOf(GS.railPath) +
+    '，十字 ' + crossCount(GS.railPath) + ' 个（v0.8.1 编织解 44步/7十字）');
 }
+
+// [15] mv=1 起点豁免（v0.8.4，大王 2026-09-24 12:44 盘的骨架复刻）
+//   v0.6.x 起 BFS 剪枝把 vis=1 的起点挡在队外 → maxVisit=1 档 reachStart 恒 false，
+//   "优先每格一次的干净解"从未生效。此盘旧解 50步/2十字，干净解 48步/0十字 一直存在。
+// ---------------------------------------------------------------------------
+console.log('\n[15] mv=1 起点豁免（12:44 盘骨架）');
+{
+  const B1244 = [
+    '###G..G##', '###....##', 'g##..G###', '###...###',
+    '#G....##g', '#.....###', '###.C.###', '#G....##g',
+    '#.......#', '####...G#', '..G..G###', 'G.....###', '####g###g'];
+  setupFromRows(B1244);
+  GS.debugNoDeadline = true;
+  GS.recomputeRails();
+  const err15 = ringError(GS.railPath);
+  check('mv1豁免 → 走线合法', !err15, err15);
+  check('mv1豁免 → 十字 = 0（干净解被搜到）', crossCount(GS.railPath) === 0,
+    '实际 ' + crossCount(GS.railPath) + ' 个（修复前 2 个）');
+  check('mv1豁免 → 步数 ≤ 48（50 步带十字的旧解不再出现）', stepsOf(GS.railPath) <= 48,
+    '实际 ' + stepsOf(GS.railPath) + ' 步');
+  console.log('    步数 = ' + stepsOf(GS.railPath) + ' / 格数 ' + cellsOf(GS.railPath) +
+    '，十字 ' + crossCount(GS.railPath) + ' 个（修复前 50步/2十字）');
+}
+
+// ---------------------------------------------------------------------------
+console.log('\n' + '='.repeat(64));
+console.log(pass + ' 通过 / ' + fail + ' 失败');
+if (fail) { console.log('失败项：'); failures.forEach(f => console.log('  - ' + f)); process.exitCode = 1; }
+console.log('='.repeat(64));

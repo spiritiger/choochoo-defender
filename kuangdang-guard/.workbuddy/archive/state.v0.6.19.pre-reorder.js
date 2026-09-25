@@ -111,16 +111,12 @@ GS.placeGoldInit = function (n) {
 //   4) 外轮廓 B = ∂U：U 里那些"四邻有一个既不在 U 也不在 F（或出界）"的可铺轨格 —— 环的骨架。
 //   5) 补格 H：U 内、不是 B、但挨着 B 的可铺轨格。轮廓在"外扩一格 / 收窄一格"的拐点会错开
 //      半格，直接连会断链，需要拿它们垫桥。
-//   6) 求解：在 A = B ∪ H 上找一条**覆盖 B 格、围住镇中心**的闭合走线：
-//        · 主求解（①~④）：闭合迹（= 欧拉回路）—— 每条边最多走一次（= 不许在同一格往返）
+//   6) 求解：在 A = B ∪ H 上找一条**覆盖 B 格、围住镇中心**的闭合迹（= 欧拉回路）：
+//        · 每条边最多走一次（= 不许在同一格往返）
 //        · 每格度数必为偶数（网格里即 2 或 4）→ 自动排除死端(1) 与丁字(3)
 //        · 每格最多访问 2 次（2 次 = 十字）；优先"每格一次"的干净解，无解才放开十字
 //        · 先试 0 补格 → 1 补格 → …（补格上限逐级放宽，见 closedTrail 的 hLimit）；
 //          容差 tol = 允许放弃的轮廓格数（tol=0 = 必须全覆盖）
-//   6b) ⑤ 往返支线（v0.8.0，大王拍板）：主解之后追加一趟**每边 ≤2 次**的闭合走线
-//        —— 第 2 次必须与第 1 次反向（= 进去绕一圈原路出来，列车全程朝前开、不倒车）。
-//        用途：收编"挂在单条桥边上"的半岛组件（闭合迹数学上围不进它们，只能放弃）。
-//        只有覆盖数**严格大于**主解才采纳 —— 无支线机会的盘面零行为变更。见 spurSolver。
 //   7) 兜底三级（见 solveWithLadder）：① 容差阶梯 → ② 圈空间精确枚举 → ③ 剥层。
 //      完整的推导与实测数据在 docs/设计规格.md §2、docs/铁轨bug诊断-001.md §9。
 //
@@ -132,8 +128,6 @@ GS.placeGoldInit = function (n) {
 //     · **十字** = 环上被走 **≥2 次** 的格数（度数 4 的格）；
 //                  其余格都是被走 1 次（度数 2）。
 //   恒有关系：步数 ≥ 格数；步数 − 格数 = 十字数（每个十字多走一次）。
-//   （v0.8.0 往返支线走线同样满足：每格最多 2 次 ⇒ 多走的步数恰 = 十字数，
-//     其中"桥头十字"是 T 岔（度 3）——往返支线引进的新形态，渲染见 renderer.js。）
 //   例：大王 2026-09-23 那张盘面，修复前是 **24 步 / 22 格 / 2 十字**，
 //       修复后是 **22 步 / 22 格 / 0 十字** —— 格数没变、只是消掉了两个十字。
 //   写测试/报 bug 时请**指名是哪一个量**，不要只说"环长/长度"（历史上因这个混过一轮）。
@@ -161,13 +155,6 @@ GS.placeGoldInit = function (n) {
 // --- 扩张提示 ---------------------------------------------------------------
 //   GS.railGrowHints 已整套移除（原实现对每个候选格各跑一遍完整求解器，是重算里最贵的一块）。
 //   出口保留为空数组，UI 侧无需改动。
-// 两格（a、b）是否经由 x「直行通过」：相对 x 对称 ⇒ 共线穿过（= 对边 / 不拐弯）。
-//   相邻格只差 1，所以"坐标差之和为 0"就等价于"方向相反"。
-//   ⚠️ 这是**唯一**一处直行判据：straightenRing 的配对打分与 GS.countTurns 的拐弯统计都用它。
-function isStraightThrough(a, b, x) {
-  return (a.c - x.c) + (b.c - x.c) === 0 && (a.r - x.r) + (b.r - x.r) === 0;
-}
-
 GS.straightenRing = function (ring) {
   var L = ring.length, i, j, kk;
   if (L < 4) return ring;
@@ -239,7 +226,10 @@ GS.straightenRing = function (ring) {
     }
     return steps;
   };
-  // 直行判定 = 顶层 isStraightThrough（只此一处定义，见其注释）
+  // 两格是否"在十字两侧相对"（直行判定）
+  var isOpposite = function (a, b, X) {
+    return (a.c - X.c) + (b.c - X.c) === 0 && (a.r - X.r) + (b.r - X.r) === 0;
+  };
 
   // ⑤ 3 种配对：[[0,1],[2,3]] / [[0,2],[1,3]] / [[0,3],[1,2]]，每种得分 = 拐弯对数（0 或 2）
   var PAIRS = [[[0, 1], [2, 3]], [[0, 2], [1, 3]], [[0, 3], [1, 2]]];
@@ -258,7 +248,7 @@ GS.straightenRing = function (ring) {
         var A = n4b[PAIRS[oi][q][0]], B = n4b[PAIRS[oi][q][1]];
         pm0[ck][keyOf(A)] = keyOf(B);
         pm0[ck][keyOf(B)] = keyOf(A);
-        if (!isStraightThrough(A, B, Xc)) sc += 1;  // 这一对是拐弯
+        if (!isOpposite(A, B, Xc)) sc += 1;         // 这一对是拐弯
       }
       if (sc >= bestScore) okCombo = false;         // 剪枝：已经不如当前最优
     }
@@ -292,7 +282,7 @@ GS.countTurns = function (ring) {
     var p = ring[i];
     if (cnt[p.c + ',' + p.r] < 2) continue;
     var a = ring[(i - 1 + L) % L], b = ring[(i + 1) % L];
-    if (!isStraightThrough(a, b, p)) t++;
+    if (!((a.c - p.c) + (b.c - p.c) === 0 && (a.r - p.r) + (b.r - p.r) === 0)) t++;
   }
   return t;
 };
@@ -319,18 +309,7 @@ GS.recomputeRails = function () {
   var HMAX_CAP = 16;   // 补格数（H）上限：避免在怪图上白烧预算（旧名 KMAX_CAP，v0.6.18 改名对齐语义）
   var TOL_MAX = 6;     // 容差阶梯上限：允许放弃的轮廓格数（6 是实测拐点，见设计规格 §2 步骤 7）
   var RANK_CAP = 19;   // 圈空间维数上限：候选子图数 = 2^rank，19 → 最多 52.4 万；超了就跳过
-  var START_TRIES = 9; // 起点试跑上限（v0.6.19）：解档内最多换这么多个起点（详见 solveOnRegion）
-                       // ⚠️ 9 是实测拐点：大王 2026-09-23 那张盘 42 个起点里**只有 3 个**
-                       //    （si=8/9/10，即 (0,3)(1,3)(2,3)）能出十字 1，前 9 个恰好覆盖；
-                       //    再往上加到 12 只多花 200ms、结果不变（见 docs/铁轨bug诊断-001.md）。
-  var SPUR_XMAX = 8;   // ⑤ 支线解的十字上限（v0.8.0）：每个往返桥边自带 2 个桥头十字
-                       //    （进/出各多走一趟），普通十字盘面再叠 1~2 个 → 8 是宽裕上限。
-  var SPUR_BUDGET_MS = 150;  // ⑤ 支线求解器独立墙钟（v0.8.0）。它是增益通道不是保底通道，
-                       //    烧穿 = 保留主解，无正确性风险。
-                       //    ▍150 vs 250 实测（同 60 张随机中后期盘）：采纳数相同（18/60），
-                       //    avg 111→80ms、P90 298→198ms —— 多给的 100ms 一张盘都没多救回来，
-                       //    白烧。搜索运行 21/60、均摊 +55ms（对照 25ms）、贴满墙钟 ≈1/3。
-                       //    嫌卡先调这里；想多救极端盘再往上调。
+  var START_TRIES = 12;// 起点试跑上限（v0.6.19）：每个 ki 档最多换这么多个起点（详见 solveOnRegion）
 
   // 独立预算工厂（v0.6.5）：每一级兜底拿自己的新预算，上级烧穿不连坐下级。
   // debugNoDeadline = 测试用确定性开关（关墙钟，见 recomputeRails 末尾注释）。
@@ -554,18 +533,12 @@ GS.recomputeRails = function () {
   //    tol      —— 允许放弃的轮廓格数（容差）
   //    startIdx —— **DFS 起点在 Bl 里的下标**（v0.6.19 新增；不传 = 0 = 旧的"最上最左"）
   //                起点是搜索树的入口，不同入口能撞到的解不同（详见函数内起点注释）。
-  //    mm       —— 边最大使用次数（v0.8.0 新增，默认按调用方显式传入）：
-  //                1 = 每边最多走一次（旧口径，主求解 ①~④ 全用这个）；
-  //                2 = 允许"往返"——同一条边可走第 2 次，但**必须与第 1 次方向相反**
-  //                    （dirTo 记录第 1 次的终点，只有站在它上面才能折返回去）。
-  //                    这正是"支线进出"的语义：进桥绕一圈原路出桥，列车全程朝前不倒车。
-  //                    只有 ⑤ spurSolver 用 2。
   //
   //  ▍本函数产出的三个量（口径务必分清，详见 §13 与 docs/设计规范 §2）
   //    · 步数 = 返回序列的长度（含重复经过的格；对玩家 = 导出里的 `rail(N)`）
   //    · 格数 = **去重后**的格数
   //    · 十字 = 环上被走 **≥2 次**的格数
-  function closedTrail(B, Bl, H, A, budget, hLimit, maxVisit, xmax, tol, startIdx, mm, flip) {
+  function closedTrail(B, Bl, H, A, budget, hLimit, maxVisit, xmax, tol, startIdx) {
     if (Bl.length < 4) return null;
 
     // 邻居表预先摊平（每个节点最多 4 个邻居），热循环里不再做取模/越界判断
@@ -600,49 +573,6 @@ GS.recomputeRails = function () {
       }
     }
 
-    // ▍桥边表（v0.8.2，仅 mm=2 计算）：Tarjan 边双连通，一次 DFS 标出所有割边。
-    //   动机（10:42 盘）：⑤级若把非桥边走两遍，织出的"辫子解"不带来任何额外覆盖
-    //   （非桥边两侧本来就有别的路连通），纯费步数。约束"重数 2 的边必须是桥边"
-    //   = 支线只准用来收编"挂单桥的半岛"，正是 v0.8.0 立项的初衷。
-    //   mm=1 时 isBridge 为 null，热路径零开销（主解行为不变）。
-    //   显式栈版（迭代展开，避免深递归）：pe[v] = 进入 v 用的边 id（不走回头边）。
-    var isBridge = null;
-    if (mm === 2) {
-      isBridge = new Uint8Array(E);                  // 1 = 桥边（割边）
-      var disc = new Int32Array(N).fill(-1), low = new Int32Array(N), tstamp = 0;
-      // 根节点与 dfs 同式取（⚠️ 不能引用下面的 var start —— 它在这块之后才赋值，
-      //   提前引用是 undefined，桥边表会全零：0721 盘半岛失收的实锤教训）。
-      var rootN = (startIdx >= 0 && startIdx < Bl.length) ? Bl[startIdx] : Bl[0];
-      var ptr2 = new Int32Array(N);
-      var st2 = [rootN], pe = new Int32Array(N).fill(-1);
-      disc[rootN] = low[rootN] = tstamp++;
-      while (st2.length) {
-        var vn = st2[st2.length - 1];
-        var nb = vn * 4, nc2 = acnt[vn], moved = false;
-        while (ptr2[vn] < nc2) {
-          var ei2 = eidOf[nb + ptr2[vn]];
-          if (ei2 < 0) { ptr2[vn]++; continue; }
-          var wn = anbr[nb + ptr2[vn]];
-          if (ei2 === pe[vn]) { ptr2[vn]++; continue; }         // 不走回头边（重边另算）
-          if (disc[wn] >= 0) {
-            low[vn] = Math.min(low[vn], disc[wn]);              // 回边
-            ptr2[vn]++;
-          } else {
-            pe[wn] = ei2; disc[wn] = low[wn] = tstamp++;
-            st2.push(wn); moved = true; break;
-          }
-        }
-        if (!moved) {
-          st2.pop();
-          if (st2.length) {
-            var par = st2[st2.length - 1];
-            low[par] = Math.min(low[par], low[vn]);
-            if (low[vn] > disc[par]) isBridge[pe[vn]] = 1;      // 割边判定
-          }
-        }
-      }
-    }
-
     // ▍起点（v0.6.19 可指定）-----------------------------------------------
     //   旧版写死 `Bl[0]`（最上最左的轮廓格），理由是"结果可复现"。
     //   ⚠️ 但那是个真 bug：DFS 先命中先返回，**起点决定它沿哪条路搜** ——
@@ -653,12 +583,7 @@ GS.recomputeRails = function () {
     //   调用方 `solveOnRegion` 会逐个起点试、按三级字典序择优（见那里的注释）。
     var start = (startIdx >= 0 && startIdx < Bl.length) ? Bl[startIdx] : Bl[0];
 
-    // 边使用模型（v0.8.0）：旧版 usedEdge 布尔 → usedCnt 计数 + dirTo 方向记录。
-    //   mm=1 时判据退化为"用过就不能再走"，与旧版逐分支等价（A/B 已验证 0 差异）；
-    //   mm=2 时，用过 1 次的边只有从 dirTo（第 1 次的终点）出发才能走第 2 次 —— 天然
-    //   保证"第 2 次必与第 1 次反向"，不可能出现同向重走。
-    var usedCnt = new Uint8Array(E);
-    var dirTo = new Int32Array(E).fill(-1);    // 第 1 次使用的终点节点；-1 = 尚未使用
+    var usedEdge = new Uint8Array(E);
     var vis = new Uint8Array(N);
     var path = [start];
     vis[start] = 1;
@@ -699,29 +624,16 @@ GS.recomputeRails = function () {
         }
       }
 
-      // ---- 候选分组（v0.8.0）----
-      //   桶 0 = 直行未用边；桶 1 = 其余未用边；桶 2 = 折返边（用过 1 次、反向退回，mm=2 专属）。
-      //   · mm=1 时不存在桶 2，且"无直行边"时所有候选都落桶 0 —— 试边顺序与旧版
-      //     两趟循环逐分支等价（A/B 固定种子盘 0 差异），主求解行为不变；
-      //   · mm=2 时桶 2 排最后：能用没用过的边走就不走折返 —— 折返是"支线进出"的
-      //     专用动作，放最后能显著减少"随手折返"的邋遢解（实测十字数大幅下降）。
-      for (var pass = 0; pass < ((mm === 2) ? 3 : 2); pass++) {
+      for (var pass = 0; pass < 2; pass++) {
       for (t2 = 0; t2 < cnt; t2++) {
+        if (wantIdx >= 0) {
+          var isWant = (t2 === wantIdx);
+          if (pass === 0 && !isWant) continue;       // 第一轮只试直行边
+          if (pass === 1 && isWant) continue;        // 第二轮试其余
+        } else if (pass === 1) break;                // 无直行边 → 只跑一轮
         w = anbr[base + t2];
         e1 = eidOf[base + t2];
-        if (e1 < 0) continue;
-        var uc1 = usedCnt[e1];
-        // 边可用性：没用过 → 可走；用过 1 次且 mm=2 且站在第 1 次终点上 → 只能折返（反向）。
-        //   v0.8.2 桥边约束：折返（= 该边重数 2）只准发生在**桥边（割边）**上 ——
-        //   非桥边两侧本来就连通，双走不产生新覆盖，只会把走线织成辫子（10:42 盘教训）。
-        var goBack = (mm === 2 && uc1 === 1 && dirTo[e1] === cur && isBridge[e1] === 1);
-        if (uc1 !== 0 && !goBack) continue;
-        var grp = goBack ? (wantIdx >= 0 ? 2 : 1)
-                         : ((wantIdx >= 0 && t2 === wantIdx) ? 0 : (wantIdx >= 0 ? 1 : 0));
-        // v0.9 flip：直行/拐弯试序翻转（生成多样性 —— DFS 先命中先返回，直行优先会让
-        //   "拐弯支里的更优解"永远搜不到；flip 跑一遍拐弯优先补上另一半搜索空间）。
-        if (flip && !goBack && wantIdx >= 0) grp = (grp === 0 ? 1 : 0);
-        if (grp !== pass) continue;
+        if (e1 < 0 || usedEdge[e1]) continue;
 
         // 起点只作为"终点"出现一次：还没访问的轮廓格已不超过容差，且已经能接回起点 → 成环
         if (w === start) {
@@ -736,7 +648,7 @@ GS.recomputeRails = function () {
         isTwice = (vis[w] >= 1);
         if (isTwice && twiceUsed >= xmax) continue;
 
-        usedCnt[e1]++; if (uc1 === 0) dirTo[e1] = w; vis[w]++; path.push(w);
+        usedEdge[e1] = 1; vis[w]++; path.push(w);
         if (B[w] && vis[w] === 1) needLeft--;
         if (H[w] && vis[w] === 1) helpersUsed++;
         if (isTwice) twiceUsed++;
@@ -756,19 +668,9 @@ GS.recomputeRails = function () {
           if (B[u] && vis[u] === 0) reachB++;
           for (var t4 = 0; t4 < uc; t4++) {
             var e4 = eidOf[ub + t4];
-            if (e4 < 0) continue;
-            var uc4 = usedCnt[e4];
-            // 方向感知（v0.8.0）：没用过的边随便走；用过 1 次的边只有从第 1 次终点
-            // 才能折返 —— 站在别的端点方向走不过去，剪枝必须如实反映，否则会高估可达性。
-            //   v0.8.2：折返还必须是桥边（与前进判据同口径，否则剪枝高估可达性）。
-            if (uc4 !== 0 && !(mm === 2 && uc4 === 1 && dirTo[e4] === u && isBridge[e4] === 1)) continue;
+            if (e4 < 0 || usedEdge[e4]) continue;
             var v4 = anbr[ub + t4];
-            // ⚠️ v4 === start 必须豁免（v0.8.4 修）：起点 vis=1，若按 maxVisit 挡，
-            //   maxVisit=1 档的 BFS 永远 reachStart=false → mv=1 调用全灭（探针实锤：
-            //   每档只烧 1 个节点）。这个 bug 从 v0.6.x 就在 —— "优先每格一次的干净解"
-            //   设计从未生效过，历史上的十字 0 解全是 mv=2 碰巧先命中的（12:44 盘因此
-            //   出 50步/2十字，而 48步/0十字 的干净解一直在搜索空间里没人搜）。
-            if (stamp[v4] === curStamp || (vis[v4] >= maxVisit && v4 !== start)) continue;
+            if (stamp[v4] === curStamp || vis[v4] >= maxVisit) continue;
             stamp[v4] = curStamp; bfsQ[tail++] = v4;
           }
         }
@@ -782,10 +684,7 @@ GS.recomputeRails = function () {
             var bd0 = bs * 4, bc0 = acnt[bs], have = 0;
             for (var t5 = 0; t5 < bc0; t5++) {
               var e5 = eidOf[bd0 + t5];
-              var uc5 = e5 >= 0 ? usedCnt[e5] : 2;
-              // （v0.8.4）start 豁免同上：走到起点 = 合法的收环动作，不是死格。
-              if (e5 >= 0 && (vis[anbr[bd0 + t5]] < maxVisit || anbr[bd0 + t5] === start) &&
-                  (uc5 === 0 || (mm === 2 && uc5 === 1 && dirTo[e5] === bs && isBridge[e5] === 1))) { have = 1; break; }
+              if (e5 >= 0 && !usedEdge[e5] && vis[anbr[bd0 + t5]] < maxVisit) { have = 1; break; }
             }
             if (!have) { deadB++; if (deadB > tol) { ok = false; break; } }
           }
@@ -801,7 +700,7 @@ GS.recomputeRails = function () {
         if (B[w] && vis[w] === 1) needLeft++;
         vis[w]--;
         path.pop();
-        usedCnt[e1]--; if (usedCnt[e1] === 0) dirTo[e1] = -1;
+        usedEdge[e1] = 0;
       }
       }   // ← end of pass loop（直行优先：第一轮直行边，第二轮其余）
     }
@@ -815,29 +714,20 @@ GS.recomputeRails = function () {
 
   // 环是否把镇中心围在里面：把环当墙，从地图边界 4 连通洪水，看镇中心还通不通到外面。
   // （比射线法稳：十字会产生回折多边形，射线法的奇偶规则在自交处容易误判。）
-  // ▍通用工具（v0.6.21 抽出，原本 coreEnclosed / innerCells 各写了一遍）：
-  //   把 wall 当墙，从地图四边 4 连通洪水。
-  //   vis/cs 是"代际戳"（stamp）：每次调用 `cs++`，`vis[z] === cs` 即表示"本轮已访问"。
-  //   复用同一组 vis/q 缓冲、靠递增的 cs 区分轮次 —— 省掉每次调用新分配。
-  //   ⚠️ 调用方须保证 cs 单调递增（Int32 范围内）且 vis 初值为 0。
-  function floodFromBorder(wall, vis, cs, q) {
+  var encStamp = new Int32Array(N), encQ = new Int32Array(N), encCs = 0;
+  function coreEnclosed(wall) {
+    encCs++;
     var head = 0, tail = 0, i, p, pc, pr;
-    function put(z) { if (!wall[z] && vis[z] !== cs) { vis[z] = cs; q[tail++] = z; } }
+    function put(z) { if (!wall[z] && encStamp[z] !== encCs) { encStamp[z] = encCs; encQ[tail++] = z; } }
     for (i = 0; i < COLS; i++) { put(id(i, 0)); put(id(i, ROWS - 1)); }
     for (i = 0; i < ROWS; i++) { put(id(0, i)); put(id(COLS - 1, i)); }
     while (head < tail) {
-      p = q[head++]; pc = colOf(p); pr = rowOf(p);
+      p = encQ[head++]; pc = colOf(p); pr = rowOf(p);
       if (pc > 0) put(p - 1);
       if (pc < COLS - 1) put(p + 1);
       if (pr > 0) put(p - COLS);
       if (pr < ROWS - 1) put(p + COLS);
     }
-  }
-
-  var encStamp = new Int32Array(N), encQ = new Int32Array(N), encCs = 0;
-  function coreEnclosed(wall) {
-    encCs++;
-    floodFromBorder(wall, encStamp, encCs, encQ);
     return encStamp[id(CORE_C, CORE_R)] !== encCs;   // 镇中心没被淹到 → 被围住了
   }
   function enclosesCore(ring) {
@@ -849,34 +739,23 @@ GS.recomputeRails = function () {
   // 铁轨"圈内"集合（v0.6.13）：把铁轨格当墙，从地图四边 4 向灌水；灌不到的格子就是被环围住的内部。
   //   用途：金币格若"在铁轨上或铁轨内"，就视为已开发区的一部分（清理相接判定用，见 engine.js isRegion）。
   //   返回 { 'c,r': 1 }（只含内部格，不含铁轨格自身——铁轨格由 GS.railSet 表达）。
-  var inStamp = new Int32Array(N), inQ = new Int32Array(N), inCs = 0;
   function innerCells(ring) {
-    var wall = new Uint8Array(N), i;
+    var wall = new Uint8Array(N), vis = new Uint8Array(N), i;
     for (i = 0; i < ring.length; i++) wall[id(ring[i].c, ring[i].r)] = 1;
-    inCs++;
-    floodFromBorder(wall, inStamp, inCs, inQ);
+    var q = [], head = 0;
+    function put(p) { if (!wall[p] && !vis[p]) { vis[p] = 1; q.push(p); } }
+    for (i = 0; i < COLS; i++) { put(id(i, 0)); put(id(i, ROWS - 1)); }
+    for (i = 0; i < ROWS; i++) { put(id(0, i)); put(id(COLS - 1, i)); }
+    while (head < q.length) {
+      var p = q[head++], pc = colOf(p), pr = rowOf(p);
+      if (pc > 0) put(p - 1);
+      if (pc < COLS - 1) put(p + 1);
+      if (pr > 0) put(p - COLS);
+      if (pr < ROWS - 1) put(p + COLS);
+    }
     var set = {};
-    for (i = 0; i < N; i++) if (inStamp[i] !== inCs && !wall[i]) set[colOf(i) + ',' + rowOf(i)] = 1;
+    for (i = 0; i < N; i++) if (!vis[i] && !wall[i]) set[colOf(i) + ',' + rowOf(i)] = 1;
     return set;
-  }
-
-  // ▍环的「三个量」统计 + 三级字典序择优（v0.6.22 抽出为唯一定义）
-  //   口径见文件头「三个量」总纲：steps=序列长度、cells=去重格数、cross=被走 ≥2 次的格数。
-  //   cov = 环上属于轮廓位图 mark 的**去重**格数（mark 传 null 则不统计）。
-  //   同一套判据原先写了两遍（solveOnRegion 的 measure/better、finalRing 的 covOfRing+shapeOf），
-  //   合并到此处，避免"改了 A 忘了 B"导致两条择优路径口径分叉。
-  function ringStats(rr, mark) {
-    var vis = {}, cov = 0, cells = 0, cross = 0, i, pz;
-    for (i = 0; i < rr.length; i++) { pz = id(rr[i].c, rr[i].r); vis[pz] = (vis[pz] || 0) + 1; }
-    for (pz in vis) { cells++; if (vis[pz] >= 2) cross++; if (mark && mark[pz]) cov++; }
-    return { cov: cov, cross: cross, cells: cells };
-  }
-  // 三级字典序：a 是否严格优于 b —— ① 覆盖轮廓格数越多越好 ② 十字数越少越好 ③ 去重格数越少越好
-  //   ⚠️ **补格数不在字典序里**（v0.6.17 定案）：`hLimit` 阶梯只是"少用补格"的启发式手段。
-  function ringBetter(a, b) {
-    return a.cov > b.cov ||
-      (a.cov === b.cov && a.cross < b.cross) ||
-      (a.cov === b.cov && a.cross === b.cross && a.cells < b.cells);
   }
 
   // 6) 给定区域求环：轮廓 → 补格 → 闭合迹 → 必须围住镇中心
@@ -895,60 +774,57 @@ GS.recomputeRails = function () {
     }
     var hLimitCap = hcount < HMAX_CAP ? hcount : HMAX_CAP;
 
-    // ▍两阶段：先"定档"，再"档内多起点择优"（v0.6.19）
-    //   ▍为什么不能"每个起点各跑一遍完整阶梯"（v0.6.19 的第二次翻车，实测数据）
-    //     逐起点插桩量出：**单个起点跑完 0..hLimitCap 全部档要 15~47 万节点**
-    //       si=0 18.3万 / si=2 36.6万 / si=3 46.7万 / si=8 21.1万（命中档都是 ki=11）
-    //     ├ 12 个起点各跑一遍 = 300~560 万节点，**远超 150 万预算**
-    //     └ 但其中 90% 是 `ki=0..10` 的"证明无解"白烧（指数阶，见诊断：0→9 档 ×2.5/档）
-    //     ⇒ 改成两阶段：
-    //         ① **定档**：只跑 `si=0` 一遍递升阶梯，得出"最小有解档 k*"（约 18 万节点）
-    //         ② **择优**：在 k* 这一档上跑全部起点（约 60 万节点），按三级字典序取最优
-    //       合计约 78 万 < 150 万。丢掉的是"每个起点各自找自己的最小档" —— 但那本来
-    //       就不必要：实测 12 个起点的命中档**全是 ki=11**，档位是盘面属性、不是起点属性。
-    //
-    //   ▍三级字典序的全局择优容器（口径见 closedTrail 头）：
-    //     ① 覆盖轮廓格数越多越好 ② 十字数越少越好 ③ 去重格数越少越好
-    //     ⚠️ 补格数不在字典序里（v0.6.17 定案）。`ki` 阶梯只是"少用补格"的启发式手段。
-    var bestRing = null, bestCover = -1, bestCross = 0, bestCells = 0;
-    var si, ki, hLimit, idx, ring, hitKi = -1;
-
-    // 三个量统计 / 三级字典序比较都用顶层共享实现（ringStats / ringBetter），别再各写一份。
-    //   本轮择优覆盖轮廓位图 B（口径：环上属于 B 的去重格数）。
-
-    // ① 定档：si=0 走一遍递升阶梯（desc 时反向），首个命中档即 k*
-    for (ki = 0; ki <= hLimitCap; ki++) {
-      if (budget.left < 0) break;
-      hLimit = desc ? hLimitCap - ki : ki;
-      idx = closedTrail(B, Bl, H, A, budget, hLimit, 1, 0, tol, 0, 1) ||
-            closedTrail(B, Bl, H, A, budget, hLimit, 2, XMAX, tol, 0, 1);
-      if (idx) { ring = ringOf(idx); if (enclosesCore(ring)) { hitKi = hLimit; break; } }
-    }
-    if (hitKi < 0) return null;                 // 连 si=0 都走不出环 → 交给下一级兜底
-    // 定档那次的解直接进择优容器（省掉 si=0 在 k* 档的重跑）
-    bestRing = ring; var m0 = ringStats(ring, B);
-    bestCover = m0.cov; bestCross = m0.cross; bestCells = m0.cells;
-
-    // ② 择优：在 k* 档上跑其余起点（si=0 已在 ① 里跑过）。
-    //   ▍早停剪枝（v0.6.19）：**十字数 0 是理论最优**（环上每格恰好走一次），
-    //     一旦拿到十字 0 就不必再试剩下的起点 —— `test_rail [4]` 里最大耗时 3519ms
-    //     基本都出在"已经拿到十字 0 还在空跑 11 个起点"上。覆盖率是硬目标：
-    //     只有在"已经满覆盖"（bestCover 已 == 轮廓总数）时才允许早停，避免丢掉更高覆盖的解。
+    // ▍起点候选集（v0.6.19 新增）
+    //   旧版 `closedTrail` 写死从 `Bl[0]` 起步，**起点是搜索树的入口**，不同入口能撞到的
+    //   解不同。实测大王 2026-09-23 那张盘（轮廓 42 格）：起点 (0,3)/(1,3)/(2,3) → 2 十字，
+    //   Bl[0]=(2,0) 等 14 个 → 3 十字，其余 25 个 → 4 十字 —— 写死 Bl[0] 恰好选了较差的。
+    //   所以这里把起点也纳入搜索：逐个起点跑，按同一套三级字典序择优。
+    //   ⚠️ 预算闸门：起点数 × 每档 × 每档两遍（maxVisit=1/2）= 搜索量成倍上涨，
+    //      所以起点的试跑**共享当前这一档的预算**（budget），预算耗尽就立即停手，
+    //      用已经拿到的最好解收工 —— 不连坐、也不白烧。
     var startN = Bl.length < START_TRIES ? Bl.length : START_TRIES;
-    for (si = 1; si < startN; si++) {
-      if (budget.left < 0) break;
-      if (bestCross === 0) break;               // ★ 早停：十字 0 已是最优
-      idx = closedTrail(B, Bl, H, A, budget, hitKi, 1, 0, tol, si, 1) ||
-            closedTrail(B, Bl, H, A, budget, hitKi, 2, XMAX, tol, si, 1);
-      if (!idx) continue;
-      ring = ringOf(idx);
-      if (!enclosesCore(ring)) continue;
-      var m = ringStats(ring, B);
-      if (ringBetter(m, { cov: bestCover, cross: bestCross, cells: bestCells })) {
-        bestRing = ring; bestCover = m.cov; bestCross = m.cross; bestCells = m.cells;
+
+    // ▍补格预算的递升阶梯（这是"补格最少优先"的落地方式）
+    //   把"最多用 ki 个补格"从 ki=0（一个补格都不用）逐级放宽到 hLimitCap；
+    //   每一档内部再先试"每格只走一次"（无十字 / maxVisit=1），无解才放开十字预算
+    //   （maxVisit=2 + xmax 上限）→ 于是同补格数下也优先"十字最少"。
+    //   首个命中即返回 ⇒ 产出的环在"补格数"上最小、同补格数下"十字数"最小。
+    //   ⚠️ 这里传下去的是 **上限**（见 closedTrail 函数头）；desc=true 时反向（见函数头注释）。
+    for (var ki = 0; ki <= hLimitCap; ki++) {
+      var hLimit = desc ? hLimitCap - ki : ki;
+      if (budget.left < 0) return null;
+      // 档内多起点择优：本档只要跑出过解，就不再往 ki 更大的档走（守住"补格最少优先"）。
+      var bestRing = null, bestCover = -1, bestCross = 0, bestCells = 0;
+      for (var si = 0; si < startN; si++) {
+        if (budget.left < 0) break;
+        var idx = closedTrail(B, Bl, H, A, budget, hLimit, 1, 0, tol, si) ||
+                  closedTrail(B, Bl, H, A, budget, hLimit, 2, XMAX, tol, si);
+        if (!idx) continue;
+        var ring = ringOf(idx);
+        if (!enclosesCore(ring)) continue;
+        // 现算三个量（口径见 closedTrail 头）：cover = 覆盖轮廓格数、cross = 十字数、cells = 去重格数
+        var vis2 = {}, cov = 0, cells = 0, cross = 0, i2, pz;
+        for (i2 = 0; i2 < ring.length; i2++) {
+          pz = id(ring[i2].c, ring[i2].r);
+          vis2[pz] = (vis2[pz] || 0) + 1;
+        }
+        for (pz in vis2) {
+          cells++;
+          if (vis2[pz] >= 2) cross++;
+          if (B[pz]) cov++;
+        }
+        // 三级字典序（与 v0.6.17 双路择优同一套口径）：
+        //   ① 覆盖轮廓格数越多越好 ② 十字数越少越好 ③ 去重格数越少越好
+        if (!bestRing ||
+            cov > bestCover ||
+            (cov === bestCover && cross < bestCross) ||
+            (cov === bestCover && cross === bestCross && cells < bestCells)) {
+          bestRing = ring; bestCover = cov; bestCross = cross; bestCells = cells;
+        }
       }
+      if (bestRing) return bestRing;
     }
-    return bestRing;
+    return null;
   }
 
   // 7) 最后手段兜底：削掉一层外轮廓（受保护格除外）
@@ -1167,101 +1043,6 @@ GS.recomputeRails = function () {
     return enclosesCore(ring) ? ring : null;             // 最后一道保险
   }
 
-  // 6c) ⑤ 往返支线求解器（v0.8.0，大王拍板："允许每边 ≤2 次、桥上双向、列车全程不倒车"）
-  //   ▍解决什么：主求解（①~④）的铁轨是闭合迹（每边 ≤1 次），挂在**单条桥边**上的半岛
-  //     组件数学上围不进去（进桥出桥是同一条边 = 要走 2 次），只能靠容差放弃。典型：
-  //     大王 2026-09-24 07:21 盘，右下 2×3 凸块挂在唯一桥边 (5,8)-(6,8) 上，旧解 rail(12)
-  //     放弃 6 格（割集论证见 docs/铁轨bug诊断-001.md）。
-  //   ▍数学基础：把"每边 ≤2 次、第 2 次必反向"的闭合走线看成**乘子图**——每条边取重数
-  //     1 或 2（重数 2 = 双向各一趟，格网上就是同一段轨道走个来回）。乘子图连通 + 全偶度
-  //     ⟺ 存在欧拉回路 ⟺ 列车沿它跑一圈全程朝前、不倒车。支线进出 = 桥边重数 2，
-  //     桥头两格各多走一趟 → 必为 2 个十字（渲染成 T 岔贴片，见 renderer.js）。
-  //   ▍与主解的关系（无支线盘面零行为变更的三道保险）：
-  //     · 现有四级链路一行不动（closedTrail 全部按 mm=1 跑，A/B 验证逐格 0 差异）；
-  //     · 主解已盖满轮廓（cov0 ≥ |Bl|）时直接返回 null —— 覆盖数不可能再涨，常规盘面
-  //       只花一次 O(N) 的 boundaryOf，零搜索开销；
-  //     · 容差卡死 tol = |Bl| − cov0 − 1（封顶 TOL_MAX）：closedTrail 的闭包条件
-  //       needLeft ≤ tol 保证**任何搜出来的走线 cov ≥ cov0 + 1**，天然"严格更优才采纳"，
-  //       不存在同覆盖换解（那会搅动无支线盘面的既有结果）。
-  //   ▍求解配置：maxVisit=2 + mm=2 一步到位（mm=2 下 maxVisit=1 数学上不可能闭合：
-  //     折返边的两端各多一趟，端点必被访问 2 次）；补格上限直接给满 hLimitCap
-  //     （不爬阶梯 —— "证明低档无解"是指数阶，v0.6.19 两次翻车的教训，这里没有必要）；
-  //     多起点 + ringBetter（与主解同一套三级字典序）择优，满覆盖提前收工。
-  //   ▍预算：独立墙钟 SPUR_BUDGET_MS=150ms（v0.6.5 "各级预算独立"原则）。它是增益通道
-  //     不是保底通道，烧穿 = 保留主解，无正确性风险 —— 所以墙钟可以卡得比①级（700ms）紧。
-  //     150 vs 250 实测采纳数相同，见 SPUR_BUDGET_MS 处注释。
-  function spurSolver(um, curRing, bud) {
-    var __s0 = GS.debugProbe ? Date.now() : 0;
-    var reg = makeRegion(um);          // 重造干净区域：④ 剥层会原地改 U，不能用剥过的
-    var bd = boundaryOf(reg.U, reg.F, um), B = bd.B, Bl = bd.Bl;
-    if (Bl.length < 4) return null;
-    var H = helpersOf(reg.U, B, um), A = new Uint8Array(N);
-    var s0, hcount = 0;
-    for (s0 = 0; s0 < N; s0++) { A[s0] = (B[s0] || H[s0]) ? 1 : 0; if (H[s0]) hcount++; }
-    var hLimitCap = hcount < HMAX_CAP ? hcount : HMAX_CAP;
-    var cov0 = curRing ? ringStats(curRing, B).cov : -1;
-    if (cov0 >= Bl.length) return null;      // 已全覆盖：覆盖数不可能再涨，整趟搜索都省掉
-    var tolTop = Bl.length - cov0 - 1;       // 阶梯顶档：任何解出的走线 cov ≥ cov0+1（严格更优才收）
-    if (tolTop > TOL_MAX) tolTop = TOL_MAX;
-    var best = null, bestSt = null, t, si, idx;
-    // v0.9：起点上限放开到全量 Bl（旧 START_TRIES=9 是主解的量，对 spur 不够 ——
-    //   五张问题盘的更优解都在 9 名之外的起点上）。
-    //   ⚠️ 配套（s241 翻车教训）：预算必须随起点数放大 —— 全量起点 × 旧 150 万节点
-    //   会在前几十个起点的"证明无解"上烧干，后面的起点（正解所在）轮不到
-    //   （实测 s241：v0.8.4 11ms 找到 cov32，全量起点+旧预算 794ms found=false）。
-    //   每起点一份 150 万，放大在**调用点**做（recomputeRails 里 `b.left = 150万 × 40`）；
-    //   墙钟仍是硬闸（SPUR_BUDGET_MS = 150ms）。
-    var startN = Bl.length;
-    // ▍容差阶梯从 0 严格递升（与主解 ① 同哲学；v0.8.0 首版"单档 tolTop+首命中"实测教训）：
-    //   有了折返自由后，DFS 的"首命中"解很邋遢 —— 0721 型半岛盘只拿到 cov14（满解是 cov18），
-    //   E 型半岛盘甚至在 tolTop 单档上什么都搜不到。改成 t=0,1,…,tolTop 逐档试：
-    //   t 档任何解都有 cov ≥ |Bl|−t，**先命中的档覆盖下界最高**；档内跑满多起点按
-    //   ringBetter 择优（满覆盖零十字提前收工），命中一档就停（更松的档下界只会更低）。
-    //   代价是低档"证明无解"的指数阶
-    //   （主解 v0.6.19 两次翻车的同一坑）——由共用预算 + 250ms 墙钟兜底：
-    //   烧穿 = 保留主解，无害降级（本级是增益通道，不是保底通道）。
-    // ▍v0.9 十字递升阶梯（五张问题盘的根治术）：旧版单档 SPUR_XMAX=8 直接放开，
-    //   DFS 生成侧大量产出"带多余十字的脏解"，择优只能在这批脏解里挑（13:16 的 44 步、
-    //   13:50 的 36 步、14:28 的 52 步干净解全被埋没；XMAX=2 实验一击命中三张）。
-    //   复刻主解"优先干净解"哲学：xcap 从 2 递升到 SPUR_XMAX。
-    //   ⚠️ 循环层级（s68/p1022 翻车教训，34~39 秒还 found=false）：**起点在外、
-    //     十字档在中、容差档在最内**。旧排法（xcap 最外）会让 x=2 档把全部起点的
-    //     "低十字证明无解"指数阶烧完才升档 —— 单个起点 15~47 万节点 × 44 起点，
-    //     6000 万预算都扛不住，而正解（某起点 × xcap=8）根本轮不到。
-    //     起点在外 = 每个起点自己爬十字阶梯，首命中即该起点最优（与主解"每起点找
-    //     自己的最小档"同构——spur 是增益通道，烧穿保留主解，可接受）。
-    //   ⚠️ 容差仍卡死 tolTop（任何解 cov ≥ cov0+1 严格更优铁闸不变）。
-    for (si = 0; si < startN; si++) {
-      if (bud.left < 0) break;
-      var siHit = false;
-      for (var xcap = 2; xcap <= SPUR_XMAX && !siHit; xcap += 2) {
-      for (t = 0; t <= tolTop; t++) {
-        if (bud.left < 0) break;
-        // v0.9：每档两遍 —— 常规（直行优先）+ flip（拐弯优先）。
-        //   ⚠️ 不做"命中即停"早收工：五张问题盘实证，首个命中解常常不是最优
-        //   （13:16 的 46 步解在后续起点里）。跑满档×flip，靠 ringBetter 择优，墙钟兜底。
-        for (var fp = 0; fp < 2; fp++) {
-          idx = closedTrail(B, Bl, H, A, bud, hLimitCap, 2, xcap, t, si, 2, fp === 1);
-          if (!idx) continue;
-          var ring = ringOf(idx);
-          if (!enclosesCore(ring)) continue;
-          var st = ringStats(ring, B);
-          // ⚠️ v0.9 铁闸（不可拆）：spur 解只有「覆盖 > 主解」才有资格进择优池。
-          //   低十字档常先命中"低覆盖干净解"；若放它进池，择优输出时它会把主解的
-          //   高覆盖解顶掉（331 盘 A/B 实测 22 盘覆盖回归，s241 cov32→3）。
-          //   采纳语义 = 严格更优才替换，一步都不能松。
-          if (st.cov <= cov0) continue;
-          if (!bestSt || ringBetter(st, bestSt)) { best = ring; bestSt = st; }
-        }
-      }
-      }
-    }
-    if (GS.debugProbe) GS.debugSpur = { cov0: cov0, blN: Bl.length, tolTop: tolTop,
-                                        found: !!best, cov: bestSt ? bestSt.cov : -1,
-                                        ms: Date.now() - __s0 };
-    return best;
-  }
-
   // 造区域：泛洪 → 削脖子（规则 3）→ 收尾（剪死胡同 + 丢弃掉队碎片）→ 算洞
   function makeRegion(um) {
     var U = floodU(um);
@@ -1345,33 +1126,14 @@ GS.recomputeRails = function () {
   }
   // ======================= 三、求解 + 输出 =======================
 
-  // 预算：节点 150 万（主约束，实测最差盘面只用约 56 万，留 2.7 倍余量）+ 墙钟安全网。
-  // ⚠️ 墙钟必须 ≥ 最差盘面的自然耗时：否则会**先于**节点数触发、把该局面误判为无解；
-  //    而且墙钟随机器快慢而变，会造成结果不可复现（200ms 时实测有 2 局被切断）。
-  // ▍①级墙钟 400 → 700ms（v0.6.20，大王 2026-09-24 拍板）
-  //   起因：多起点择优（v0.6.19）把①级的计算量抬了几倍，400ms 在"起点敏感盘"上会被掐断 ——
-  //   大王 2026-09-23 那张盘实测：400/500ms → 十字 3（等于没修）、600ms 临界不稳、
-  //   700ms+ 才稳定出十字 1。大王选了这个（流畅性让位于正确性）。
-  //   ⚠️ 前面那条"墙钟必须 ≥ 最差盘面自然耗时"的告诫在这里加倍成立：
-  //     700ms 已经是"贴合最差自然耗时"的取值，**别再往下调**。
-  //   ▍落地后的实测（300 张固定种子盘，真实墙钟，**不设** debugNoDeadline）：
-  //       随机盘 200 张：平均 12.0ms / P90 15ms / P95 46ms / P99 397ms / max 484ms
-  //       大轮廓盘 100 张：平均 40.4ms / P90 95ms / P99 356ms / max 356ms
-  //       ⇒ 被 700ms 掐断 **0 张**。改前的悲观预估是"极端盘 ~0.65s"，实测远小于此 ——
-  //         700ms 只抬高了一条几乎碰不到的安全网，日常耗时不变。
-  //   ▍要动这个数：先临时写个墙钟量测脚本（照 test_rail.js 的 vm 沙箱加载方式），
-  //     ⚠️ 且**不要**设 `GS.debugNoDeadline` —— 设了等于关掉墙钟，量到的全是自然耗时，
-  //        根本看不到"被掐断"这个现象（v0.6.20 踩过）。
+  // 预算：节点 150 万（主约束，实测最差盘面只用约 56 万，留 2.7 倍余量）+ 墙钟 400ms 安全网。
+  // ⚠️ 墙钟必须 ≥ 最差盘面的自然耗时（实测约 330ms）：否则会**先于**节点数触发、把该局面
+  //    误判为无解；而且墙钟随机器快慢而变，会造成结果不可复现（200ms 时实测有 2 局被切断）。
   var region = makeRegion(usable);
   var contourB = boundaryOf(region.U, region.F, usable).B;   // 当前轮廓位图（覆盖数比较 + 调试/测试用）
-  // GS.debugNoDeadline：测试用确定性开关（跳过 700ms 墙钟，只留节点预算）——
+  // GS.debugNoDeadline：测试用确定性开关（跳过 400ms 墙钟，只留节点预算）——
   // 墙钟随机器负载波动，重负载下跑测试偶发把求解掐断、结果不可复现（2026-09-21 实测 1/42 次）。
-  // GS.debugProbe：测试探针开关（v0.8.0）——置 true 时 recomputeRails 把各阶段耗时写进
-  // GS.debugStages（main/exact/spur 的 ms + 支线是否被采纳）与 GS.debugSpur（支线搜索的
-  // cov0/|Bl|/tolTop/耗时/是否命中）。只加 Date.now() 与对象赋值，不影响求解结果。
-  var __p0 = GS.debugProbe ? Date.now() : 0;
-  var ring = finalRing(region, usable, contourB, GS.railPath, freshBudget(700));
-  var __p1 = GS.debugProbe ? Date.now() : 0;
+  var ring = finalRing(region, usable, contourB, GS.railPath, freshBudget(400));
 
   // ---- 双路择优（v0.6.17）------------------------------------------------------
   //   ① DFS 快速路径（finalRing → solveWithLadder → closedTrail）：快，但"先命中先返回"，
@@ -1389,34 +1151,43 @@ GS.recomputeRails = function () {
   //      → 250ms 留了近一倍余量，只有极端盘面才会被墙钟截断（截断即返回 null → 保留 ① 的解）。
   //   ▍口径提醒：下面比的是 **覆盖数 / 十字数 / 去重格数** 三个量，不是"步数"。详见 closedTrail 头。
   var exact = bestRingExact(region.U, region.F, usable, freshBudget(250));
-  var __p2 = GS.debugProbe ? Date.now() : 0;
   if (exact && ring && ring.length >= 4) {
-    // 覆盖数口径：环上用到的、属于当前轮廓（contourB）的**去重格数**。
-    // 三个量统计与三级字典序比较都走顶层共享实现（ringStats / ringBetter）——
-    //   与 solveOnRegion 的择优是**同一套判据**，口径改一处两边同步（原先各写一份）。
-    var stA = ringStats(ring, contourB), stB = ringStats(exact, contourB);
-    if (ringBetter(stB, stA)) ring = exact;   // exact 严格更优才替换（否则保留 ① 的解）
-  }
-  // ---- ⑤ 往返支线（v0.8.0）-----------------------------------------------------
-  //   收编"挂在单条桥边上"的半岛组件：每边 ≤2 次（第 2 次反向 = 往返），列车不倒车。
-  //   spurSolver 内部已保证"任何返回解的覆盖数严格 > 当前解"（容差卡死，见其注释），
-  //   这里再按 contourB 口径复核一道双保险；无支线机会的盘面它在 cov0 检查处直接 null，
-  //   结果与 v0.7.0 逐格一致。
-  var spur = spurSolver(usable, ring, (function () {
-    // v0.9：节点上限随 spur 内部起点数放大（全量起点后单一 150 万会在"证明无解"上
-    //   烧干，s241 实锤）。预算对象结构与 freshBudget 一致，仅 left 放大。
-    var b = freshBudget(SPUR_BUDGET_MS);
-    b.left = 1500000 * 40;      // 40 = 起点数典型上限（Bl ≤ 44），足够全量起点各分一份
-    return b;
-  })());
-  var spurWon = false;
-  if (spur && ringStats(spur, contourB).cov > (ring ? ringStats(ring, contourB).cov : -1)) {
-    ring = spur;
-    spurWon = true;
-  }
-  if (GS.debugProbe) {
-    GS.debugStages = { mainMs: __p1 - __p0, exactMs: __p2 - __p1, spurMs: Date.now() - __p2,
-                       spurWon: spurWon };
+    // 覆盖数：环上用到的、属于当前轮廓（contourB）的**去重格数**
+    var covOfRing = function (rr) {
+      var seen = {}, cv = 0, i, pz;
+      for (i = 0; i < rr.length; i++) {
+        pz = id(rr[i].c, rr[i].r);
+        if (contourB[pz] && !seen[pz]) { seen[pz] = 1; cv++; }
+      }
+      return cv;
+    };
+    // ▍三个量的口径（v0.6.18 明确，别再混）
+    //   steps = rr.length        —— 步数（序列长度，含重复经过的格）
+    //   cells = 去重后的格数
+    //   cross = 被走 **≥2 次** 的格数（= 十字格）
+    //   这里只返回 cells / cross —— 因为择优只用得上这两个；steps 单独按需算。
+    var shapeOf = function (rr) {
+      var vis = {}, i, pz, cells = 0, cross = 0, n;
+      for (i = 0; i < rr.length; i++) {
+        pz = id(rr[i].c, rr[i].r);
+        vis[pz] = (vis[pz] || 0) + 1;
+      }
+      for (pz in vis) {
+        n = vis[pz];
+        cells++;
+        if (n >= 2) cross++;
+      }
+      return { cells: cells, cross: cross };
+    };
+    var ca = covOfRing(ring), cb = covOfRing(exact);
+    var take = false;
+    if (cb > ca) take = true;
+    else if (cb === ca) {
+      var sa = shapeOf(ring), sb2 = shapeOf(exact);
+      if (sb2.cross < sa.cross) take = true;
+      else if (sb2.cross === sa.cross && sb2.cells < sa.cells) take = true;
+    }
+    if (take) ring = exact;
   }
   // 十字直行优先（v0.6.10）：只重排经过十字的走法，环长与格子集合不变。
   //   ⚠️ 实测结论（300 张随机盘面 + 穷举交叉验证）：环在十字上的配对**几乎总是唯一**——

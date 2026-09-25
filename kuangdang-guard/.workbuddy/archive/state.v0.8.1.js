@@ -565,7 +565,7 @@ GS.recomputeRails = function () {
   //    · 步数 = 返回序列的长度（含重复经过的格；对玩家 = 导出里的 `rail(N)`）
   //    · 格数 = **去重后**的格数
   //    · 十字 = 环上被走 **≥2 次**的格数
-  function closedTrail(B, Bl, H, A, budget, hLimit, maxVisit, xmax, tol, startIdx, mm, flip) {
+  function closedTrail(B, Bl, H, A, budget, hLimit, maxVisit, xmax, tol, startIdx, mm) {
     if (Bl.length < 4) return null;
 
     // 邻居表预先摊平（每个节点最多 4 个邻居），热循环里不再做取模/越界判断
@@ -597,49 +597,6 @@ GS.recomputeRails = function () {
           if (anbr[v0 * 4 + t1] === u0) { eidOf[v0 * 4 + t1] = E; break; }
         }
         E++;
-      }
-    }
-
-    // ▍桥边表（v0.8.2，仅 mm=2 计算）：Tarjan 边双连通，一次 DFS 标出所有割边。
-    //   动机（10:42 盘）：⑤级若把非桥边走两遍，织出的"辫子解"不带来任何额外覆盖
-    //   （非桥边两侧本来就有别的路连通），纯费步数。约束"重数 2 的边必须是桥边"
-    //   = 支线只准用来收编"挂单桥的半岛"，正是 v0.8.0 立项的初衷。
-    //   mm=1 时 isBridge 为 null，热路径零开销（主解行为不变）。
-    //   显式栈版（迭代展开，避免深递归）：pe[v] = 进入 v 用的边 id（不走回头边）。
-    var isBridge = null;
-    if (mm === 2) {
-      isBridge = new Uint8Array(E);                  // 1 = 桥边（割边）
-      var disc = new Int32Array(N).fill(-1), low = new Int32Array(N), tstamp = 0;
-      // 根节点与 dfs 同式取（⚠️ 不能引用下面的 var start —— 它在这块之后才赋值，
-      //   提前引用是 undefined，桥边表会全零：0721 盘半岛失收的实锤教训）。
-      var rootN = (startIdx >= 0 && startIdx < Bl.length) ? Bl[startIdx] : Bl[0];
-      var ptr2 = new Int32Array(N);
-      var st2 = [rootN], pe = new Int32Array(N).fill(-1);
-      disc[rootN] = low[rootN] = tstamp++;
-      while (st2.length) {
-        var vn = st2[st2.length - 1];
-        var nb = vn * 4, nc2 = acnt[vn], moved = false;
-        while (ptr2[vn] < nc2) {
-          var ei2 = eidOf[nb + ptr2[vn]];
-          if (ei2 < 0) { ptr2[vn]++; continue; }
-          var wn = anbr[nb + ptr2[vn]];
-          if (ei2 === pe[vn]) { ptr2[vn]++; continue; }         // 不走回头边（重边另算）
-          if (disc[wn] >= 0) {
-            low[vn] = Math.min(low[vn], disc[wn]);              // 回边
-            ptr2[vn]++;
-          } else {
-            pe[wn] = ei2; disc[wn] = low[wn] = tstamp++;
-            st2.push(wn); moved = true; break;
-          }
-        }
-        if (!moved) {
-          st2.pop();
-          if (st2.length) {
-            var par = st2[st2.length - 1];
-            low[par] = Math.min(low[par], low[vn]);
-            if (low[vn] > disc[par]) isBridge[pe[vn]] = 1;      // 割边判定
-          }
-        }
       }
     }
 
@@ -711,16 +668,11 @@ GS.recomputeRails = function () {
         e1 = eidOf[base + t2];
         if (e1 < 0) continue;
         var uc1 = usedCnt[e1];
-        // 边可用性：没用过 → 可走；用过 1 次且 mm=2 且站在第 1 次终点上 → 只能折返（反向）。
-        //   v0.8.2 桥边约束：折返（= 该边重数 2）只准发生在**桥边（割边）**上 ——
-        //   非桥边两侧本来就连通，双走不产生新覆盖，只会把走线织成辫子（10:42 盘教训）。
-        var goBack = (mm === 2 && uc1 === 1 && dirTo[e1] === cur && isBridge[e1] === 1);
+        // 边可用性：没用过 → 可走；用过 1 次且 mm=2 且站在第 1 次终点上 → 只能折返（反向）
+        var goBack = (mm === 2 && uc1 === 1 && dirTo[e1] === cur);
         if (uc1 !== 0 && !goBack) continue;
         var grp = goBack ? (wantIdx >= 0 ? 2 : 1)
                          : ((wantIdx >= 0 && t2 === wantIdx) ? 0 : (wantIdx >= 0 ? 1 : 0));
-        // v0.9 flip：直行/拐弯试序翻转（生成多样性 —— DFS 先命中先返回，直行优先会让
-        //   "拐弯支里的更优解"永远搜不到；flip 跑一遍拐弯优先补上另一半搜索空间）。
-        if (flip && !goBack && wantIdx >= 0) grp = (grp === 0 ? 1 : 0);
         if (grp !== pass) continue;
 
         // 起点只作为"终点"出现一次：还没访问的轮廓格已不超过容差，且已经能接回起点 → 成环
@@ -760,15 +712,9 @@ GS.recomputeRails = function () {
             var uc4 = usedCnt[e4];
             // 方向感知（v0.8.0）：没用过的边随便走；用过 1 次的边只有从第 1 次终点
             // 才能折返 —— 站在别的端点方向走不过去，剪枝必须如实反映，否则会高估可达性。
-            //   v0.8.2：折返还必须是桥边（与前进判据同口径，否则剪枝高估可达性）。
-            if (uc4 !== 0 && !(mm === 2 && uc4 === 1 && dirTo[e4] === u && isBridge[e4] === 1)) continue;
+            if (uc4 !== 0 && !(mm === 2 && uc4 === 1 && dirTo[e4] === u)) continue;
             var v4 = anbr[ub + t4];
-            // ⚠️ v4 === start 必须豁免（v0.8.4 修）：起点 vis=1，若按 maxVisit 挡，
-            //   maxVisit=1 档的 BFS 永远 reachStart=false → mv=1 调用全灭（探针实锤：
-            //   每档只烧 1 个节点）。这个 bug 从 v0.6.x 就在 —— "优先每格一次的干净解"
-            //   设计从未生效过，历史上的十字 0 解全是 mv=2 碰巧先命中的（12:44 盘因此
-            //   出 50步/2十字，而 48步/0十字 的干净解一直在搜索空间里没人搜）。
-            if (stamp[v4] === curStamp || (vis[v4] >= maxVisit && v4 !== start)) continue;
+            if (stamp[v4] === curStamp || vis[v4] >= maxVisit) continue;
             stamp[v4] = curStamp; bfsQ[tail++] = v4;
           }
         }
@@ -783,9 +729,8 @@ GS.recomputeRails = function () {
             for (var t5 = 0; t5 < bc0; t5++) {
               var e5 = eidOf[bd0 + t5];
               var uc5 = e5 >= 0 ? usedCnt[e5] : 2;
-              // （v0.8.4）start 豁免同上：走到起点 = 合法的收环动作，不是死格。
-              if (e5 >= 0 && (vis[anbr[bd0 + t5]] < maxVisit || anbr[bd0 + t5] === start) &&
-                  (uc5 === 0 || (mm === 2 && uc5 === 1 && dirTo[e5] === bs && isBridge[e5] === 1))) { have = 1; break; }
+              if (e5 >= 0 && vis[anbr[bd0 + t5]] < maxVisit &&
+                  (uc5 === 0 || (mm === 2 && uc5 === 1 && dirTo[e5] === bs))) { have = 1; break; }
             }
             if (!have) { deadB++; if (deadB > tol) { ok = false; break; } }
           }
@@ -1204,14 +1149,7 @@ GS.recomputeRails = function () {
     var tolTop = Bl.length - cov0 - 1;       // 阶梯顶档：任何解出的走线 cov ≥ cov0+1（严格更优才收）
     if (tolTop > TOL_MAX) tolTop = TOL_MAX;
     var best = null, bestSt = null, t, si, idx;
-    // v0.9：起点上限放开到全量 Bl（旧 START_TRIES=9 是主解的量，对 spur 不够 ——
-    //   五张问题盘的更优解都在 9 名之外的起点上）。
-    //   ⚠️ 配套（s241 翻车教训）：预算必须随起点数放大 —— 全量起点 × 旧 150 万节点
-    //   会在前几十个起点的"证明无解"上烧干，后面的起点（正解所在）轮不到
-    //   （实测 s241：v0.8.4 11ms 找到 cov32，全量起点+旧预算 794ms found=false）。
-    //   每起点一份 150 万，放大在**调用点**做（recomputeRails 里 `b.left = 150万 × 40`）；
-    //   墙钟仍是硬闸（SPUR_BUDGET_MS = 150ms）。
-    var startN = Bl.length;
+    var startN = Bl.length < START_TRIES ? Bl.length : START_TRIES;
     // ▍容差阶梯从 0 严格递升（与主解 ① 同哲学；v0.8.0 首版"单档 tolTop+首命中"实测教训）：
     //   有了折返自由后，DFS 的"首命中"解很邋遢 —— 0721 型半岛盘只拿到 cov14（满解是 cov18），
     //   E 型半岛盘甚至在 tolTop 单档上什么都搜不到。改成 t=0,1,…,tolTop 逐档试：
@@ -1220,41 +1158,22 @@ GS.recomputeRails = function () {
     //   代价是低档"证明无解"的指数阶
     //   （主解 v0.6.19 两次翻车的同一坑）——由共用预算 + 250ms 墙钟兜底：
     //   烧穿 = 保留主解，无害降级（本级是增益通道，不是保底通道）。
-    // ▍v0.9 十字递升阶梯（五张问题盘的根治术）：旧版单档 SPUR_XMAX=8 直接放开，
-    //   DFS 生成侧大量产出"带多余十字的脏解"，择优只能在这批脏解里挑（13:16 的 44 步、
-    //   13:50 的 36 步、14:28 的 52 步干净解全被埋没；XMAX=2 实验一击命中三张）。
-    //   复刻主解"优先干净解"哲学：xcap 从 2 递升到 SPUR_XMAX。
-    //   ⚠️ 循环层级（s68/p1022 翻车教训，34~39 秒还 found=false）：**起点在外、
-    //     十字档在中、容差档在最内**。旧排法（xcap 最外）会让 x=2 档把全部起点的
-    //     "低十字证明无解"指数阶烧完才升档 —— 单个起点 15~47 万节点 × 44 起点，
-    //     6000 万预算都扛不住，而正解（某起点 × xcap=8）根本轮不到。
-    //     起点在外 = 每个起点自己爬十字阶梯，首命中即该起点最优（与主解"每起点找
-    //     自己的最小档"同构——spur 是增益通道，烧穿保留主解，可接受）。
-    //   ⚠️ 容差仍卡死 tolTop（任何解 cov ≥ cov0+1 严格更优铁闸不变）。
-    for (si = 0; si < startN; si++) {
+    for (t = 0; t <= tolTop; t++) {
       if (bud.left < 0) break;
-      var siHit = false;
-      for (var xcap = 2; xcap <= SPUR_XMAX && !siHit; xcap += 2) {
-      for (t = 0; t <= tolTop; t++) {
+      for (si = 0; si < startN; si++) {
         if (bud.left < 0) break;
-        // v0.9：每档两遍 —— 常规（直行优先）+ flip（拐弯优先）。
-        //   ⚠️ 不做"命中即停"早收工：五张问题盘实证，首个命中解常常不是最优
-        //   （13:16 的 46 步解在后续起点里）。跑满档×flip，靠 ringBetter 择优，墙钟兜底。
-        for (var fp = 0; fp < 2; fp++) {
-          idx = closedTrail(B, Bl, H, A, bud, hLimitCap, 2, xcap, t, si, 2, fp === 1);
-          if (!idx) continue;
-          var ring = ringOf(idx);
-          if (!enclosesCore(ring)) continue;
-          var st = ringStats(ring, B);
-          // ⚠️ v0.9 铁闸（不可拆）：spur 解只有「覆盖 > 主解」才有资格进择优池。
-          //   低十字档常先命中"低覆盖干净解"；若放它进池，择优输出时它会把主解的
-          //   高覆盖解顶掉（331 盘 A/B 实测 22 盘覆盖回归，s241 cov32→3）。
-          //   采纳语义 = 严格更优才替换，一步都不能松。
-          if (st.cov <= cov0) continue;
-          if (!bestSt || ringBetter(st, bestSt)) { best = ring; bestSt = st; }
-        }
+        idx = closedTrail(B, Bl, H, A, bud, hLimitCap, 2, SPUR_XMAX, t, si, 2);
+        if (!idx) continue;
+        var ring = ringOf(idx);
+        if (!enclosesCore(ring)) continue;
+        var st = ringStats(ring, B);
+        if (!bestSt || ringBetter(st, bestSt)) { best = ring; bestSt = st; }
+        // 提前收工：折返边两端各多走一趟 ⇒ 任何支线解 cross ≥ 2。拿到 cross ≤ 2 的解
+        // 就已是"单桥干净往返"的理论最优（多桥盘在 tol=0 档拿不到 cross 2，不受影响），
+        // 剩余起点不会更好，纯烧墙钟 —— 实测 9 起点全跑会让命中盘普遍贴满 250ms。
+        if (bestSt.cross <= 2) break;
       }
-      }
+      if (best) break;          // 本档已命中 → 收工（更松的档覆盖下界只会更低）
     }
     if (GS.debugProbe) GS.debugSpur = { cov0: cov0, blN: Bl.length, tolTop: tolTop,
                                         found: !!best, cov: bestSt ? bestSt.cov : -1,
@@ -1402,13 +1321,7 @@ GS.recomputeRails = function () {
   //   spurSolver 内部已保证"任何返回解的覆盖数严格 > 当前解"（容差卡死，见其注释），
   //   这里再按 contourB 口径复核一道双保险；无支线机会的盘面它在 cov0 检查处直接 null，
   //   结果与 v0.7.0 逐格一致。
-  var spur = spurSolver(usable, ring, (function () {
-    // v0.9：节点上限随 spur 内部起点数放大（全量起点后单一 150 万会在"证明无解"上
-    //   烧干，s241 实锤）。预算对象结构与 freshBudget 一致，仅 left 放大。
-    var b = freshBudget(SPUR_BUDGET_MS);
-    b.left = 1500000 * 40;      // 40 = 起点数典型上限（Bl ≤ 44），足够全量起点各分一份
-    return b;
-  })());
+  var spur = spurSolver(usable, ring, freshBudget(SPUR_BUDGET_MS));
   var spurWon = false;
   if (spur && ringStats(spur, contourB).cov > (ring ? ringStats(ring, contourB).cov : -1)) {
     ring = spur;

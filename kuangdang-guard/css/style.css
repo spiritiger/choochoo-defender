@@ -23,9 +23,15 @@ html,body { margin:0; padding:0; height:100%; background:#0b0c12; overflow:hidde
 .hud-cell { display:flex; flex-direction:column; align-items:center; line-height:1; }
 .hud-key { font-size:11px; color:var(--muted); margin-bottom:4px; }
 .hud-val { font-size:18px; font-weight:700; }
-#hudGold .hud-val { color:var(--gold); }
+/* 注意：#hudGold 自身就是那个 .hud-val span，后代选择器永远匹配不到，金币数字不会是金色 */
+#hudGold { color:var(--gold); }
+.hud-btn { height:30px; padding:0 12px; border-radius:8px; border:1px solid var(--line);
+  background:var(--panel2); color:var(--muted); font-size:12px; cursor:pointer; }
+.hud-btn:active { color:var(--text); border-color:var(--brand); }
 
 /* Field */
+/* Field：高度必须等于 CFG.fieldH() = CANVAS_H(844) − HUD_H(52) − FOOTER_H(232) = 560。
+   ⚠️ 改了 FOOTER_H 或 HUD_H 时要同步改这里，否则画布与容器错位。 */
 #fieldWrap { position:relative; height:560px; background:var(--bg); overflow:hidden; }
 #game { position:absolute; left:0; top:0; display:block; touch-action:none; }
 
@@ -39,6 +45,9 @@ html,body { margin:0; padding:0; height:100%; background:#0b0c12; overflow:hidde
 .card .c-meta { font-size:11px; color:var(--muted); margin-top:3px; text-align:center; padding:0 4px; }
 .card.selected { border-color:var(--brand); box-shadow:0 0 0 2px var(--brand); }
 .card .c-ico { font-size:22px; line-height:1; }
+.card .shapePrev { position:relative; min-height:24px; }
+.card .shapePrev i { position:absolute; width:10px; height:10px; border-radius:2px;
+  background:var(--brand); box-shadow:0 0 0 1px rgba(0,0,0,0.25) inset; }
 .actionRow { display:flex; gap:8px; margin-top:10px; }
 .btn { flex:1; height:40px; border-radius:10px; border:1px solid var(--line); background:var(--panel2);
   color:var(--text); font-size:14px; font-weight:600; cursor:pointer; }

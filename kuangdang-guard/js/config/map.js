@@ -4,10 +4,12 @@ window.CFG = {
   CANVAS_H: 844,
   HUD_H: 52,
   FOOTER_H: 232,
-  MAP_COLS: 11,
-  MAP_ROWS: 15,
+  MAP_COLS: 9,
+  MAP_ROWS: 13,
   TRAIN_SPEED: 2.6,   // 格/秒
-  ECON_RATE: 6   // 列车每经过一次贴轨经济建筑 +6 金币
+  ECON_RATE: 6,       // 列车每经过一次贴轨经济建筑 +6 金币
+  GOLD_RATE: 5,       // 列车驶入金币地块 +5 金币（十字格一圈只算一次）
+  GOLD_TILES: 14      // 开局生成的金币地块数量（v0.6.15：7 → 14，翻倍试手感）
 };
 
 CFG.inBounds = function (c, r) { return c >= 0 && c < CFG.MAP_COLS && r >= 0 && r < CFG.MAP_ROWS; };
@@ -38,12 +40,28 @@ CFG.pickCell = function (L, mx, my) {
   return CFG.inBounds(c, r) ? { c: c, r: r } : null;
 };
 
-// 俄罗斯方块形状（清理工具作用范围）
-CFG.SHAPES = [
-  { name: '长条', cells: [[0, 0], [1, 0], [2, 0], [3, 0]] },
-  { name: '方块', cells: [[0, 0], [1, 0], [0, 1], [1, 1]] },
-  { name: 'L 形', cells: [[0, 0], [1, 0], [2, 0], [0, 1]] },
-  { name: 'T 形', cells: [[0, 0], [1, 0], [2, 0], [1, 1]] },
-  { name: 'Z 形', cells: [[1, 0], [2, 0], [0, 1], [1, 1]] },
-  { name: '直角', cells: [[0, 0], [1, 0], [1, 1]] }
-];
+// 俄罗斯方块清理形状（v0.6.9 大王定案）：**矩形**，面积 4/6/8 三档等概率。
+// 流程 = 等概率选面积 → 等概率选拆法 → 随机横竖朝向。名字记作「宽×高」
+//   （2×3 与 3×2 是同一个形状的两种朝向，`GS.cardSig` 会把它们归成同一"尺寸家族"）。
+// ⚠️ 目前每档**只有一种拆法**，所以 randomShape 里"选拆法"那步实际恒取第 0 项 ——
+//    这不是 bug，是**刻意保留的数组结构**：将来想给某档加第二种拆法，
+//    只需在这里补一行，randomShape 不用动。别把它简化成标量。
+CFG.SHAPE_SIZES = [4, 6, 8];
+CFG.SHAPE_RECTS = {
+  4: [[2, 2]],
+  6: [[2, 3]],
+  8: [[2, 4]]
+};
+
+// 随机生成一个清理形状：{ name, cells }，cells 已归一化（最小坐标归 0）
+// 可选传 size（4/6/8）指定面积档位；不传则三档等概率随机。
+CFG.randomShape = function (size) {
+  if (size === undefined) size = CFG.SHAPE_SIZES[Math.floor(Math.random() * CFG.SHAPE_SIZES.length)];
+  var opts = CFG.SHAPE_RECTS[size];
+  var rc = opts[Math.floor(Math.random() * opts.length)];
+  var w = rc[0], h = rc[1];
+  if (Math.random() < 0.5) { var t = w; w = h; h = t; }    // 随机横竖
+  var cells = [];
+  for (var r = 0; r < h; r++) for (var c = 0; c < w; c++) cells.push([c, r]);
+  return { name: w + '×' + h, cells: cells };
+};

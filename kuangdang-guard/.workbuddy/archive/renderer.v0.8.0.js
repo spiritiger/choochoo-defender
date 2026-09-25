@@ -5,11 +5,12 @@ REND.C = {
   bg: '#14161d',
   blank: '#20242f',
   rubble: '#2c2620',
+  rail: '#7a8090',
   core: '#e08c33',
   econ: '#35b06a',
   gold: '#f0b429',
-  railLine: '#c3c9d6',   // v0.7.0 贴片双线（亮灰，暗底上清晰；v0.7.0 前的单线色 rail 已随之移除）
-  railChev: '#f4f7fc',   // （v0.8.3 已停用）方向箭头色 —— 箭头整体移除，保留定义备恢复
+  railLine: '#c3c9d6',   // v0.7.0 贴片双线（亮灰，暗底上清晰；替代旧单线色 rail）
+  railChev: '#f4f7fc',   // 方向箭头（比轨线更亮一档）
   ok: 'rgba(61,220,106,0.18)',
   okl: 'rgba(61,220,106,0.9)',
   bad: 'rgba(232,70,58,0.25)'
@@ -117,18 +118,16 @@ REND.draw = function (ctx, L, hover) {
 //   度 2 相邻（如 N+E）    → **弯道**贴片（4 朝向：圆心在该格角上、半径 h∓d 的两道四分之一弧）
 //   度 4                   → **十字**贴片（该格被走两次；straightenRing 配对保证两趟都直行 → 必是「+」）
 //   度 3（v0.8.0 往返支线桥头）→ **T 岔**贴片：贯通轴（唯一的对向边对）画满宽双线，
-//     支臂以**弯道同款切向弧**（喇叭口）并入贯通轴（v0.8.1，旧直角对接被大王判
-//     "资源不对"）。旧版"度 3 不可能"在支线下失效：桥头格 = 主环 2 边 + 桥边往返
-//     2 次（同一条边只占 1 个方向）→ 3 个方向、4 次使用。两形态：
-//     A「环拐进支臂」（0721 盘）与 B「环直穿 + 支臂折返」（2 格桥：根部 A + 尖端掉头）。
+//     支臂双线从格边接到贯通轴近轨线为止。旧版"度 3 不可能"在支线下失效：
+//     桥头格 = 主环 2 边 + 桥边往返 2 次（同一条边只占 1 个方向）→ 3 个方向、4 次使用。
 //   度 1（v0.8.0 折返端头）→ 往返支线端点格：双线从该边接到中心 + 一根横梁当车挡。
 //     （只可能出现在"起点即半岛"的退化走线上：车开进去原路开回来。）
 // 双线样式：线间距 2d（d = 0.12·格宽），线宽 0.075·格宽；直线/十字/T 岔贯通到格边，
 // 相邻贴片在格边上无缝对接。旧折线版"拐角抄近路画成 45° 斜线"的坑，贴片化后天然不存在。
-// 往返桥边（被双向各走一次的边）：贴片画法与普通双线段完全一致。
-// 方向箭头：**v0.8.3 已整体移除**（大王令"把箭头干掉"）—— 单环天然单向，箭头只是可视化
-//   辅助。pass 向量仍要收集（T 岔喇叭口的角点计算依赖它），只是不再用于画箭头。
-//   想恢复：从 archive/renderer.v0.8.1.js 找回箭头循环 + REND.chevron。
+// 往返桥边（被双向各走一次的边）：贴片画法与普通双线段完全一致，区别只在**箭头双向** ——
+//   两趟各画一枚、方向相反（下面 pass 循环天然覆盖，无需特判）。
+// 方向箭头：每格每次经过画一枚、指向该趟行进方向（= railPath 里 前格→后格 的合成方向；
+//   T 岔两趟沿贯通轴前后错开，避免叠在一起）。整段不想显示时删掉画箭头的循环即可。
 REND.railTiles = function (ctx, L, path) {
   var n = path.length, i, k;
   // 1) 扫描：每格的边方向使用集（N E S W）+ 每趟行进方向
@@ -146,12 +145,8 @@ REND.railTiles = function (ctx, L, path) {
     var dx = b.c - a.c, dy = b.r - a.r;              // a → b 这条边
     markDir(a, dx, dy);
     markDir(b, -dx, -dy);
-    // 行进方向 = prev → next：直线时即轴向；弯道时是两臂合方向（指向弧中切线，对角向）。
-    // 第 3 元 = prev 所在方向（0N 1E 2S 3W）：零向量 pass（prev=next，本格 180° 折返）
-    // 的差值是 (0,0) 分不出折返边 —— T 岔第二形态（v0.8.1）靠它定位加倍边。
-    var pdx = pv.c - a.c, pdy = pv.r - a.r;
-    var pd = pdy === -1 ? 0 : (pdx === 1 ? 1 : (pdy === 1 ? 2 : 3));
-    pass[a.c + ',' + a.r].push([b.c - pv.c, b.r - pv.r, pd]);
+    // 行进方向 = prev → next：直线时即轴向；弯道时是两臂合方向（指向弧中切线，对角向）
+    pass[a.c + ',' + a.r].push([b.c - pv.c, b.r - pv.r]);
   }
   // 2) 逐格画贴片
   var s = L.cell, h = s / 2, d = s * 0.12;
@@ -165,7 +160,8 @@ REND.railTiles = function (ctx, L, path) {
     var cx = CFG.ccx(L, c), cy = CFG.ccy(L, r);
     var deg = u[0] + u[1] + u[2] + u[3];
     var straight = deg === 2 && ((u[0] && u[2]) || (u[1] && u[3]));
-    var cornerX = 0, cornerY = 0;                     // 弯道弧心（箭头期曾另有 thm/thrAxis，已随箭头移除）
+    var curve = deg === 2 && !straight;
+    var cornerX = 0, cornerY = 0, thm = 0, thrAxis = -1;   // 弯道/T 岔箭头定位用
     ctx.beginPath();
     if (deg === 4) {
       // 十字：横竖两对线各自贯通到格边
@@ -175,61 +171,30 @@ REND.railTiles = function (ctx, L, path) {
       ctx.moveTo(cx - h, cy + d); ctx.lineTo(cx + h, cy + d);
       ctx.stroke();
     } else if (deg === 3) {
-      // T 岔（v0.8.0 往返支线桥头；v0.8.1 改切向并入）：3 个方向必有且仅有一对对向
-      //   （组合事实），对向对 = 贯通轴，画满宽双线；支臂以**弯道同款**两道四分之一弧
-      //   （喇叭口）并入贯通轴 —— 弧心 = 「支臂边 × 转弯趟所用轴边」夹角的格角，
-      //   与弯道贴片同一张查表；弧的端点恰好落在格边的 ±d 双线端点上（相切 = 无缝，
-      //   旧版"支臂直角怼到贯通轴"被大王判"资源不对"，v0.8.1 统一圆弧风格）。
-      //   转弯趟用哪条轴边由 pass 向量推出：支臂是入口 → 轴边 = 行进方向；
-      //   支臂是出口 → 轴边 = 行进反方向（入口在身后）。逐案验证过 0721 盘两桥头。
-      var spur;                                       // 支臂方向下标（0N 1E 2S 3W）
-      if (u[1] && u[3]) {                            // 贯通轴横向（E+W）
+      // T 岔（v0.8.0 往返支线桥头）：3 个方向必有且仅有一对对向（组合事实），
+      //   对向对 = 贯通轴画满宽；剩下那条 = 支臂，双线从格边接到贯通轴的近轨线为止。
+      if (u[1] && u[3]) {                  // 贯通轴横向（E+W）
+        thrAxis = 0;
         ctx.moveTo(cx - h, cy - d); ctx.lineTo(cx + h, cy - d);
         ctx.moveTo(cx - h, cy + d); ctx.lineTo(cx + h, cy + d);
-        spur = u[0] ? 0 : 2;
-      } else {                                       // 贯通轴纵向（N+S）
+        if (u[0]) { ctx.moveTo(cx - d, cy - h); ctx.lineTo(cx - d, cy - d);
+                    ctx.moveTo(cx + d, cy - h); ctx.lineTo(cx + d, cy - d); }
+        if (u[2]) { ctx.moveTo(cx - d, cy + d); ctx.lineTo(cx - d, cy + h);
+                    ctx.moveTo(cx + d, cy + d); ctx.lineTo(cx + d, cy + h); }
+      } else {                             // 贯通轴纵向（N+S）
+        thrAxis = 1;
         ctx.moveTo(cx - d, cy - h); ctx.lineTo(cx - d, cy + h);
         ctx.moveTo(cx + d, cy - h); ctx.lineTo(cx + d, cy + h);
-        spur = u[1] ? 1 : 3;
+        if (u[1]) { ctx.moveTo(cx + d, cy - d); ctx.lineTo(cx + h, cy - d);
+                    ctx.moveTo(cx + d, cy + d); ctx.lineTo(cx + h, cy + d); }
+        if (u[3]) { ctx.moveTo(cx - h, cy - d); ctx.lineTo(cx - d, cy - d);
+                    ctx.moveTo(cx - h, cy + d); ctx.lineTo(cx - d, cy + d); }
       }
       ctx.stroke();
-      // 逐趟画喇叭口。T 岔两形态（v0.8.1）：
-      //   A「环拐进支臂」：转弯趟 pass = 对角向量（两分量皆非零）→ 角点 = 支臂 × 该趟所用轴边；
-      //   B「环直穿 + 支臂折返」：折返趟 pass = (0,0,prevDir)（本格 180° 掉头）→ 加倍边 =
-      //     prevDir，角点 = 支臂 × 两条轴边**全画**（翻出/折回两个弧，轴两侧各一）。
-      var ps3 = pass[k], tj;
-      for (tj = 0; tj < ps3.length; tj++) {
-        var vt = ps3[tj];
-        var armY = (spur === 0 || spur === 2);        // 支臂在纵向（N/S）还是横向（E/W）
-        var doubled = null;                           // 形态 B：本格 180° 折返的边方向
-        if (vt[0] === 0 && vt[1] === 0) doubled = vt[2];
-        if (doubled === null && (vt[0] === 0 || vt[1] === 0)) continue;  // 直行趟，不画弧
-        var vA = armY ? vt[1] : vt[0];                // 行进向量在支臂轴上的分量
-        var vT = armY ? vt[0] : vt[1];                // …在贯通轴上的分量
-        var armEdge = (spur === 0) ? -1 : (spur === 2) ? 1 : (spur === 1) ? 1 : -1;
-        var armIsEntry = (vA > 0 ? 1 : -1) === -armEdge;  // 行进背离支臂边 = 从支臂进来
-        // 喇叭口角点用的"所用轴边"外法线：入口趟→出口边(+分量)；出口趟→入口边(−分量)
-        var usedSign = (vT > 0 ? 1 : -1) * (armIsEntry ? 1 : -1);
-        var usedDir = armY ? (usedSign > 0 ? 1 : 3) : (usedSign > 0 ? 2 : 0);
-        var q3 = [usedDir];                           // 形态 A：只画所用轴边那一个角
-        if (doubled !== null) q3 = armY ? [1, 3] : [0, 2];  // 形态 B：支臂×两条轴边（armY=纵支臂→E/W 角）
-        for (var qi = 0; qi < q3.length; qi++) {
-          var ud3 = q3[qi];
-          // 角点查表（与弯道同表：支臂 × 转弯趟轴边 的无序对）
-          var pair3 = (spur < ud3) ? spur * 10 + ud3 : ud3 * 10 + spur;
-          var c3, a03, ccw3;
-          if (pair3 === 1)      { c3 = [cx + h, cy - h]; a03 = Math.PI; ccw3 = true;  } // N+E
-          else if (pair3 === 3) { c3 = [cx - h, cy - h]; a03 = 0;       ccw3 = false; } // N+W
-          else if (pair3 === 12){ c3 = [cx + h, cy + h]; a03 = Math.PI; ccw3 = false; } // S+E
-          else                  { c3 = [cx - h, cy + h]; a03 = 0;       ccw3 = true;  } // S+W
-          var a13 = ccw3 ? a03 - Math.PI / 2 : a03 + Math.PI / 2;
-          ctx.beginPath(); ctx.arc(c3[0], c3[1], h - d, a03, a13, ccw3); ctx.stroke();
-          ctx.beginPath(); ctx.arc(c3[0], c3[1], h + d, a03, a13, ccw3); ctx.stroke();
-        }
-      }
     } else if (deg === 1) {
       // 折返端头（v0.8.0）：双线从唯一边接到格中心，中心一根横梁当车挡。
-      //   车开到这里原路折回。（v0.8.3 起不再画方向箭头，双向信息无从展示 —— 单环天然单向。）
+      //   车开到这里原路折回 —— 箭头在端头格不画（该格 pass 向量为 0，被下面防御跳过），
+      //   双向信息由桥对面那格的两枚反向箭头表达。
       if (u[0]) {          // N
         ctx.moveTo(cx - d, cy - h); ctx.lineTo(cx - d, cy);
         ctx.moveTo(cx + d, cy - h); ctx.lineTo(cx + d, cy);
@@ -268,6 +233,7 @@ REND.railTiles = function (ctx, L, path) {
       else if (u[2] && u[1]) { corner = [cx + h, cy + h]; a0 = Math.PI; ccw = false; } // S+E
       else                   { corner = [cx - h, cy + h]; a0 = 0;       ccw = true;  } // S+W
       var a1 = ccw ? a0 - Math.PI / 2 : a0 + Math.PI / 2;
+      thm = ccw ? a0 - Math.PI / 4 : a0 + Math.PI / 4; // 弧中点角（分角线）
       cornerX = corner[0]; cornerY = corner[1];
       ctx.beginPath();
       ctx.arc(cornerX, cornerY, h - d, a0, a1, ccw);
@@ -284,15 +250,36 @@ REND.railTiles = function (ctx, L, path) {
       ctx.moveTo(cx - h, cy + d); ctx.lineTo(cx + h, cy + d);
       ctx.stroke();
     }
-    // 3) 方向箭头已移除（v0.8.3，大王令"把箭头干掉"）—— 单环天然单向，箭头只是可视化
-    //    辅助。想恢复：把 REND.chevron 重新接回这里（按 pass 向量逐趟画，历史实现见 archive）。
+    // 3) 方向箭头：每趟一枚
+    var ps = pass[k];
+    ctx.fillStyle = REND.C.railChev;
+    for (i = 0; i < ps.length; i++) {
+      var vx = ps[i][0], vy = ps[i][1];
+      if (!vx && !vy) continue;                      // 防御：折返端头格 pass 向量为 0 → 不画
+      var ux = vx > 0 ? 1 : (vx < 0 ? -1 : 0);
+      var uy = vy > 0 ? 1 : (vy < 0 ? -1 : 0);
+      var px, py;
+      if (curve) {
+        px = cornerX + h * Math.cos(thm);            // 弧中点（双线正中间）
+        py = cornerY + h * Math.sin(thm);
+      } else if (deg === 4) {
+        px = cx - ux * s * 0.14;                     // 十字：两枚各沿行进轴后撤，错开中心
+        py = cy - uy * s * 0.14;
+      } else if (deg === 3) {
+        // T 岔（往返支线桥头）：两趟都过中心，沿贯通轴前后错开，别叠成一枚
+        var tOff = (i === 0 ? -1 : 1) * s * 0.13;
+        px = cx + (thrAxis === 0 ? tOff : 0);
+        py = cy + (thrAxis === 1 ? tOff : 0);
+      } else {
+        px = cx; py = cy;
+      }
+      REND.chevron(ctx, px, py, Math.atan2(uy, ux), s);
+    }
   }
 };
 
-// 方向箭头（v0.8.3 已停用，大王令"把箭头干掉"）：指向 +x 的小三角，旋转 ang 后放到 (x, y)。
-//   函数保留备查——恢复时在 railTiles 尾部按 pass 向量逐趟调用即可（历史实现见 archive/renderer.v0.8.1.js）。
-// （已无调用点；fillStyle 色 railChev 同步停用，见 REND.C 注释。）
-function __chevron_retired(ctx, x, y, ang, s) {
+// 方向箭头：指向 +x 的小三角，旋转 ang 后放到 (x, y)
+REND.chevron = function (ctx, x, y, ang, s) {
   var w = s * 0.085, hh = s * 0.095;
   ctx.save();
   ctx.translate(x, y);
