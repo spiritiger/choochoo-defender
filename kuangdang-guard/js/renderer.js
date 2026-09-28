@@ -78,6 +78,9 @@ REND.draw = function (ctx, L, hover) {
   var path = GS.railPath;
   if (path.length) REND.railTiles(ctx, L, path);
 
+  // 站台（v0.9.2，规则 1）：与铁轨**叠加**的停靠格 —— 画在铁轨之上、建筑之下
+  if (typeof STATION !== 'undefined') REND.station(ctx, L);
+
   // 建筑
   for (var k = 0; k < GS.buildings.length; k++) REND.building(ctx, L, GS.buildings[k]);
 
@@ -90,6 +93,14 @@ REND.draw = function (ctx, L, hover) {
     ctx.fillStyle = '#4B3FE3';
     ctx.fillRect(-11, -7, 22, 14);
     ctx.restore();
+    // 车斗金币（v0.9.2，规则 6）：水平绘制、不随车头旋转，画在车体上方
+    if (GS.train.cargo > 0) {
+      ctx.fillStyle = REND.C.gold;
+      ctx.font = 'bold 11px "PingFang SC",system-ui,sans-serif';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'bottom';
+      ctx.fillText('+' + Math.floor(GS.train.cargo), tp.x, tp.y - 8);
+    }
   }
 
   // 网格
@@ -105,6 +116,12 @@ REND.draw = function (ctx, L, hover) {
     ctx.moveTo(L.x, gy); ctx.lineTo(L.x + L.w, gy);
   }
   ctx.stroke();
+
+  // 夜晚遮罩（v0.9.2，规则 5）：盖住网格与地图内容，工具预览仍在最上层
+  if (typeof CLOCK !== 'undefined' && CLOCK.darkness() > 0) {
+    ctx.fillStyle = 'rgba(18,26,64,' + CLOCK.darkness() + ')';
+    ctx.fillRect(L.x - 4, L.y - 4, L.w + 8, L.h + 8);
+  }
 
   // 工具预览
   if (GS.selToken) REND.tokenGhost(ctx, L, hover);
@@ -304,6 +321,24 @@ function __chevron_retired(ctx, x, y, ang, s) {
   ctx.restore();
 };
 
+// 站台贴片（v0.9.2）：叠加在铁轨格上，所以底色用半透明（别把轨道盖死），
+// 只留一圈亮边 + 一个「站」字。字贴格子上缘，避免被车头方块挡住。
+REND.station = function (ctx, L) {
+  var st = STATION.slot();
+  if (!st) return;
+  var x = L.x + st.c * L.cell, y = L.y + st.r * L.cell, s = L.cell;
+  ctx.fillStyle = 'rgba(240,180,41,0.16)';
+  ctx.fillRect(x + 1, y + 1, s - 2, s - 2);
+  ctx.strokeStyle = 'rgba(240,180,41,0.85)';
+  ctx.lineWidth = 2;
+  ctx.strokeRect(x + 1.5, y + 1.5, s - 3, s - 3);
+  ctx.fillStyle = 'rgba(240,180,41,0.95)';
+  ctx.font = 'bold ' + Math.round(s * 0.34) + 'px "PingFang SC",system-ui,sans-serif';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'top';
+  ctx.fillText('站', x + s / 2, y + 1);
+};
+
 REND.building = function (ctx, L, b) {
   var cx = CFG.ccx(L, b.c), cy = CFG.ccy(L, b.r), s = L.cell * 0.72;
   ctx.save();
@@ -351,12 +386,9 @@ REND.tokenGhost = function (ctx, L, hover) {
         if (!CFG.inBounds(pts[j].c, pts[j].r)) continue;
         ctx.fillRect(L.x + pts[j].c * L.cell, L.y + pts[j].r * L.cell, L.cell, L.cell);
       }
-      // 相接格描黄圈：让玩家直接看到"贴上了哪几格"
-      ctx.strokeStyle = REND.C.gold;
-      ctx.lineWidth = 2;
-      for (var k = 0; k < ct.cells.length; k++) {
-        ctx.strokeRect(L.x + ct.cells[k].c * L.cell + 2, L.y + ct.cells[k].r * L.cell + 2, L.cell - 4, L.cell - 4);
-      }
+      // ⚠️ 这里原有一圈「相接格描黄圈」（REND.C.gold 描边 ct.cells）——
+      //    v0.9.0 已整体移除。它只是视觉提示，相接判定（ENG.shapeContacts 的
+      //    count / inner，见上一条）不受影响，也不删 REND.C.gold（金币图标仍用它）。
       ctx.strokeStyle = ok ? REND.C.okl : REND.C.bad;
       ctx.lineWidth = 2;
       for (var q = 0; q < pts.length; q++) {

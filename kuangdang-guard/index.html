@@ -11,7 +11,9 @@
   <div id="app">
     <header id="hud">
       <div class="hud-cell"><span class="hud-key">金币</span><span id="hudGold" class="hud-val">0</span></div>
+      <div class="hud-cell"><span class="hud-key">车斗</span><span id="hudCargo" class="hud-val">0</span></div>
       <button id="btnExport" class="hud-btn" title="复制当前地图数据（调试用）">导出地图</button>
+      <button id="btnForce" class="hud-btn" title="放开求解时间预算重算铁轨（界面会暂时卡住）">强制刷新</button>
     </header>
 
     <div id="fieldWrap">
@@ -22,6 +24,7 @@
       <div id="cards"></div>
       <div class="actionRow">
         <button id="btnRoll" class="btn">重抽</button>
+        <button id="btnDepart" class="btn">发车</button>
       </div>
       <div id="status"></div>
     </footer>
@@ -30,6 +33,8 @@
 
 <script src="js/config/map.js"></script>
 <script src="js/state.js"></script>
+<script src="js/station.js"></script>
+<script src="js/clock.js"></script>
 <script src="js/transport.js"></script>
 <script src="js/engine.js"></script>
 <script src="js/renderer.js"></script>

@@ -48,7 +48,7 @@ function leftovers(html) {
 L('================ 基线 ================');
 var base = inline(original, realRead);
 check('① 原始 index.html 可完整内联且无残留外链', leftovers(base) === null, String(leftovers(base)));
-check('   7 个 JS 全部内联', (base.match(/<script>\n\/\* ===== /g) || []).length === 7);
+check('   9 个 JS 全部内联', (base.match(/<script>\n\/\* ===== /g) || []).length === 9);
 check('   1 个 CSS 已内联', base.indexOf('<style>') >= 0 && base.indexOf('rel="stylesheet"') < 0);
 
 L('');

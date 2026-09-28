@@ -123,23 +123,83 @@ ENG.update = function (dt) {
     var gt = GS.goldTiles[kg], gf = GS.grid[gt.r][gt.c];
     if (gf.flash > 0) gf.flash -= dt;
   }
-  ENG.tickTrain(dt);
+  if (typeof CLOCK !== 'undefined') CLOCK.tick(dt);
+  ENG.trainFlow(dt);
 };
 
-// ---- 列车：沿铁轨环行驶；经过贴轨经济建筑发钱，驶入金币地块收钱 ----
-ENG.tickTrain = function (dt) {
+// ============================================================================
+// 列车（v0.9.2 拆分：调度 / 推进 / 停靠 / 交付 四个独立环节，便于分别修改）
+//
+// 规则 4：白天车头停在站台 → parkAtStation()
+// 规则 5：夜晚才移动 → trainFlow() 按 CLOCK 相位决定"跑"还是"停"
+// 规则 6：到站交付 → advanceTrain() 的到站判定 + deliverAtStation()
+//
+// 四个环节的边界刻意画成"互不知道对方细节"：
+//   · trainFlow        只问 CLOCK 现在是不是该跑；
+//   · advanceTrain     **纯推进**，不判断昼夜（测试可直接调用它跑圈）；
+//   · parkAtStation    每帧幂等：铁轨/站台一变就自动对上，不需要任何挂钩子；
+//   · deliverAtStation 只管交付，不关心怎么走到站台的。
+// ⚠️ CLOCK / STATION 用 typeof 守卫：test_rail.js 的沙箱不加载这两个文件。
+// ============================================================================
+
+// 调度器：白天停车，夜晚/收尾行驶
+ENG.trainFlow = function (dt) {
+  if (typeof CLOCK !== 'undefined' && !CLOCK.isRunning()) { ENG.parkAtStation(); return; }
+  ENG.advanceTrain(dt);
+};
+
+// 白天停靠：把车头对齐到站台格（index = 站台在 railPath 上的下标）。
+//   每帧都调 → 站台随铁轨漂移后列车自动跟上。
+ENG.parkAtStation = function () {
+  if (typeof STATION === 'undefined') return;
+  var st = STATION.slot();
+  if (!st) return;
+  GS.train.index = st.index;
+  GS.train.frac = 0;
+};
+
+// 纯推进 + 到站判定。不判断昼夜：白天由 trainFlow 拦在外面。
+ENG.advanceTrain = function (dt) {
   var tr = GS.train;
   var n = GS.railPath.length;
   if (!n) return;
+  // 站台下标（-1 = 没解出站台 → 永不判到站）。判"回到站台下标"而不是"踩到站台格"：
+  //   站台若是十字格（railPath 里出现两次），按格子判会一圈交付两次。
+  var si = (typeof STATION !== 'undefined') ? STATION.index() : -1;
   tr.frac += CFG.TRAIN_SPEED * dt;
   while (tr.frac >= 1) {
     tr.frac -= 1;
-    var prev = tr.index;
     tr.index = (tr.index + 1) % n;
-    // index 回绕（从 n-1 跳回 0）= 跑完一圈 → 金币地块全部重置
-    if (tr.index < prev) TRANS.resetGoldLap();
+    // 顺序要紧：**先装载本站**（站台格自身若有金币也算进本次交付），再判到站
     TRANS.serviceCell(GS.railCell(tr.index));
+    if (tr.index !== si) continue;
+    ENG.deliverAtStation();                    // 规则 6：走满一圈回到站台 → 交付
+    if (ENG.stopAtStation()) { tr.frac = 0; break; }   // 收尾相位 → 这一夜结束，停车
   }
+};
+
+// 到站交付（规则 6）：车斗金币一次性入账 → 金币地块重置
+ENG.deliverAtStation = function () {
+  var got = TRANS.deliver();
+  TRANS.resetGoldLap();
+  return got;
+};
+
+// 到了站台，这一夜要不要就此结束（回白天、停站台）？
+//   只有收尾相位（dusk）才算 —— 夜晚倒计时/等清场期间到站只是完成一圈、继续跑。
+//   没有昼夜模块时返回 false（等于旧行为：一直跑圈）。
+ENG.stopAtStation = function () {
+  if (typeof CLOCK === 'undefined') return false;
+  return CLOCK.notifyStation();
+};
+
+// 天亮发车（UI「发车」按钮）：先对齐站台，再让昼夜模块入夜
+ENG.startNight = function () {
+  if (typeof CLOCK === 'undefined' || !CLOCK.isDay()) return false;
+  if (typeof STATION !== 'undefined' && !STATION.ready()) return false;   // 还没成环 → 发不了车
+  ENG.parkAtStation();
+  CLOCK.startNight();
+  return true;
 };
 
 ENG.trainAngle = function () {

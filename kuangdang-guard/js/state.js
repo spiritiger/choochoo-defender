@@ -39,7 +39,11 @@ GS.newGame = function () {
 
   GS.placeGoldInit(CFG.GOLD_TILES);
 
-  GS.train = { index: 0, frac: 0 };
+  // 列车（v0.9.2）：cargo = 车上堆的金币（规则 6，到站才交付）。
+  //   站台由 recomputeRails 末尾的 STATION.solve 解出，这里先清空。
+  GS.train = { index: 0, frac: 0, cargo: 0 };
+  GS.station = null;
+  if (typeof CLOCK !== 'undefined') CLOCK.reset();   // 新局回到白天
 
   GS.selToken = null;      // 当前使用的工具：{kind:'shape',si,cells} | {kind:'econ'}
   GS.offer = [];
@@ -334,8 +338,14 @@ GS.recomputeRails = function () {
 
   // 独立预算工厂（v0.6.5）：每一级兜底拿自己的新预算，上级烧穿不连坐下级。
   // debugNoDeadline = 测试用确定性开关（关墙钟，见 recomputeRails 末尾注释）。
+  // forceRefresh = 玩家点「强制刷新」时的一次性开关（v0.9.0，UI 侧用完即复位）：
+  //   同样关掉墙钟，把三处时间闸（①700 / ②250 / ⑤150ms）一起放开，让求解器一直搜到
+  //   节点预算耗尽为止 —— 极端"肥带"盘面在闸内搜不出覆盖全部的环时会沿用旧环（表现为
+  //   "新清的地块铁轨没接过去"），这个开关就是让玩家主动用时间换正确性。
+  //   ⚠️ 只放开**预算**，不放宽任何铺轨规则（正交/正交相邻/围住镇中心全照旧）。
   function freshBudget(ms) {
-    return { left: 1500000, deadline: GS.debugNoDeadline ? 1e15 : Date.now() + ms };
+    var noDeadline = GS.debugNoDeadline || GS.forceRefresh;
+    return { left: 1500000, deadline: noDeadline ? 1e15 : Date.now() + ms };
   }
 
   // 0) 可铺轨位图：已清空为 blank 且不压建筑
@@ -932,8 +942,11 @@ GS.recomputeRails = function () {
     // ② 择优：在 k* 档上跑其余起点（si=0 已在 ① 里跑过）。
     //   ▍早停剪枝（v0.6.19）：**十字数 0 是理论最优**（环上每格恰好走一次），
     //     一旦拿到十字 0 就不必再试剩下的起点 —— `test_rail [4]` 里最大耗时 3519ms
-    //     基本都出在"已经拿到十字 0 还在空跑 11 个起点"上。覆盖率是硬目标：
-    //     只有在"已经满覆盖"（bestCover 已 == 轮廓总数）时才允许早停，避免丢掉更高覆盖的解。
+    //     基本都出在"已经拿到十字 0 还在空跑 11 个起点"上。
+    //     ⚠️ 实际判据**只有** `bestCross === 0` 一条（代码里没有"必须先满覆盖"的第二道闸；
+    //        旧注释曾声称有，属描述错误）。因字典序里覆盖优先于十字，理论上可能停在
+    //        覆盖更低的解上；但 331 盘 + 500 盘定点 A/B 均未观察到覆盖回归
+    //        （finalRing 反缩水 + 双路择优都只在覆盖不降时才替换）。
     var startN = Bl.length < START_TRIES ? Bl.length : START_TRIES;
     for (si = 1; si < startN; si++) {
       if (budget.left < 0) break;
@@ -1233,8 +1246,7 @@ GS.recomputeRails = function () {
     //   ⚠️ 容差仍卡死 tolTop（任何解 cov ≥ cov0+1 严格更优铁闸不变）。
     for (si = 0; si < startN; si++) {
       if (bud.left < 0) break;
-      var siHit = false;
-      for (var xcap = 2; xcap <= SPUR_XMAX && !siHit; xcap += 2) {
+      for (var xcap = 2; xcap <= SPUR_XMAX; xcap += 2) {
       for (t = 0; t <= tolTop; t++) {
         if (bud.left < 0) break;
         // v0.9：每档两遍 —— 常规（直行优先）+ flip（拐弯优先）。
@@ -1418,6 +1430,107 @@ GS.recomputeRails = function () {
     GS.debugStages = { mainMs: __p1 - __p0, exactMs: __p2 - __p1, spurMs: Date.now() - __p2,
                        spurWon: spurWon };
   }
+
+  // ---- ⑥ 去冗余绕行（v0.9.1）---------------------------------------------------
+  //   ▍要解决的病（大王 2026-09-25 11:03 盘面实锤）
+  //     环是**增量**维护的：finalRing 的反缩水保险只在覆盖率**严格更高**时才换环（v0.6.4），
+  //     ⑤spurSolver 又在 `cov0 >= Bl.length` 时整趟跳过（已 100% 覆盖就没什么可补）。
+  //     两条叠加 ⇒ 覆盖率一旦摸到 100%，**环的形状就永久冻结**：此后清空区继续长大、
+  //     环上某段老轮廓退化成 interior（不再是轮廓格），那段绕行仍留在环上——
+  //     玩家看到的就是"冗余的弯道"。本盘实例：`… 4,8 3,8 2,8 2,9 3,9 3,10 …`
+  //     其中 (2,8)/(2,9) 已不在轮廓上，(3,8) 也不在，本可直接 `3,8 → 3,9` 竖直南下。
+  //   ▍修法：纯几何后处理，**不动任何铺轨规则**（能铺轨 / 正交 / 围住镇中心全照旧）
+  //     若环上 ring[i] 与 ring[j] 正交相邻，且 i…j 之间的**中间格全是非轮廓格**
+  //     （mark=0，即已不贴轮廓的陈旧格），就用一条直边 ring[i]→ring[j] 取代这段绕行。
+  //   ▍为什么这条替换在三级字典序下"只会更好或持平"（逐条可证）
+  //     · 覆盖数不变：被删的中间格都不在轮廓上；ring[i]/ring[j] 原样保留在环上；
+  //     · 十字数不增：两端格的经过次数不变，被删格的次数只减到 0；
+  //     · 去重格数每轮至少少 1（贪心按"削减最多"优先，逐轮应用）。
+  //   ▍三道保守闸（任一不过就换下一个候选，全试完则原样返回）
+  //     ① 新边必须是环上**尚不存在**的无向边 —— 否则可能在环上叠出往返支线/重边；
+  //     ② 每次应用前做完整合法性复核：逐边正交 / 每格 ≤2 次 / 无向边 ≤2 次 /
+  //        无同向重边 / 仍围住镇中心（与 test_rail.js 的 ringError 同口径）；
+  //     ③ 不得"放出"任何原有圈内格（innerCells 的新集合 ⊇ 旧集合）——
+  //        防止把金币格/已开发区漏到环外（这是本优化唯一可能伤到玩法的方向）。
+  function trimDetours(ringIn, mark) {
+    // 合法性复核（与 test_rail.js ringError 同口径，见文件头"三个量"/铁轨规则）
+    function trimOk(rr) {
+      var L2 = rr.length, i2;
+      if (L2 < 4) return false;
+      var c2 = {}, e2 = {}, d2 = {};
+      for (i2 = 0; i2 < L2; i2++) {
+        var a2 = rr[i2], b2 = rr[(i2 + 1) % L2];
+        if (Math.abs(a2.c - b2.c) + Math.abs(a2.r - b2.r) !== 1) return false;
+        var ka2 = a2.c + ',' + a2.r, kb2 = b2.c + ',' + b2.r;
+        var ek2 = ka2 < kb2 ? ka2 + '|' + kb2 : kb2 + '|' + ka2;
+        e2[ek2] = (e2[ek2] || 0) + 1;
+        if (e2[ek2] > 2) return false;                 // 无向边上限 2（第 2 次须反向，见下）
+        var dk2 = ka2 + '>' + kb2;
+        if (d2[dk2]) return false;                     // 同向重走同一条边 → 非法
+        d2[dk2] = 1;
+        c2[ka2] = (c2[ka2] || 0) + 1;
+        if (c2[ka2] > 2) return false;                 // 每格最多走 2 次（度数 ≤4）
+      }
+      return enclosesCore(rr);
+    }
+    var seq = ringIn, round, i, k;
+    var tried = {};                                    // 本轮试过且被否的候选 'i:k'
+    for (round = 0; round < 400; round++) {
+      var L = seq.length;
+      if (L < 5) break;
+      // 轮廓位图（双倍长度，便于环形取前缀和）+ 前缀和 pre[t] = 前 t 格的轮廓格数
+      var mk = new Uint8Array(2 * L), pre = new Int32Array(2 * L + 1);
+      for (i = 0; i < L; i++) mk[i] = mk[i + L] = mark[id(seq[i].c, seq[i].r)] ? 1 : 0;
+      for (i = 0; i < 2 * L; i++) pre[i + 1] = pre[i] + mk[i];
+      // 环上现有的无向边（闸 ① 用）
+      var ecnt = {}, a, b, ek;
+      for (i = 0; i < L; i++) {
+        a = seq[i]; b = seq[(i + 1) % L];
+        var ka = a.c + ',' + a.r, kb = b.c + ',' + b.r;
+        ek = ka < kb ? ka + '|' + kb : kb + '|' + ka;
+        ecnt[ek] = (ecnt[ek] || 0) + 1;
+      }
+      // 闸 ③ 的基准：当前圈内集合
+      var inOld = innerCells(seq), inKeys = [];
+      for (var kk in inOld) inKeys.push(kk);
+      // 挑"削减格数最多"的候选：k = 环上步进，中间格数 = k-1
+      var bi = -1, bk = 0;
+      for (i = 0; i < L; i++) {
+        for (k = 2; k <= L - 3; k++) {                 // 结果长度 = L-k+1 ≥ 4
+          if (pre[i + k] - pre[i + 1] !== 0) break;    // 中间出现轮廓格 → 更远的 k 必然也含它
+          if (k <= bk) continue;
+          var p = seq[i], q = seq[(i + k) % L];
+          if (Math.abs(p.c - q.c) + Math.abs(p.r - q.r) !== 1) continue;
+          var kp = p.c + ',' + p.r, kq = q.c + ',' + q.r;
+          var ne = kp < kq ? kp + '|' + kq : kq + '|' + kp;
+          if (ecnt[ne]) continue;                      // 闸 ①
+          if (tried[i + ':' + k]) continue;
+          bk = k; bi = i;
+        }
+      }
+      if (bi < 0) break;
+      // 应用：摘掉 bi+1 … bi+bk-1，保留 bi 与 bi+bk，收一条直边
+      var out = [seq[bi]], t;
+      for (t = bk; t < L; t++) out.push(seq[(bi + t) % L]);
+      var keepInner = true;
+      if (trimOk(out)) {                               // 闸 ②
+        var inNew = innerCells(out);                   // 闸 ③
+        for (t = 0; t < inKeys.length; t++) {
+          if (!inNew[inKeys[t]]) { keepInner = false; break; }
+        }
+      } else keepInner = false;
+      if (keepInner) { seq = out; tried = {}; }
+      else tried[bi + ':' + bk] = 1;
+    }
+    return seq;
+  }
+  var __t0 = GS.debugProbe ? Date.now() : 0;
+  var __rlen0 = ring ? ring.length : 0;
+  if (ring && ring.length >= 4) ring = trimDetours(ring, contourB);
+  if (GS.debugProbe) {
+    GS.debugTrim = { trimMs: Date.now() - __t0, gain: __rlen0 - (ring ? ring.length : 0) };
+  }
+
   // 十字直行优先（v0.6.10）：只重排经过十字的走法，环长与格子集合不变。
   //   ⚠️ 实测结论（300 张随机盘面 + 穷举交叉验证）：环在十字上的配对**几乎总是唯一**——
   //      能直行的本来就直行，剩下的是"8 字形相切"（直行会把单环劈成两条环），
@@ -1433,6 +1546,9 @@ GS.recomputeRails = function () {
     GS.railRect = null;
     GS.railGrowHints = [];
     GS.contourB = contourB;
+    // 站台（v0.9.2，规则 3）：没有环 → 没有站台。守卫是必须的 —— test_rail.js 的
+    // 沙箱只加载 map/state/engine，不加载 station.js。
+    if (typeof STATION !== 'undefined') STATION.solve(GS.railPath);
     return;
   }
 
@@ -1452,6 +1568,10 @@ GS.recomputeRails = function () {
 
   // ---- 扩张提示：已按需求整体移除（出口保留为空数组，UI 侧无需改动）----
   GS.railGrowHints = [];
+
+  // 站台（v0.9.2，规则 3）：铁轨一变，站台随即重选（叠加在轨格上，不占新格）。
+  //   守卫生效场景：test_rail.js 沙箱不加载 station.js。
+  if (typeof STATION !== 'undefined') STATION.solve(GS.railPath);
 };
 
 // ---- 三选一：清理形状 + 经济建筑 ----

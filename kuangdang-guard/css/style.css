@@ -25,6 +25,8 @@ html,body { margin:0; padding:0; height:100%; background:#0b0c12; overflow:hidde
 .hud-val { font-size:18px; font-weight:700; }
 /* 注意：#hudGold 自身就是那个 .hud-val span，后代选择器永远匹配不到，金币数字不会是金色 */
 #hudGold { color:var(--gold); }
+/* 车斗（v0.9.2）：车上堆着、还没入账的金币 —— 用列车同色系（浅紫）与已入账的金币区分 */
+#hudCargo { color:#8f86ff; }
 .hud-btn { height:30px; padding:0 12px; border-radius:8px; border:1px solid var(--line);
   background:var(--panel2); color:var(--muted); font-size:12px; cursor:pointer; }
 .hud-btn:active { color:var(--text); border-color:var(--brand); }
