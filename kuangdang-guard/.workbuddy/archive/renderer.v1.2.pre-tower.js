@@ -12,13 +12,10 @@ REND.C = {
   railChev: '#f4f7fc',   // （v0.8.3 已停用）方向箭头色 —— 箭头整体移除，保留定义备恢复
   ok: 'rgba(61,220,106,0.18)',
   okl: 'rgba(61,220,106,0.9)',
-  bad: 'rgba(232,70,58,0.25)',
-  // v1.3-rc 塔元素色板（顺序对应 TOWERS.ELEMS = fire/ice/thunder/poison）
-  tower: { fire: '#e8563f', ice: '#6ec6ff', thunder: '#f7d94c', poison: '#9ce06a' },
-  foe: '#e8563f'
+  bad: 'rgba(232,70,58,0.25)'
 };
 
-REND.draw = function (ctx, L, hover, drag) {
+REND.draw = function (ctx, L, hover) {
   ctx.clearRect(0, 0, CFG.CANVAS_W, CFG.CANVAS_H);
   ctx.fillStyle = REND.C.bg;
   ctx.fillRect(0, 0, CFG.CANVAS_W, CFG.CANVAS_H);
@@ -86,9 +83,6 @@ REND.draw = function (ctx, L, hover, drag) {
 
   // 建筑
   for (var k = 0; k < GS.buildings.length; k++) REND.building(ctx, L, GS.buildings[k]);
-  // 塔（v1.3-rc 修复"地图里看不到塔"：TOWERS.placeAt 只写格子 + GS.towers 数组镜像，
-  //   不进 GS.buildings —— 塔的权威列表是 GS.towers，渲染必须单独遍历它）
-  for (var kt = 0; kt < GS.towers.length; kt++) REND.building(ctx, L, GS.towers[kt]);
 
   // 列车
   if (path.length) {
@@ -129,94 +123,7 @@ REND.draw = function (ctx, L, hover, drag) {
     ctx.fillRect(L.x - 4, L.y - 4, L.w + 8, L.h + 8);
   }
 
-  // ---- v1.3-rc 塔防动态层（画在夜遮罩之上：夜里怪必须看得清）----
-  // 怪：红圆 + 血条（浮点格坐标 → 像素）
-  for (var fi = 0; fi < GS.foes.length; fi++) {
-    var f = GS.foes[fi];
-    var fx = L.x + f.c * L.cell + L.cell / 2, fy = L.y + f.r * L.cell + L.cell / 2;
-    var fr = L.cell * 0.3;
-    ctx.fillStyle = REND.C.foe;
-    ctx.beginPath();
-    ctx.arc(fx, fy, fr, 0, 7);
-    ctx.fill();
-    ctx.strokeStyle = 'rgba(0,0,0,0.4)';
-    ctx.lineWidth = 1.5;
-    ctx.stroke();
-    // 被击闪白
-    if (f.hitFlash > 0) {
-      ctx.fillStyle = 'rgba(255,255,255,' + (f.hitFlash * 4) + ')';
-      ctx.beginPath();
-      ctx.arc(fx, fy, fr, 0, 7);
-      ctx.fill();
-    }
-    // 血条（宽 = 格宽 0.8，高 3px，压在怪头顶）
-    var bw = L.cell * 0.8;
-    ctx.fillStyle = 'rgba(0,0,0,0.55)';
-    ctx.fillRect(fx - bw / 2, fy - fr - 7, bw, 3.5);
-    ctx.fillStyle = '#7ee081';
-    ctx.fillRect(fx - bw / 2, fy - fr - 7, bw * Math.max(0, f.hp / f.maxHp), 3.5);
-  }
-  // 攻击连线（瞬时弹道感，0.12s 衰减）。塔默认白；车头浅紫（v1.3.1，bm.rgb 模板拼 alpha）
-  for (var bi = 0; bi < TOWERS.beams.length; bi++) {
-    var bm = TOWERS.beams[bi];
-    ctx.strokeStyle = bm.rgb
-      ? 'rgba(' + bm.rgb + ',' + (bm.t / 0.12 * 0.9) + ')'
-      : 'rgba(255,255,255,' + (bm.t / 0.12 * 0.8) + ')';
-    ctx.lineWidth = 1.5;
-    ctx.beginPath();
-    ctx.moveTo(CFG.ccx(L, bm.ac), CFG.ccy(L, bm.ar));
-    ctx.lineTo(L.x + bm.bc * L.cell + L.cell / 2, L.y + bm.br * L.cell + L.cell / 2);
-    ctx.stroke();
-  }
-  // 镇中心血条（画在 core 格正上方，全宽）
-  var coreB = GS.core;
-  if (coreB) {
-    var hx = CFG.ccx(L, coreB.c), hyTop = L.y + coreB.r * L.cell + 3;
-    var hw = L.cell * 0.86;
-    ctx.fillStyle = 'rgba(0,0,0,0.55)';
-    ctx.fillRect(hx - hw / 2, hyTop, hw, 4);
-    ctx.fillStyle = GS.coreHP / GS.coreMaxHP > 0.3 ? '#e0b23f' : '#e8563f';
-    ctx.fillRect(hx - hw / 2, hyTop, hw * Math.max(0, GS.coreHP / GS.coreMaxHP), 4);
-  }
-  // 拖动幽灵（v1.3-rc）：拖塔 = 半透明圆台跟指针；拖清理形状 = 形状格高亮
-  if (drag && drag.kind === 'tower') {
-    var gtc = REND.C.tower[drag.tower.elem] || '#888';
-    ctx.globalAlpha = 0.75;
-    ctx.fillStyle = gtc;
-    ctx.beginPath();
-    ctx.arc(drag.px, drag.py, L.cell * 0.34, 0, 7);
-    ctx.fill();
-    ctx.globalAlpha = 1;
-  } else if (drag && drag.kind === 'clean' && drag.px >= 0) {
-    var hcell = CFG.pickCell(LAY, drag.px, drag.py);
-    if (hcell) {
-      // 合法性预览（2026-09-29 大王报"可摆放状态不见了"补回 —— 判据与 ENG.applyShape
-      //   完全同口径，但**只读**不改地形）：① 全部在界内且无建筑 ② 形状内至少 1 格废墟
-      //   ③ 与区域相接 ≥ MIN_CONTACT 或压住内区。可清 = 绿，不可清 = 红。
-      var okAll = true;
-      var hasRubble = false;
-      var pts3 = [];
-      for (var ci = 0; ci < drag.shape.cells.length; ci++) {
-        var cc3 = hcell.c + drag.shape.cells[ci][0], cr3 = hcell.r + drag.shape.cells[ci][1];
-        if (!CFG.inBounds(cc3, cr3) || GS.grid[cr3][cc3].b) { okAll = false; continue; }
-        if (GS.grid[cr3][cc3].t === 'rubble') hasRubble = true;
-        pts3.push({ c: cc3, r: cr3 });
-      }
-      if (!hasRubble) okAll = false;
-      var ct3 = ENG.shapeContacts(hcell.c, hcell.r, drag.shape.cells);
-      if (ct3.count < ENG.MIN_CONTACT && !ct3.inner) okAll = false;
-      for (var ci2 = 0; ci2 < pts3.length; ci2++) {
-        var pc = pts3[ci2];
-        ctx.fillStyle = okAll ? REND.C.ok : REND.C.bad;
-        ctx.fillRect(L.x + pc.c * L.cell, L.y + pc.r * L.cell, L.cell, L.cell);
-        ctx.strokeStyle = okAll ? REND.C.okl : REND.C.bad;
-        ctx.lineWidth = 1.5;
-        ctx.strokeRect(L.x + pc.c * L.cell + 1, L.y + pc.r * L.cell + 1, L.cell - 2, L.cell - 2);
-      }
-    }
-  }
-
-  // 工具预览（v1.3-rc 起三选一退役，selToken 恒空 —— 保留调用兼容旧存档调试）
+  // 工具预览
   if (GS.selToken) REND.tokenGhost(ctx, L, hover);
 };
 
@@ -454,32 +361,6 @@ REND.building = function (ctx, L, b) {
     if (b.flash > 0) {
       ctx.strokeStyle = 'rgba(240,180,41,' + (b.flash * 3) + ')'; ctx.lineWidth = 2;
       ctx.strokeRect(cx - s / 2 - 1, cy - s / 2 - 1, s + 2, s + 2);
-    }
-  } else if (b.type === 'tower') {
-    // v1.3-rc 塔：元素色圆台 + 白色星点（每星一枚，最多画 5 枚防挤爆）
-    var tc = REND.C.tower[b.elem] || '#888';
-    ctx.fillStyle = tc;
-    ctx.beginPath();
-    ctx.arc(cx, cy, s * 0.34, 0, 7);
-    ctx.fill();
-    ctx.strokeStyle = 'rgba(0,0,0,0.35)';
-    ctx.lineWidth = 2;
-    ctx.stroke();
-    // 攻击闪光：命中瞬间描一圈亮边
-    if (b.flash > 0) {
-      ctx.strokeStyle = 'rgba(255,255,255,' + (b.flash * 3.5) + ')';
-      ctx.lineWidth = 2.5;
-      ctx.beginPath();
-      ctx.arc(cx, cy, s * 0.42, 0, 7);
-      ctx.stroke();
-    }
-    // 星级点：横排小圆点
-    ctx.fillStyle = '#fff';
-    var nStar = Math.min(b.star, 5);
-    for (var si2 = 0; si2 < nStar; si2++) {
-      ctx.beginPath();
-      ctx.arc(cx - ((nStar - 1) * 4) / 2 + si2 * 4, cy + s * 0.28, 1.6, 0, 7);
-      ctx.fill();
     }
   }
   ctx.restore();

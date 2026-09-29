@@ -1,18 +1,7 @@
 // 主引擎：清理/建造、列车跑圈发钱
 window.ENG = {};
 
-ENG.init = function () { ENG.restart(); };
-
-// 重开一局（v1.3-rc：失败遮罩的「重来」按钮也走这里）。
-//   GS.newGame 负责地形/列车/核心血量；塔与怪的列表各自 reset（模块自治）。
-ENG.restart = function () {
-  GS.newGame();
-  if (typeof TOWERS !== 'undefined') TOWERS.reset();
-  if (typeof FOES !== 'undefined') FOES.reset();
-  // 车头战斗状态（v1.3.1）：攻速冷却 / dusk 加速累计，重开一律归零
-  ENG.trainAtkCd = 0;
-  ENG.boost = 0;
-};
+ENG.init = function () { GS.newGame(); };
 
 // ---- 清理工具：用形状覆盖格清空废墟 ----
 // 形状必须与"当前区域"**至少 MIN_CONTACT 格相接**，或者**压住内区**（v0.6.10 收窄）。
@@ -108,10 +97,7 @@ ENG.applyShape = function (oc, or_, cells) {
   return true;
 };
 
-// ---- 建造经济建筑（需已清空空白格 + 紧贴铁轨；金币地块是资源格，不可占用）----
-// ⚠️【v1.3-rc 退役】经济建筑随三选一一起退役（拍板分叉 ①），本函数冻结保留不调用
-//   （test_rules 既有用例仍依赖；TRANS.serviceCell 的 econ 收款分支同理保留——
-//   旧存档/回退盘面可能还有 econ 建筑）。转正后可整体清理。
+// ---- 建造经济建筑（需已清空空白格 + 紧贴铁轨；金币地块是资源格，不可占用） ----
 ENG.placeEcon = function (c, r) {
   var cell = GS.grid[r][c];
   if (cell.t !== 'blank') return '这里是废墟，先清理';
@@ -138,21 +124,6 @@ ENG.update = function (dt) {
     if (gf.flash > 0) gf.flash -= dt;
   }
   if (typeof CLOCK !== 'undefined') CLOCK.tick(dt);
-  // dusk 加速回站（v1.3.1，规格 §13.4 第 3 条）：收尾相位且场上无怪 → boost 每秒
-  //   +0.9 封顶 2（实际速度系数 1+boost，最高 3×）；否则归零。消灭"怪杀完了干等车"。
-  if (typeof CLOCK !== 'undefined' && CLOCK.isDusk() &&
-      (!GS.foes || GS.foes.length === 0)) {
-    ENG.boost = Math.min(2, ENG.boost + dt * 0.9);
-  } else {
-    ENG.boost = 0;
-  }
-  // 塔防迭代（v1.3-rc）：塔攻击 / 怪移动每帧推进。⚠️ 顺序：先塔后怪 ——
-  //   塔这帧打死的怪由 foes.update 当帧清尸，不留"死人再打一下"的窗口。
-  if (typeof TOWERS !== 'undefined') TOWERS.update(dt);
-  if (typeof FOES !== 'undefined') FOES.update(dt);
-  // 车头战斗（v1.3.1）：在 FOES.update 之后调 —— 本帧打掉的 hp 由下一帧清尸
-  //   （与塔的"当帧清尸"差一帧，无碍：尸体 hp≤0 不会再攻击/移动）。
-  ENG.trainCombat(dt);
   ENG.trainFlow(dt);
 };
 
@@ -170,69 +141,6 @@ ENG.update = function (dt) {
 //   · deliverAtStation 只管交付，不关心怎么走到站台的。
 // ⚠️ CLOCK / STATION 用 typeof 守卫：test_rail.js 的沙箱不加载这两个文件。
 // ============================================================================
-
-// ============================================================================
-// 车头战斗（v1.3.1，规格 §13.4 第 2 条）—— 大王拍板：撞击式 + 塔式双攻击，
-//   伤害随波次自动涨（与塔的拖拽合成升星走两套成长轨，车头零投入纯被动）。
-//   · 塔式：每 TRAIN_COMBAT.RATE 秒打射程内离镇中心最近的怪（昼夜不限、停跑不限）；
-//   · 撞击式：行进位置 BUMP_RANGE 内的怪，每怪独立 BUMP_GAP 冷却（f.bumpCd）；
-//   · 只扣血不删怪：尸体统一由 FOES.update 清（与塔同约定）。
-//   车头浮点格坐标由 railCell(index)/(index+1) + frac 插值得出 —— 不依赖 LAY，
-//   test 沙箱（无 main.js）可直调。
-// ============================================================================
-ENG.TRAIN_COMBAT = {
-  dmg: function (wave) { return 8 + 4 * wave; },   // wave1=12，与 1 星火塔同档
-  RATE: 1.0,           // 塔式攻击间隔秒
-  RANGE: 2.5,          // 塔式射程（格，欧氏距离，同塔口径）
-  BUMP_RANGE: 1.2,     // 撞击判定半径（格，车头中心到怪中心）
-  BUMP_GAP: 0.8        // 同一只怪的撞击冷却秒
-};
-
-ENG.trainCombat = function (dt) {
-  if (GS.gameOver || !GS.railPath.length) return;
-  var foes = GS.foes;
-  if (!foes || !foes.length) return;            // 没怪没战斗；bumpCd 也无需衰减
-  if (typeof FOES === 'undefined') return;
-  var dmg = ENG.TRAIN_COMBAT.dmg(FOES.wave);
-  var core = GS.core;
-
-  // 车头浮点格坐标（advanceTrain 的插值同源）
-  var a = GS.railCell(GS.train.index), b = GS.railCell(GS.train.index + 1);
-  var f = GS.train.frac;
-  var fc = a.c + (b.c - a.c) * f, fr = a.r + (b.r - a.r) * f;
-
-  // ---- 撞击式：贴身怪逐个判定（每怪独立冷却）----
-  for (var i = 0; i < foes.length; i++) {
-    var fo = foes[i];
-    if (fo.bumpCd > 0) { fo.bumpCd -= dt; continue; }
-    var bdx = fo.c - fc, bdy = fo.r - fr;
-    if (bdx * bdx + bdy * bdy > ENG.TRAIN_COMBAT.BUMP_RANGE * ENG.TRAIN_COMBAT.BUMP_RANGE) continue;
-    fo.hp -= dmg;
-    fo.bumpCd = ENG.TRAIN_COMBAT.BUMP_GAP;
-    fo.hitFlash = 0.3;
-  }
-
-  // ---- 塔式：射程内挑离镇中心最近的怪，攻速冷却命中 ----
-  ENG.trainAtkCd -= dt;
-  if (ENG.trainAtkCd > 0) return;
-  var best = null, bestD = Infinity;
-  for (var j = 0; j < foes.length; j++) {
-    var fe = foes[j];
-    var dx = fe.c - fc, dy = fe.r - fr;
-    if (dx * dx + dy * dy > ENG.TRAIN_COMBAT.RANGE * ENG.TRAIN_COMBAT.RANGE) continue;
-    var dc = fe.c - core.c, dr = fe.r - core.r;
-    var dCore = dc * dc + dr * dr;
-    if (dCore < bestD) { bestD = dCore; best = fe; }
-  }
-  if (!best) return;
-  best.hp -= dmg;
-  best.hitFlash = 0.25;
-  ENG.trainAtkCd = ENG.TRAIN_COMBAT.RATE;
-  // 攻击连线：浅紫（车斗同色系），rgb 模板给 renderer 拼淡出 alpha
-  if (typeof TOWERS !== 'undefined') {
-    TOWERS.beams.push({ ac: fc, ar: fr, bc: best.c, br: best.r, t: 0.12, rgb: '143,134,255' });
-  }
-};
 
 // 调度器：白天停车，夜晚/收尾行驶
 ENG.trainFlow = function (dt) {
@@ -258,8 +166,7 @@ ENG.advanceTrain = function (dt) {
   // 站台下标（-1 = 没解出站台 → 永不判到站）。判"回到站台下标"而不是"踩到站台格"：
   //   站台若是十字格（railPath 里出现两次），按格子判会一圈交付两次。
   var si = (typeof STATION !== 'undefined') ? STATION.index() : -1;
-  // v1.3.1 dusk 加速回站：boost 由 ENG.update 维护（dusk 无怪每秒 +0.9 封顶 2）
-  tr.frac += CFG.TRAIN_SPEED * (1 + (ENG.boost || 0)) * dt;
+  tr.frac += CFG.TRAIN_SPEED * dt;
   while (tr.frac >= 1) {
     tr.frac -= 1;
     tr.index = (tr.index + 1) % n;
@@ -286,15 +193,12 @@ ENG.stopAtStation = function () {
   return CLOCK.notifyStation();
 };
 
-// 天亮发车（UI「发车」按钮）＝ **开波**（v1.3-rc 拍板：一波 = 一个夜晚）：
-//   先对齐站台、让昼夜模块入夜，再让怪物模块按波次刷怪。
-//   怪清空 → CLOCK.onCleared → dusk 收尾 → 到站回白天 —— 骨架与 v0.9.2 完全一致。
+// 天亮发车（UI「发车」按钮）：先对齐站台，再让昼夜模块入夜
 ENG.startNight = function () {
   if (typeof CLOCK === 'undefined' || !CLOCK.isDay()) return false;
   if (typeof STATION !== 'undefined' && !STATION.ready()) return false;   // 还没成环 → 发不了车
   ENG.parkAtStation();
   CLOCK.startNight();
-  if (typeof FOES !== 'undefined') FOES.startWave();
   return true;
 };
 

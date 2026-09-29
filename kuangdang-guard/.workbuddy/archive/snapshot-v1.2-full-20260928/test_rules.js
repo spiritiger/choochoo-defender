@@ -175,19 +175,19 @@ check('端到端：怪物清空后转入收尾相位', CLOCK.isDusk());
 let steps = 0;
 while (!CLOCK.isDay() && steps < 500) { ENG.advanceTrain(0.5); steps++; }
 check('端到端：到站即收尾回到白天', CLOCK.isDay(), '推进 ' + steps + ' 次仍未到站');
-check('端到端：一圈交付 3 块 × 5 金币 + 站台 10 = 25（v1.3-rc 拍板④：站台额外 +10）',
-  GS.gold - gold0 === 25, '实际 +' + (GS.gold - gold0));
+check('端到端：一圈交付 3 块 × 5 金币 = 15', GS.gold - gold0 === 15,
+  '实际 +' + (GS.gold - gold0));
 check('端到端：交付后车斗清零', GS.train.cargo === 0, '残留 ' + GS.train.cargo);
 check('端到端：停车位置就是站台下标', GS.train.index === STATION.index() && GS.train.frac === 0);
 check('端到端：圈末所有金币地块已重置',
   !GS.goldTiles.some(t => GS.grid[t.r][t.c].harvested === true));
 
-// ---- 第二夜：再跑一圈，累计 50（每圈站台额外 +10）----
+// ---- 第二夜：再跑一圈，累计 30 ----
 check('端到端：第二夜发车成功', ENG.startNight() === true);
 CLOCK.onCleared();
 steps = 0;
 while (!CLOCK.isDay() && steps < 500) { ENG.advanceTrain(0.5); steps++; }
-check('端到端：两圈累计 +50', GS.gold - gold0 === 50, '实际 +' + (GS.gold - gold0));
+check('端到端：两圈累计 +30', GS.gold - gold0 === 30, '实际 +' + (GS.gold - gold0));
 check('端到端：两圈后车斗仍清零', GS.train.cargo === 0);
 
 // ---- 夜晚倒计时（无怪物时）：走完即收尾 ----

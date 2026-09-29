@@ -19,7 +19,7 @@
     var dt = Math.min(0.05, (now - last) / 1000);
     last = now;
     ENG.update(dt);
-    REND.draw(ctx, LAY, UI.move, UI.drag);
+    REND.draw(ctx, LAY, UI.move);
     UI.tick();
     requestAnimationFrame(frame);
   }

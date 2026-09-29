@@ -2,7 +2,7 @@
 window.GS = {};
 
 GS.newGame = function () {
-  GS.gold = 30;   // v1.3.1：初始金币 120 → 30（大王拍板；开局空地仅 2 格，清废墟成为前期核心决策）
+  GS.gold = 120;
 
   GS.buildings = [];
 
@@ -45,21 +45,11 @@ GS.newGame = function () {
   GS.station = null;
   if (typeof CLOCK !== 'undefined') CLOCK.reset();   // 新局回到白天
 
-  // 塔防迭代（v1.3-rc）：塔/怪权威列表 + 镇中心血量（跨波继承）+ 失败旗。
-  //   ⚠️ 数值来源 CFG.CORE_HP（config/map.js）—— 此处不能引用 FOES（加载序在后）。
-  //   TOWERS/FOES 的数组重置由 ENG.restart 统一调 reset（本函数保持模块无关）。
-  GS.towers = [];
-  GS.foes = [];
-  GS.coreMaxHP = CFG.CORE_HP;
-  GS.coreHP = CFG.CORE_HP;
-  GS.gameOver = false;
-
   GS.selToken = null;      // 当前使用的工具：{kind:'shape',si,cells} | {kind:'econ'}
   GS.offer = [];
 
   GS.recomputeRails();
-  // v1.3-rc：三选一退役（拍板分叉 ①），不再自动发牌。nextOffer 保留不调用（回退保险）。
-  // GS.nextOffer(false);
+  GS.nextOffer(false);
 };
 
 // 开局撒金币地块（大王定案 2026-09-21，v0.6.12 修订）：不再预置经济建筑，改为 10 个金币地块。
@@ -1662,11 +1652,6 @@ GS.cardSig = function (card) {
   return Math.min(w, h) + 'x' + Math.max(w, h);
 };
 
-// ⚠️【v1.3-rc 退役】三选一牌组随塔防迭代整体退役（拍板分叉 ①：建造全走
-//   【抽塔】/【清理】两个按钮）。以下函数**冻结保留不调用** —— 无 git 环境
-//   的回退保险（完整快照在 archive/snapshot-v1.2-full-20260928/），
-//   test_rules.js 的既有用例也依赖它们。转正后如确认永不回退，可整体删除。
-//
 // 生成三选一牌组（**保证三个选项互不重复**，v0.6.11 大王定案）：
 //   ① 牌型沿用旧概率——每张 30% 概率是经济建筑，但经济建筑**最多一张**（去重）；
 //   ② 形状按面积档位洗牌后依次发放，所以**每张卡的尺寸家族都不一样**

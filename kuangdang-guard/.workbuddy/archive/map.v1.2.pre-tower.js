@@ -9,9 +9,7 @@ window.CFG = {
   TRAIN_SPEED: 2.6,   // 格/秒
   ECON_RATE: 6,       // 列车每经过一次贴轨经济建筑 +6 金币
   GOLD_RATE: 5,       // 列车驶入金币地块 +5 金币（十字格一圈只算一次）
-  GOLD_TILES: 14,     // 开局生成的金币地块数量（v0.6.15：7 → 14，翻倍试手感）
-  CORE_HP: 60,        // 镇中心初始血量（v1.3-rc 塔防迭代；跨波继承不重置，归零失败）
-  STATION_BONUS: 10   // 到站交付额外 +10 金币（v1.3-rc 拍板 ④："站台一定提供 10 金币"）
+  GOLD_TILES: 14      // 开局生成的金币地块数量（v0.6.15：7 → 14，翻倍试手感）
 };
 
 CFG.inBounds = function (c, r) { return c >= 0 && c < CFG.MAP_COLS && r >= 0 && r < CFG.MAP_ROWS; };

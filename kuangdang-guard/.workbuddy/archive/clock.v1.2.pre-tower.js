@@ -90,12 +90,10 @@ CLOCK.darkness = function () {
   return CLOCK.phase === 'day' ? 0 : CLOCK.CFG.OVERLAY_ALPHA;
 };
 
-// 状态文案（UI 用）。v1.3-rc：夜晚文案带波次号（FOES.wave，typeof 守卫——
-//   test 沙箱可能只载 clock 不载 foes）
+// 状态文案（UI 用）
 CLOCK.label = function () {
-  var w = (typeof FOES !== 'undefined' && FOES.wave > 0) ? ('第' + FOES.wave + '波 ') : '';
-  if (CLOCK.phase === 'day') return '开波';
+  if (CLOCK.phase === 'day') return '发车';
   if (CLOCK.phase === 'dusk') return '收车中';
-  if (CLOCK.overtime) return w + '·等清场';
-  return w + '夜晚 ' + Math.ceil(CLOCK.remain) + 's';
+  if (CLOCK.overtime) return '夜·等清场';
+  return '夜晚 ' + Math.ceil(CLOCK.remain) + 's';
 };

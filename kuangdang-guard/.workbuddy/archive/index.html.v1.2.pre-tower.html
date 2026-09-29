@@ -12,8 +12,6 @@
     <header id="hud">
       <div class="hud-cell"><span class="hud-key">金币</span><span id="hudGold" class="hud-val">0</span></div>
       <div class="hud-cell"><span class="hud-key">车斗</span><span id="hudCargo" class="hud-val">0</span></div>
-      <div class="hud-cell"><span class="hud-key">城墙</span><span id="hudCore" class="hud-val">60</span></div>
-      <div class="hud-cell"><span class="hud-key">波次</span><span id="hudWave" class="hud-val">-</span></div>
       <button id="btnExport" class="hud-btn" title="复制当前地图数据（调试用）">导出地图</button>
       <button id="btnForce" class="hud-btn" title="放开求解时间预算重算铁轨（界面会暂时卡住）">强制刷新</button>
     </header>
@@ -23,33 +21,19 @@
     </div>
 
     <footer id="footer">
+      <div id="cards"></div>
       <div class="actionRow">
-        <!-- v1.3-rc：清理（左）/ 开波（中）/ 抽塔（右）—— 三选一卡组退役 -->
-        <button id="btnClean" class="btn">清理(10)</button>
-        <button id="btnDepart" class="btn">开波</button>
-        <button id="btnSummon" class="btn">抽塔(10)</button>
+        <button id="btnRoll" class="btn">重抽</button>
+        <button id="btnDepart" class="btn">发车</button>
       </div>
       <div id="status"></div>
     </footer>
-
-    <!-- 挑战失败遮罩（v1.3-rc）：镇中心血量归零 → 锁全部操作，只留重开 -->
-    <div id="overOverlay" class="hidden">
-      <div id="overBox">
-        <div id="overTitle">镇中心陷落</div>
-        <div id="overWave">坚守波次：-</div>
-        <button id="btnRestart" class="btn">重新开始</button>
-      </div>
-    </div>
   </div>
 </div>
 
-<!-- 加载序 = 依赖序（v1.3-rc 新增 towers/foes：state 之后、clock 之前；
-     运行时才互调，无加载环。改顺序前先看 docs/设计规格.md §12/§13 -->
 <script src="js/config/map.js"></script>
 <script src="js/state.js"></script>
 <script src="js/station.js"></script>
-<script src="js/towers.js"></script>
-<script src="js/foes.js"></script>
 <script src="js/clock.js"></script>
 <script src="js/transport.js"></script>
 <script src="js/engine.js"></script>

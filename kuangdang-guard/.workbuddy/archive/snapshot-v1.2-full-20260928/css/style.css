@@ -55,13 +55,3 @@ html,body { margin:0; padding:0; height:100%; background:#0b0c12; overflow:hidde
   color:var(--text); font-size:14px; font-weight:600; cursor:pointer; }
 .btn:disabled { opacity:.45; cursor:default; }
 #status { min-height:16px; margin-top:6px; font-size:11px; color:var(--muted); text-align:center; }
-
-/* ---- v1.3-rc 塔防迭代 ---- */
-/* 挑战失败遮罩：盖住整个 app，只留重开按钮 */
-#overOverlay { position:absolute; inset:0; background:rgba(10,10,16,0.82); z-index:10;
-  display:flex; align-items:center; justify-content:center; }
-#overOverlay.hidden { display:none; }
-#overBox { text-align:center; }
-#overTitle { font-size:30px; font-weight:800; color:#e8563f; margin-bottom:10px; }
-#overWave { font-size:14px; color:var(--muted); margin-bottom:22px; }
-#overBox .btn { width:160px; }

@@ -21,10 +21,8 @@ TRANS.load = function (n) {
 };
 
 // 到站交付：车斗一次性并入金币，清零。返回本次交付额。
-//   v1.3-rc 拍板 ④："站台一定提供 10 金币" = **额外 +10**（cargo 之外再送），
-//   保三选一退役后即使空圈也有进账。数量来源 CFG.STATION_BONUS。
 TRANS.deliver = function () {
-  var got = GS.train.cargo + CFG.STATION_BONUS;
+  var got = GS.train.cargo;
   GS.gold += got;
   GS.train.cargo = 0;
   return got;
