@@ -31,6 +31,8 @@ UI.init = function (canvas) {
   if (UI.btnDepart) UI.btnDepart.addEventListener('click', UI.onDepart);
   UI.btnExport = document.getElementById('btnExport');
   if (UI.btnExport) UI.btnExport.addEventListener('click', UI.onExport);
+  UI.btnLog = document.getElementById('btnLog');
+  if (UI.btnLog) UI.btnLog.addEventListener('click', UI.onLogExport);
   UI.btnForce = document.getElementById('btnForce');
   if (UI.btnForce) UI.btnForce.addEventListener('click', UI.onForceRefresh);
   UI.btnRestart.addEventListener('click', UI.onRestart);
@@ -100,8 +102,13 @@ UI.onUp = function (e) {
     }
   } else if (drag.kind === 'clean') {
     // 拖形状清理：合法性走 applyShape（相接≥1 或压内区，与 v1.2 完全同口径）
-    if (!cell) { UI.setStatus('形状作废'); return; }
+    if (!cell) { UI.setStatus('形状作废'); if (typeof LOG !== 'undefined') LOG.add('cleanDiscard', {}); return; }
     var res2 = ENG.applyShape(cell.c, cell.r, drag.shape.cells);
+    if (typeof LOG !== 'undefined') {
+      var lev2 = { shape: drag.shape.name, at: cell.c + ',' + cell.r, ok: res2 === true };
+      if (res2 !== true) lev2.reason = res2;
+      LOG.add(res2 === true ? 'cleanApply' : 'cleanFail', lev2);
+    }
     UI.setStatus(res2 === true ? '已清理' : res2);
     // 失败也作废（按钮每次按下都是付费抽新形状 —— 规格 §13.1 第 8 条口径）
   }
@@ -111,7 +118,7 @@ UI.onCancel = function () { UI.drag = null; };   // 指针被打断（来电等�
 
 // ---- 【抽塔】按钮 ----------------------------------------------------------------
 UI.onSummon = function () {
-  if (!UI.isDay()) { UI.setStatus(GS.gameOver ? '挑战已失败' : '夜晚施工暂停，等列车回到站台'); return; }
+  if (!UI.isDay()) { UI.setStatus(GS.gameOver ? '挑战已失败' : '防守阶段施工暂停，等列车回到站台'); return; }
   var res = TOWERS.summon();
   UI.setStatus(res === true ? '召唤了一座 1 星塔' : res);
 };
@@ -122,10 +129,11 @@ UI.onSummon = function () {
 //   金币白扣+作废全程无提示。现改为：抽到形状**立即显示在画布左上角**，状态栏报
 //   形状名与玩法；指针出画布时幽灵钳在边缘跟着走（松手位置照旧须在画布内才结算）。
 UI.onCleanDown = function (e) {
-  if (!UI.isDay()) { UI.setStatus(GS.gameOver ? '挑战已失败' : '夜晚施工暂停，等列车回到站台'); return; }
+  if (!UI.isDay()) { UI.setStatus(GS.gameOver ? '挑战已失败' : '防守阶段施工暂停，等列车回到站台'); return; }
   if (GS.gold < 10) { UI.setStatus('金币不足（需 10）'); return; }
   GS.gold -= 10;
   UI.cleanShape = CFG.randomShape();       // { name, cells }（矩形 4/6/8 三档，与 v1.2 同池）
+  if (typeof LOG !== 'undefined') LOG.add('cleanPay', { shape: UI.cleanShape.name, cost: 10 });
   // 初始位置放地图区内第一格中央（⚠️ 必须落在 LAY 地图区内：renderer 用
   //   CFG.pickCell(LAY,…) 换算，画布左上角 (0,0) 在地图区外会换算成 null 不画）
   UI.drag = { kind: 'clean', shape: UI.cleanShape, px: LAY.x + LAY.cell / 2, py: LAY.y + LAY.cell / 2 };
@@ -154,10 +162,15 @@ UI.onCleanDown = function (e) {
     UI.drag = null;
     if (!drag || drag.kind !== 'clean') return;
     var p = UI.pointFromEvent(ev);
-    if (!p) { UI.setStatus('形状作废'); return; }
+    if (!p) { UI.setStatus('形状作废'); if (typeof LOG !== 'undefined') LOG.add('cleanDiscard', {}); return; }
     var cell = CFG.pickCell(LAY, p.mx, p.my);
-    if (!cell) { UI.setStatus('形状作废'); return; }
+    if (!cell) { UI.setStatus('形状作废'); if (typeof LOG !== 'undefined') LOG.add('cleanDiscard', {}); return; }
     var res = ENG.applyShape(cell.c, cell.r, drag.shape.cells);
+    if (typeof LOG !== 'undefined') {
+      var lev = { shape: drag.shape.name, at: cell.c + ',' + cell.r, ok: res === true };
+      if (res !== true) lev.reason = res;
+      LOG.add(res === true ? 'cleanApply' : 'cleanFail', lev);
+    }
     UI.setStatus(res === true ? '已清理' : res);
   };
   document.addEventListener('pointermove', mv);
@@ -243,6 +256,21 @@ UI.onExport = function () {
   }
 };
 
+// ---- 导出记录（v1.3.5）：复制本次行为流水（LOG.exportText 的 JSON 行），同走剪贴板 ----
+UI.onLogExport = function () {
+  var text = LOG.exportText();
+  var finish = function (ok) {
+    UI.setStatus(ok ? '已复制行为记录（' + LOG.count() + ' 条事件）'
+                    : '自动复制失败，请在弹窗里手动复制');
+  };
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(text).then(function () { finish(true); },
+                                             function () { UI.copyFallback(text, finish); });
+  } else {
+    UI.copyFallback(text, finish);
+  }
+};
+
 // 剪贴板 API 在 file:// 等非安全环境可能不可用：退回 execCommand，再不行用弹窗手动复制
 UI.copyFallback = function (text, finish) {
   var ok = false;
@@ -307,7 +335,7 @@ UI.tick = function () {
   if (UI.wave) UI.wave.textContent = FOES.wave > 0 ? FOES.wave : '-';
   UI.btnSummon.disabled = !day || GS.gold < TOWERS.CFG.COST;
   UI.btnClean.disabled = !day || GS.gold < 10;
-  // 开波按钮：白天「开波」，夜里显示倒计时 / 波次；非白天一律不可点
+  // 开波按钮：建造阶段「开波」，防守阶段显示倒计时 / 波次；非建造阶段不可点
   if (UI.btnDepart) {
     UI.btnDepart.disabled = !day;
     UI.btnDepart.textContent = day ? '开波'

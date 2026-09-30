@@ -12,6 +12,8 @@ ENG.restart = function () {
   // 车头战斗状态（v1.3.1）：攻速冷却 / dusk 加速累计，重开一律归零
   ENG.trainAtkCd = 0;
   ENG.boost = 0;
+  // 行为记录（v1.3.5）：开局/重开标记（含金币快照），流水靠它切分局
+  if (typeof LOG !== 'undefined') LOG.add('newGame', { gold: GS.gold });
 };
 
 // ---- 清理工具：用形状覆盖格清空废墟 ----
@@ -234,7 +236,7 @@ ENG.trainCombat = function (dt) {
   }
 };
 
-// 调度器：白天停车，夜晚/收尾行驶
+// 调度器：建造阶段停车，防守/收尾行驶
 ENG.trainFlow = function (dt) {
   if (typeof CLOCK !== 'undefined' && !CLOCK.isRunning()) { ENG.parkAtStation(); return; }
   ENG.advanceTrain(dt);
@@ -286,15 +288,19 @@ ENG.stopAtStation = function () {
   return CLOCK.notifyStation();
 };
 
-// 天亮发车（UI「发车」按钮）＝ **开波**（v1.3-rc 拍板：一波 = 一个夜晚）：
-//   先对齐站台、让昼夜模块入夜，再让怪物模块按波次刷怪。
-//   怪清空 → CLOCK.onCleared → dusk 收尾 → 到站回白天 —— 骨架与 v0.9.2 完全一致。
+// 开波（UI「开波」按钮）＝ 建造 → 防守（v1.3-rc 拍板：一波 = 一夜；v1.3.4 昼夜概念退役，
+//   只剩建造/防守两阶段，函数名沿用历史口径）：
+//   先对齐站台、让阶段模块进入防守，再让怪物模块按波次刷怪。
+//   怪清空 → CLOCK.onCleared → dusk 收尾 → 到站回建造 —— 骨架与 v0.9.2 完全一致。
 ENG.startNight = function () {
   if (typeof CLOCK === 'undefined' || !CLOCK.isDay()) return false;
   if (typeof STATION !== 'undefined' && !STATION.ready()) return false;   // 还没成环 → 发不了车
   ENG.parkAtStation();
   CLOCK.startNight();
   if (typeof FOES !== 'undefined') FOES.startWave();
+  // 行为记录（v1.3.5 经济类）：开波（带波次号与金币快照，时间差 = 波时长）
+  if (typeof LOG !== 'undefined') LOG.add('waveStart',
+    { wave: (typeof FOES !== 'undefined') ? FOES.wave : 0, gold: GS.gold });
   return true;
 };
 

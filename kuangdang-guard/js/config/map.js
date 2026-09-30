@@ -4,12 +4,12 @@ window.CFG = {
   CANVAS_H: 844,
   HUD_H: 52,
   FOOTER_H: 232,
-  MAP_COLS: 9,
-  MAP_ROWS: 13,
+  MAP_COLS: 9,        // v1.3.6 曾改 7，同日回退：7×11 上 5×7 圈占全图 45%，金币全挤外圈贴边，体验差
+  MAP_ROWS: 13,       // （同上，回退 9×13）
   TRAIN_SPEED: 2.6,   // 格/秒
   ECON_RATE: 6,       // 列车每经过一次贴轨经济建筑 +6 金币
   GOLD_RATE: 5,       // 列车驶入金币地块 +5 金币（十字格一圈只算一次）
-  GOLD_TILES: 14,     // 开局生成的金币地块数量（v0.6.15：7 → 14，翻倍试手感）
+  GOLD_TILES: 14,     // 开局金币地块数量（沿革：10 → 7(v0.6.14) → 14(v0.6.15) → 7(v1.3.6 随 7×11) → 14 回退）
   CORE_HP: 60,        // 镇中心初始血量（v1.3-rc 塔防迭代；跨波继承不重置，归零失败）
   STATION_BONUS: 10   // 到站交付额外 +10 金币（v1.3-rc 拍板 ④："站台一定提供 10 金币"）
 };
@@ -23,7 +23,7 @@ CFG.fieldH = function () { return CFG.CANVAS_H - CFG.HUD_H - CFG.FOOTER_H; };
 CFG.layout = function () {
   var fieldH = CFG.fieldH();
   var availW = CFG.CANVAS_W - 16;
-  var availH = fieldH - 64;
+  var availH = fieldH - 24;   // v1.3.6：留白 64 → 24（9×13 下格子 38 → 41px，地图更饱满）
   var cell = Math.floor(Math.min(availW / CFG.MAP_COLS, availH / CFG.MAP_ROWS));
   var w = cell * CFG.MAP_COLS;
   var h = cell * CFG.MAP_ROWS;

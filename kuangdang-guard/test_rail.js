@@ -42,9 +42,20 @@ for (const f of ['js/config/map.js', 'js/state.js', 'js/engine.js']) {
 const CFG = sandbox.CFG, GS = sandbox.GS, ENG = sandbox.ENG;   // ENG 供 [11] 的相接口径断言用
 GS.debugNoDeadline = true;   // 测试确定性：跳过 400ms 墙钟（防重负载下偶发掐断求解）
 
-// 地图尺寸与镇中心坐标（v0.6.14 起按 CFG 派生，别再写死 11×15 / 7,5）
+// 地图尺寸与镇中心坐标（按 CFG 派生）。历史钉死盘面（9×13 / 11×15 截图还原）用
+// withSize(9,13) 显式钉住原生尺寸运行——几何与断言不随 CFG 尺寸变化失效
+// （v1.3.6 曾短暂改 7×11 后回退，该机制保留：再改尺寸时钉死盘面不失效），
+// 程序化用例自动跟随 CFG。setupFromRows / ringError / gridText / contourCovTest
+// 全部按 CFG 现值迭代（模块不缓存尺寸）。
 const COLS = CFG.MAP_COLS, ROWS = CFG.MAP_ROWS;
 const CC = Math.floor(COLS / 2), CR = Math.floor(ROWS / 2);
+
+// 临时切换 CFG 网格尺寸（求解器全按 CFG 现值迭代，模块不缓存尺寸），用完恢复
+function withSize(cols, rows, fn) {
+  const oc = CFG.MAP_COLS, orow = CFG.MAP_ROWS;
+  CFG.MAP_COLS = cols; CFG.MAP_ROWS = rows;
+  try { fn(); } finally { CFG.MAP_COLS = oc; CFG.MAP_ROWS = orow; }
+}
 
 // ---- 测试工具 ----
 let pass = 0, fail = 0;
@@ -59,9 +70,9 @@ function check(name, cond, detail) {
 function setupFromRows(rows) {
   GS.grid = [];
   GS.goldTiles = [];
-  for (let r = 0; r < ROWS; r++) {
+  for (let r = 0; r < CFG.MAP_ROWS; r++) {
     const row = [];
-    for (let c = 0; c < COLS; c++) {
+    for (let c = 0; c < CFG.MAP_COLS; c++) {
       const ch = rows[r][c];
       const isGold = ch === 'G' || ch === 'g';
       row.push({
@@ -165,8 +176,8 @@ function ringError(ring) {
     if (wall[k] || flood[k]) return;
     flood[k] = 1; q.push([c, r]);
   };
-  for (let c = 0; c < COLS; c++) { push(c, 0); push(c, ROWS - 1); }
-  for (let r = 0; r < ROWS; r++) { push(0, r); push(COLS - 1, r); }
+  for (let c = 0; c < CFG.MAP_COLS; c++) { push(c, 0); push(c, CFG.MAP_ROWS - 1); }
+  for (let r = 0; r < CFG.MAP_ROWS; r++) { push(0, r); push(CFG.MAP_COLS - 1, r); }
   while (q.length) {
     const cur = q.shift();
     push(cur[0] + 1, cur[1]); push(cur[0] - 1, cur[1]);
@@ -177,10 +188,10 @@ function ringError(ring) {
 }
 
 function gridText(title, f) {
-  const L = [title, '     ' + Array.from({ length: COLS }, (_, c) => String(c % 10)).join(' ')];
-  for (let r = 0; r < ROWS; r++) {
+  const L = [title, '     ' + Array.from({ length: CFG.MAP_COLS }, (_, c) => String(c % 10)).join(' ')];
+  for (let r = 0; r < CFG.MAP_ROWS; r++) {
     let s = 'r' + String(r).padStart(2, ' ') + '  ';
-    for (let c = 0; c < COLS; c++) s += f(c, r) + ' ';
+    for (let c = 0; c < CFG.MAP_COLS; c++) s += f(c, r) + ' ';
     L.push(s);
   }
   return L.join('\n');
@@ -198,15 +209,15 @@ const GOLDEN = [
   '#00#0#11#E#', '0#000#11#0#', '0##0#1110#0', '0000#101#00', '00##E1#1###',
   '#0##1101#0#', '###11001#00', '0##11C0110#', '####11111#0', '###0#####00',
   '###00000#0#', '00E0000000#', '#000#00##0#', '##0##0#0#00', '#00#00##E#0'];
-console.log('\n[1] 黄金用例：大王的 26 格「外轮廓大环」');
-{
+console.log('\n[1] 黄金用例：大王的 26 格「外轮廓大环」（原生 9×13 盘）');
+withSize(9, 13, () => {
   const t = Date.now();
   setupFromRows(GOLDEN);
   GS.recomputeRails();
   const ms = Date.now() - t;
 
   const expect = [], got = [];
-  for (let r = 0; r < ROWS; r++) for (let c = 0; c < COLS; c++) if (GOLDEN[r][c] === '1') expect.push(c + ',' + r);
+  for (let r = 0; r < CFG.MAP_ROWS; r++) for (let c = 0; c < CFG.MAP_COLS; c++) if (GOLDEN[r][c] === '1') expect.push(c + ',' + r);
   for (const p of GS.railPath) got.push(key(p));
   const gset = new Set(got);
 
@@ -219,7 +230,7 @@ console.log('\n[1] 黄金用例：大王的 26 格「外轮廓大环」');
   check('无十字（干净外轮廓）', crossCount(GS.railPath) === 0, '十字 ' + crossCount(GS.railPath) + ' 个');
   console.log('    耗时 ' + ms + 'ms，十字 ' + crossCount(GS.railPath) + ' 个');
   console.log('    ' + gridText('【输出】O=铁轨', (c, r) => GOLDEN[r][c] === '1' ? 'O' : (GOLDEN[r][c] === '#' ? '#' : (GOLDEN[r][c] === 'E' ? 'E' : (GOLDEN[r][c] === 'C' ? 'C' : '.')))));
-}
+});
 
 // ---------------------------------------------------------------------------
 // 2) 开局：只有镇中心 3x3
@@ -308,8 +319,8 @@ console.log('\n[4] 随机地图压力（200 张，45% 废墟）');
 //    地形是一条带 1 格宽脖子的零散空白区。环必须合法；长度只记录、不断言，
 //    这样能直接看见"规则 3 削掉脖子之后剩下多大一块"。
 // ---------------------------------------------------------------------------
-console.log('\n[5] 细脖子局面（截图盘面）');
-{
+console.log('\n[5] 细脖子局面（截图盘面，原生 9×13）');
+withSize(9, 13, () => {
   const SHOT = [
     '###..#..##.', '.#..#...#..', '###E###..##', '#.##..##.#.', '...#..##.##',
     '#...#.#...#', '#..#...#...', '..#..C..E.E', '#.#.....#..', '.###..#.###',
@@ -325,7 +336,7 @@ console.log('\n[5] 细脖子局面（截图盘面）');
     + '（规则 3 会先削掉 1 格宽脖子，剩下的就是"处处 ≥2 格宽"那块地）');
   console.log('    ' + gridText('【输出】O=铁轨 #=废墟 .=空白', (c, r) =>
     GS.railSet[c + ',' + r] ? 'O' : (SHOT[r][c] === '#' ? '#' : (SHOT[r][c] === 'E' ? 'E' : ' '))));
-}
+});
 
 // 覆盖数：环压住「当前轮廓位图 GS.contourB」里多少个格（十字重复经过只计一次）。
 // 这是反缩水的正确度量（v0.6.4）：旧环是否留用、新环是否换上，都以此为准 ——
@@ -334,7 +345,7 @@ console.log('\n[5] 细脖子局面（截图盘面）');
 function contourCovTest(ring) {
   const seen = {}; let cov = 0;
   for (const p of ring) {
-    const z = p.r * COLS + p.c;
+    const z = p.r * CFG.MAP_COLS + p.c;
     if (GS.contourB[z] && !seen[z]) { seen[z] = 1; cov++; }
   }
   return cov;
@@ -382,8 +393,8 @@ console.log('\n[6] 单调性（只清废墟，覆盖数不下降）');
 // ---------------------------------------------------------------------------
 // 7) 顺序生长：玩家一格一格清，环只能长不能塌
 // ---------------------------------------------------------------------------
-console.log('\n[7] 顺序生长不塌陷');
-{
+console.log('\n[7] 顺序生长不塌陷（GOLDEN 原生 9×13 盘）');
+withSize(9, 13, () => {
   setupFromRows(GOLDEN);
   GS.recomputeRails();
   const len0 = GS.railPath.length;
@@ -408,15 +419,15 @@ console.log('\n[7] 顺序生长不塌陷');
   check('顺序清格时环始终合法', illegal === 0, illegal + ' 次非法');
   console.log('    步数轨迹: ' + trace.join(' → '));
   console.log('    覆盖数轨迹: ' + covTrace.join(' → '));
-}
+});
 
 // ---------------------------------------------------------------------------
 // 8) 台阶 / 斜切角：外轮廓在相邻两行错位一格的盘面
 //    这是「哈密顿无解、必须靠十字」的那类形状（大王给的 011/111/110 就是最小例子）。
 //    盘面：中间一条 4 格宽的竖长空地，上下两端各收窄一格 → 轮廓上出现两处 1 格台阶。
 // ---------------------------------------------------------------------------
-console.log('\n[8] 台阶 / 斜切角盘面');
-{
+console.log('\n[8] 台阶 / 斜切角盘面（原生 9×13）');
+withSize(9, 13, () => {
   const STEP = [
     '###########', '###########', '###########', '######...##', '######....#',
     '######....#', '######....#', '######.C..#', '######....#', '######....#',
@@ -437,7 +448,7 @@ console.log('\n[8] 台阶 / 斜切角盘面');
     if (GS.railSet[k]) return vmStep[k] >= 2 ? 'X' : 'O';
     return STEP[r][c] === '#' ? '#' : (STEP[r][c] === 'C' ? 'C' : ' ');
   }));
-}
+});
 
 // ---------------------------------------------------------------------------
 // 9) 斜切角（真的需要十字的盘面）
@@ -449,8 +460,8 @@ console.log('\n[8] 台阶 / 斜切角盘面');
 //    环从镇中心正下方 (4,7) 下来、左边 (3,8) 横过来、右下方 (4,9) 还要继续 ——
 //    那个格必须"竖穿一次 + 横穿一次"，每格只走一次的哈密顿回路在这里无解。
 // ---------------------------------------------------------------------------
-console.log('\n[9] 斜切角盘面（必须用十字的实证）');
-{
+console.log('\n[9] 斜切角盘面（必须用十字的实证，原生 9×13）');
+withSize(9, 13, () => {
   const CROSSCASE = [
     '00000####00', '####0#00##0', '00###0#0###', '###00#00##0', '#00#000#000',
     '00##0####0#', '##0#000##00', '0###0C00###', '0000000#0#0', '#0000#000##',
@@ -476,7 +487,7 @@ console.log('\n[9] 斜切角盘面（必须用十字的实证）');
     if (GS.railSet[k]) return vmCross[k] >= 2 ? 'X' : 'O';
     return CROSSCASE[r][c] === '#' ? '#' : (CROSSCASE[r][c] === 'C' ? 'C' : ' ');
   }));
-}
+});
 
 // ---------------------------------------------------------------------------
 // 10) 缩圈 bug 的**真实**盘面（大王 2026-09-20 截图逐格还原）
@@ -486,8 +497,8 @@ console.log('\n[9] 斜切角盘面（必须用十字的实证）');
 //     v0.6.2 的「精确兜底」在同一张图上给出覆盖 21/32 轮廓格的 26 步大环（无十字，故步数=格数）。
 //     断言用"步数"做代理：轮廓格数在 recomputeRails 内部，测试侧拿不到。
 // ---------------------------------------------------------------------------
-console.log('\n[10] 缩圈 bug 真实盘面（截图逐格还原）');
-{
+console.log('\n[10] 缩圈 bug 真实盘面（截图逐格还原，原生 9×13）');
+withSize(9, 13, () => {
   const SHOTBUG = [
     '##.#.E....#', '.##......#.', '.##.###..##', '.#..#...#.#', '#.#.#.....#',
     '#.##....##.', '.###...#E..', '.....C.....', '..##.....##', '#..#....E#.',
@@ -507,7 +518,7 @@ console.log('\n[10] 缩圈 bug 真实盘面（截图逐格还原）');
     if (GS.railSet[k]) return vmBug[k] >= 2 ? 'X' : 'O';
     return SHOTBUG[r][c] === '#' ? '#' : (SHOTBUG[r][c] === 'C' ? 'C' : (SHOTBUG[r][c] === 'E' ? 'E' : ' '));
   }));
-}
+});
 
 // ---------------------------------------------------------------------------
 // 11) 金币格「在铁轨上 / 圈内」= 当前区域（v0.6.13，大王定案）
@@ -518,8 +529,8 @@ console.log('\n[10] 缩圈 bug 真实盘面（截图逐格还原）');
 //     ⚠️ v0.6.14：地图收成 9×13，原 11×15 盘面按同构平移（镇中心 (4,6)、内区 col3-5
 //        row4-8、金币挖出后环贴着最右两列），断言结构不变。
 // ---------------------------------------------------------------------------
-console.log('\n[11] 金币格在铁轨上/圈内 → 算当前区域');
-{
+console.log('\n[11] 金币格在铁轨上/圈内 → 算当前区域（原生 9×13 盘）');
+withSize(9, 13, () => {
   const GOLDMAP = [
     '###g###g#',   // r0
     '#########',   // r1
@@ -557,7 +568,7 @@ console.log('\n[11] 金币格在铁轨上/圈内 → 算当前区域');
     ENG.shapeContacts(2, 0, S2).count < ENG.MIN_CONTACT && bad !== true, String(bad));
   check('  被拒时地形不变（(2,0)/(3,0) 仍是废墟）',
     GS.grid[0][2].t === 'rubble' && GS.grid[0][3].t === 'rubble');
-}
+});
 
 // ---------------------------------------------------------------------------
 // 12) 起点敏感盘面：DFS 起点写死 Bl[0] 会多出 2 个十字（v0.6.20）
@@ -572,8 +583,8 @@ console.log('\n[11] 金币格在铁轨上/圈内 → 算当前区域');
 //     ⚠️ 断言选"十字数"而不是"步数"：步数是走法口径，会随起点变（54 vs 56 步），
 //        而玩家关心的是"轨道有没有多余的交叉"。
 // ---------------------------------------------------------------------------
-console.log('\n[12] 起点敏感盘面（DFS 起点决定十字数）');
-{
+console.log('\n[12] 起点敏感盘面（DFS 起点决定十字数，原生 9×13）');
+withSize(9, 13, () => {
   const STARTSENS = [
     '##G.###g#',   // r0
     '##..#####',   // r1
@@ -604,7 +615,7 @@ console.log('\n[12] 起点敏感盘面（DFS 起点决定十字数）');
     if (GS.railSet[k]) return vm12[k] >= 2 ? 'X' : 'O';
     return STARTSENS[r][c] === '#' ? '#' : (STARTSENS[r][c] === 'C' ? 'C' : STARTSENS[r][c]);
   }));
-}
+});
 
 // ---------------------------------------------------------------------------
 // [13] 单边半岛往返支线（v0.8.0，大王 2026-09-24 07:21 盘的骨架复刻）
@@ -612,8 +623,8 @@ console.log('\n[12] 起点敏感盘面（DFS 起点决定十字数）');
 //   旧解只能放弃 6 格（rail(12)）；v0.8.0 支线"桥边走 2 次（反向）"把它收编。
 //   理论最优 = 主环 12 + 桥边往返 2 + 半岛周环 6 = 20 步 / 18 格 / 2 十字（桥头 2 格）。
 // ---------------------------------------------------------------------------
-console.log('\n[13] 单边半岛往返支线（0721 盘骨架）');
-{
+console.log('\n[13] 单边半岛往返支线（0721 盘骨架，原生 9×13）');
+withSize(9, 13, () => {
   const PENIN = [
     '#########',
     '#########',
@@ -640,15 +651,15 @@ console.log('\n[13] 单边半岛往返支线（0721 盘骨架）');
     '实际 ' + crossCount(GS.railPath) + ' 个');
   console.log('    步数 = ' + stepsOf(GS.railPath) + ' / 格数 ' + cellsOf(GS.railPath) +
     '，十字 ' + crossCount(GS.railPath) + ' 个（旧版 rail(12)，放弃 6 格）');
-}
+});
 
 // [14] 桥边约束（v0.8.2，大王 2026-09-24 10:42 盘的骨架复刻）
 //   主环南缘已盖住走廊，唯一欠收 = 西侧 2×4 金币半岛（挂单桥边 (1,9)-(1,10)）。
 //   v0.8.1 的 spur 会把三条非桥边各走两遍织成辫子（44 步/7 十字）；
 //   v0.8.2 桥边约束后应为干净解：主环 + 西半岛环 + 桥边往返 = 36 步 / 2 十字。
 // ---------------------------------------------------------------------------
-console.log('\n[14] 桥边约束（10:42 盘骨架）');
-{
+console.log('\n[14] 桥边约束（10:42 盘骨架，原生 9×13）');
+withSize(9, 13, () => {
   const B1042 = [
     '#g######g', '#########', '##g##g###', '#########',
     'g##...##g', '###...###', '..#.C.#g#', 'G.#...###',
@@ -664,14 +675,14 @@ console.log('\n[14] 桥边约束（10:42 盘骨架）');
     '实际 ' + crossCount(GS.railPath) + ' 个（v0.8.1 编织解 7 个）');
   console.log('    步数 = ' + stepsOf(GS.railPath) + ' / 格数 ' + cellsOf(GS.railPath) +
     '，十字 ' + crossCount(GS.railPath) + ' 个（v0.8.1 编织解 44步/7十字）');
-}
+});
 
 // [15] mv=1 起点豁免（v0.8.4，大王 2026-09-24 12:44 盘的骨架复刻）
 //   v0.6.x 起 BFS 剪枝把 vis=1 的起点挡在队外 → maxVisit=1 档 reachStart 恒 false，
 //   "优先每格一次的干净解"从未生效。此盘旧解 50步/2十字，干净解 48步/0十字 一直存在。
 // ---------------------------------------------------------------------------
-console.log('\n[15] mv=1 起点豁免（12:44 盘骨架）');
-{
+console.log('\n[15] mv=1 起点豁免（12:44 盘骨架，原生 9×13）');
+withSize(9, 13, () => {
   const B1244 = [
     '###G..G##', '###....##', 'g##..G###', '###...###',
     '#G....##g', '#.....###', '###.C.###', '#G....##g',
@@ -687,15 +698,15 @@ console.log('\n[15] mv=1 起点豁免（12:44 盘骨架）');
     '实际 ' + stepsOf(GS.railPath) + ' 步');
   console.log('    步数 = ' + stepsOf(GS.railPath) + ' / 格数 ' + cellsOf(GS.railPath) +
     '，十字 ' + crossCount(GS.railPath) + ' 个（修复前 50步/2十字）');
-}
+});
 
 // [46] 主解分岔原生化 + 端头禁令（v1.0，大王 2026-09-28 12:26 导出盘逐格复刻）
 //   主环 12 格（内区轮廓）+ 桥边 (5,8)-(6,8) 挂 2×2 突起。v1.0 起主解 mm=2：
 //   程序重放锤定 = 桥边走 2 次（一来一回），(5,8)(6,8) 双 T 岔（度 3），无十字无端头。
 //   本用例同时锁三件事：①分岔收编照旧成立 ②无十字贴片（重走格全是 T 岔）③无端头（deg=1）。
 // ---------------------------------------------------------------------------
-console.log('\n[46] 主解分岔原生化 + 端头禁令（1226 盘逐格复刻）');
-{
+console.log('\n[46] 主解分岔原生化 + 端头禁令（1226 盘逐格复刻，原生 9×13）');
+withSize(9, 13, () => {
   const B1226 = [
     '#g#####g#', '#########', '####g####', '#########',
     'g##...##g', '###...###', '###.C.#g#', 'g##...##g',
@@ -731,6 +742,22 @@ console.log('\n[46] 主解分岔原生化 + 端头禁令（1226 盘逐格复刻�
   }
   console.log('    步数 = ' + stepsOf(GS.railPath) + ' / 格数 ' + cellsOf(GS.railPath) +
     '，重走格 ' + (stepsOf(GS.railPath) - cellsOf(GS.railPath)) + ' 个（双 T 岔，无十字无端头）');
+});
+
+// [16] 原生尺寸冒烟：全清空 → 外沿边框环（步数 = 2×列 + 2×(行−2)，随 CFG 自动适配）
+console.log('\n[16] 原生 ' + CFG.MAP_COLS + '×' + CFG.MAP_ROWS + '：全清空 → 外沿边框环');
+{
+  const all = [];
+  for (let r = 0; r < CFG.MAP_ROWS; r++) { let s = ''; for (let c = 0; c < CFG.MAP_COLS; c++) s += '0'; all.push(s); }
+  const a = all.map(s => s.split('')); a[CR][CC] = 'C';
+  setupFromRows(a.map(x => x.join('')));
+  GS.recomputeRails();
+  const expectPerim = 2 * CFG.MAP_COLS + 2 * (CFG.MAP_ROWS - 2);
+  check('原生 ' + CFG.MAP_COLS + '×' + CFG.MAP_ROWS + ' 全清空 → ' + expectPerim + ' 步边框环',
+    stepsOf(GS.railPath) === expectPerim, '实际 ' + stepsOf(GS.railPath));
+  check('原生尺寸全清空 → 环合法', !ringError(GS.railPath), ringError(GS.railPath));
+  console.log('    步数 = ' + stepsOf(GS.railPath) + ' / 格数 ' + cellsOf(GS.railPath) +
+    '，十字 ' + crossCount(GS.railPath) + ' 个');
 }
 
 // ---------------------------------------------------------------------------

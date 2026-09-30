@@ -15,7 +15,20 @@ REND.C = {
   bad: 'rgba(232,70,58,0.25)',
   // v1.3-rc 塔元素色板（顺序对应 TOWERS.ELEMS = fire/ice/thunder/poison）
   tower: { fire: '#e8563f', ice: '#6ec6ff', thunder: '#f7d94c', poison: '#9ce06a' },
+  // v1.3.3 攻击范围环用的 rgb 模板串（与上面一一对应；车头 = 攻击连线同款浅紫）
+  towerRGB: { fire: '232,86,63', ice: '110,198,255', thunder: '247,217,76', poison: '156,224,106' },
+  trainRGB: '143,134,255',
   foe: '#e8563f'
+};
+
+// v1.3.3 攻击范围提示（"不抢视觉"口径，规格 §13.5）：细虚线圆 + 极淡填充，
+// **按需出现**，平时零视觉占用 —— 塔环只在按住/拖塔/建造阶段悬停时画，车头环只在防守阶段画。
+REND.RANGE = {
+  LINE_W: 1.2,
+  DASH: [4, 4],
+  drag:  { line: 0.45, fill: 0.08 },   // 按住/拖塔（交互中，最清晰一档）
+  hover: { line: 0.25, fill: 0.04 },   // 建造阶段纯悬停（更淡一档，看一眼就走）
+  train: { line: 0.30, fill: 0.05 }    // 车头攻击环（防守阶段跟随车头）
 };
 
 REND.draw = function (ctx, L, hover, drag) {
@@ -123,13 +136,43 @@ REND.draw = function (ctx, L, hover, drag) {
   }
   ctx.stroke();
 
-  // 夜晚遮罩（v0.9.2，规则 5）：盖住网格与地图内容，工具预览仍在最上层
-  if (typeof CLOCK !== 'undefined' && CLOCK.darkness() > 0) {
-    ctx.fillStyle = 'rgba(18,26,64,' + CLOCK.darkness() + ')';
-    ctx.fillRect(L.x - 4, L.y - 4, L.w + 8, L.h + 8);
+  // v1.3.4 入夜遮罩已删（大王拍板"不再有日夜交替"）：防守/建造画面亮度一致，
+  //   阶段区分只靠开波按钮文案与状态栏；CLOCK.darkness() 恒 0 保留兼容。
+
+  // ---- v1.3.3 攻击范围提示（画在地面上、怪之下：范围是"地面信息"，
+  //      怪 / 攻击连线 / 拖动幽灵保持在上层）—— 细虚线 + 极淡填充，不抢视觉 ----
+  // ① 塔环（只在建造阶段出现 —— 防守阶段操作锁定，画了也是噪声）：
+  //    · 按住/拖塔 → 源塔环（元素色）= 松手前它**正在**提供的覆盖；
+  //      拖到**可合成**目标上 → 目标格再亮一环 = 合成后你将获得的覆盖。
+  //      （UI.onDown 按住塔即开始拖 → "查看某塔范围"与拖动手势天然合一，零学习成本。）
+  //    · 纯悬停（鼠标）→ 更淡一档的环，白天排盘覆盖用，看一眼就走。
+  var dayNow = (typeof CLOCK === 'undefined') || (CLOCK.isDay() && !GS.gameOver);
+  if (drag && drag.kind === 'tower') {
+    var tw = drag.tower;
+    REND.rangeRing(ctx, L, CFG.ccx(L, tw.c), CFG.ccy(L, tw.r), TOWERS.CFG.RANGE,
+                   REND.C.towerRGB[tw.elem] || '255,255,255', REND.RANGE.drag);
+    var tcell = CFG.pickCell(L, drag.px, drag.py);
+    var tdst = tcell ? GS.grid[tcell.r][tcell.c].b : null;
+    if (TOWERS.canMerge(tw, tdst)) {
+      REND.rangeRing(ctx, L, CFG.ccx(L, tdst.c), CFG.ccy(L, tdst.r), TOWERS.CFG.RANGE,
+                     REND.C.towerRGB[tdst.elem] || '255,255,255', REND.RANGE.drag);
+    }
+  } else if (dayNow && hover) {
+    var htw = GS.grid[hover.r][hover.c].b;
+    if (htw && htw.type === 'tower') {
+      REND.rangeRing(ctx, L, CFG.ccx(L, htw.c), CFG.ccy(L, htw.r), TOWERS.CFG.RANGE,
+                     REND.C.towerRGB[htw.elem] || '255,255,255', REND.RANGE.hover);
+    }
+  }
+  // ② 车头攻击环：只在夜里/收尾画（列车在跑、怪在场），浅紫 = 车头攻击连线同色系。
+  //    白天不画（没怪，建造视野保持干净）。撞击圈 1.2 不画 —— 比车头大不了
+  //    多少，画两环反而添乱。
+  if (typeof CLOCK !== 'undefined' && CLOCK.isRunning() && path.length) {
+    var thp = ENG.trainPos();
+    REND.rangeRing(ctx, L, thp.x, thp.y, ENG.TRAIN_COMBAT.RANGE, REND.C.trainRGB, REND.RANGE.train);
   }
 
-  // ---- v1.3-rc 塔防动态层（画在夜遮罩之上：夜里怪必须看得清）----
+  // ---- v1.3-rc 塔防动态层（v1.3.4 起无遮罩，怪直接画在地图上）----
   // 怪：红圆 + 血条（浮点格坐标 → 像素）
   for (var fi = 0; fi < GS.foes.length; fi++) {
     var f = GS.foes[fi];
@@ -218,6 +261,21 @@ REND.draw = function (ctx, L, hover, drag) {
 
   // 工具预览（v1.3-rc 起三选一退役，selToken 恒空 —— 保留调用兼容旧存档调试）
   if (GS.selToken) REND.tokenGhost(ctx, L, hover);
+};
+
+// ---- 攻击范围环（v1.3.3）极淡填充 + 细虚线，两层都压到"刚好可辨"的最低档：----
+// 填充给"盖到哪"的面感，虚线给精确边界。rgb = 'r,g,b' 模板串（同 beams 拼 alpha）；
+// rCells = 半径（格）。只在按需路径上被调（拖塔/悬停/夜里的车头），平时零绘制。
+REND.rangeRing = function (ctx, L, cx, cy, rCells, rgb, style) {
+  var R = rCells * L.cell;
+  if (R <= 0) return;
+  ctx.fillStyle = 'rgba(' + rgb + ',' + style.fill + ')';
+  ctx.beginPath(); ctx.arc(cx, cy, R, 0, 7); ctx.fill();
+  ctx.strokeStyle = 'rgba(' + rgb + ',' + style.line + ')';
+  ctx.lineWidth = REND.RANGE.LINE_W;
+  ctx.setLineDash(REND.RANGE.DASH);
+  ctx.beginPath(); ctx.arc(cx, cy, R, 0, 7); ctx.stroke();
+  ctx.setLineDash([]);
 };
 
 // ---- 铁轨贴片（v0.7.0 贴片化，v0.8.0 增 T 岔 / 折返端头）----------------------

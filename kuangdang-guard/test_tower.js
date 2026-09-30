@@ -9,7 +9,7 @@ const fs = require('fs'), path = require('path'), vm = require('vm');
 const ROOT = __dirname;
 const sb = {}; sb.window = sb; sb.console = console;
 vm.createContext(sb);
-for (const f of ['js/config/map.js', 'js/state.js', 'js/station.js', 'js/towers.js',
+for (const f of ['js/config/map.js', 'js/log.js', 'js/state.js', 'js/station.js', 'js/towers.js',
                  'js/foes.js', 'js/clock.js', 'js/transport.js', 'js/engine.js'])
   vm.runInContext(fs.readFileSync(path.join(ROOT, f), 'utf8'), sb, { filename: f });
 
@@ -193,7 +193,7 @@ check('[43] 重开：失败旗清除、塔怪清空、血量回满', GS.gameOver
 
 // [44] 清理形状仍走旧合法性（v1.2 口径不变）：贴内区可清
 const shape = CFG.randomShape(4);   // 2×2
-const res = ENG.applyShape(3, 9, shape.cells);   // 压住内区底行 (3..4, 8..9 内 y=9)
+const res = ENG.applyShape(3, 9, shape.cells);   // 贴内区底行 (3..4, 8 内 y=9)：相接 2 格放行
 check('[44] 清理形状压内区放行（v1.2 口径）', res === true, String(res));
 
 // ============================================================================
@@ -271,6 +271,110 @@ check('[51b] boost=2 → 速度 ×3', Math.abs(dSl2 / dSl1 - 3) < 0.01, 'd1=' + 
 CLOCK.phase = 'day'; GS.foes = [mkFoe(0, 0, 10)];
 ENG.update(0.5);
 check('[52] 白天/有怪 → 不加速（boost 归零）', ENG.boost === 0);
+
+// ============================================================================
+// [53-56] v1.3.3 刷怪位置偏置：铁轨离哪段边缘近，落点权重就往哪边偏
+//   （规格 §13.5；只偏位置不动数量公式 —— 数量仍走 count(w)）
+// ============================================================================
+FOES.reset();
+GS.newGame();
+
+// [53] 纯函数基本盘：无铁轨 = 基准权重
+check('[53] 无铁轨 → 基准权重（均匀保底）',
+  FOES.spawnWeight(-0.5, 6, []) === FOES.CFG.SPAWN.BASE);
+
+// [54] 同一个边缘点：铁轨贴哪侧，哪侧权重更高
+const wNear = FOES.spawnWeight(-0.5, 6, [{ c: 0, r: 6 }]);   // 轨格就在左缘
+const wFar  = FOES.spawnWeight(-0.5, 6, [{ c: 8, r: 6 }]);   // 轨格在最右（跨整张图）
+check('[54] 铁轨近侧落点权重 > 远侧', wNear > wFar, 'near=' + wNear + ' far=' + wFar);
+
+// [55] 距离超出 R_MAX → 无加成（远边照常出怪，玩家不能完全锁边）
+const wOut = FOES.spawnWeight(-0.5, 0, [{ c: 8, r: 12 }]);
+check('[55] 距轨 ≥ R_MAX → 只剩基准权重', wOut === FOES.CFG.SPAWN.BASE, 'w=' + wOut);
+
+// [56] 统计偏置（seeded RNG）：铁轨压在左缘一列 → 左半场落点明显占多
+const leftRail = [];
+for (let rr = 0; rr < CFG.MAP_ROWS; rr++) leftRail.push({ c: 0, r: rr });
+let leftN = 0;
+const N56 = 600;
+for (let s56 = 0; s56 < N56; s56++) if (FOES.pickSpawn(leftRail).c < CFG.MAP_COLS / 2) leftN++;
+check('[56] 铁轨贴左缘 → 左半场落点占比 > 55%（实际 ' + (leftN / N56 * 100).toFixed(0) + '%）',
+  leftN / N56 > 0.55, 'left=' + leftN + '/' + N56);
+check('[56b] 数量公式未被偏置影响：第 1 波仍 = 2+1',
+  (FOES.reset(), GS.foes.length = 0, FOES.startWave(), GS.foes.length) === 3,
+  'n=' + GS.foes.length);
+GS.foes.length = 0; FOES.reset();
+
+// ============================================================================
+// [57-63] v1.3.5 行为记录（js/log.js）：施工/经济/战斗三类事件流水 + 导出
+//   （前面的用例已经自然产生了一大批事件：summon/merge/deliver/waveStart/
+//    waveEnd/coreHit/gameOver/newGame —— 这里直接验证它们都在缓冲里）
+// ============================================================================
+const LOG = sb.LOG;
+
+// [57] 基本盘：add 返回带 t/ev 的条目，附加字段齐
+const ev57 = LOG.add('test', { a: 1 });
+check('[57] LOG.add 基本盘（t/ev/附加字段）',
+  ev57.ev === 'test' && ev57.a === 1 && typeof ev57.t === 'number');
+
+check('[58] summon 已记录（元素/坐标/费用 10）',
+  LOG.buf.some(e => e.ev === 'summon' && e.cost === 10 && e.elem && e.at));
+check('[59] summonFail 已记录（[8] 金币不足触发过）',
+  LOG.buf.some(e => e.ev === 'summonFail' && e.reason === '金币不足'));
+check('[60] merge 已记录（from/to/新元素/星数）',
+  LOG.buf.some(e => e.ev === 'merge' && e.from && e.to && e.star >= 2));
+check('[61] deliver 已记录（[42] 的 cargo7+bonus10=17，含结余）',
+  LOG.buf.some(e => e.ev === 'deliver' && e.got === 7 + CFG.STATION_BONUS &&
+               e.bonus === CFG.STATION_BONUS && typeof e.gold === 'number'));
+check('[62] waveStart/waveEnd 成对（[36][38b] 触发过）',
+  LOG.buf.some(e => e.ev === 'waveStart') && LOG.buf.some(e => e.ev === 'waveEnd'));
+check('[63] coreHit/gameOver 已记录（[33][34] 触发过）',
+  LOG.buf.some(e => e.ev === 'coreHit') && LOG.buf.some(e => e.ev === 'gameOver'));
+check('[64] newGame 已记录（ENG.restart 触发过多次）',
+  LOG.buf.filter(e => e.ev === 'newGame').length >= 3);
+
+// [65] exportText：头部 + 汇总 + 每行可解析 JSON 且条数对齐
+let ok65 = false;
+(function () {
+  const txt = LOG.exportText();
+  const lines = txt.split('\n');
+  if (lines[0].indexOf('KDG-LOG v1') !== 0) return;
+  if (lines[2].indexOf('# 事件') !== 0 || lines[3].indexOf('# 统计') !== 0) return;
+  let parsed = 0;
+  for (let i = 4; i < lines.length; i++) { JSON.parse(lines[i]); parsed++; }
+  ok65 = parsed === LOG.count() && lines[3].indexOf('goldEarned=') > 0;
+})();
+check('[65] exportText 头部/汇总/JSON 行全部合法', ok65);
+
+// [66] 环形上限：超出丢最旧（改小 CAP 快速验证，完了恢复）
+const ok66 = (function () {
+  LOG.CAP = 5;
+  for (let i = 0; i < 8; i++) LOG.add('x', { n: i });
+  const ok = LOG.buf.length === 5 && LOG.buf[0].n === 3 && LOG.buf[4].n === 7;
+  LOG.CAP = 3000;
+  return ok;
+})();
+check('[66] 环形上限超出丢最旧', ok66);
+
+// ============================================================================
+// [67-69] v1.3.5 补充（大王拍板）：头部 ver/sid + 形状家族归一
+// ============================================================================
+check('[67] 头部第二行 = ver + sid（6 位 base36）',
+  (function () {
+    const l2 = LOG.exportText().split('\n')[1];
+    return l2.indexOf('# ver=' + LOG.VER + ' sid=') === 0 &&
+           /^[0-9a-z]{6}$/.test(l2.slice(l2.indexOf('sid=') + 4));
+  })(),
+  LOG.exportText().split('\n')[1]);
+check('[68] shapeFam 归一：3×2→2×3，2×2 不变，非尺寸名原样返回',
+  LOG.shapeFam('3×2') === '2×3' && LOG.shapeFam('2×2') === '2×2' &&
+  LOG.shapeFam('怪名字') === '怪名字');
+check('[69] 带 shape 的事件自动补 fam（2×3 家族），无 shape 的不加',
+  (function () {
+    const a = LOG.add('cleanApply', { shape: '3×2', at: '0,0', ok: true });
+    const b = LOG.add('summon', { elem: 'fire', star: 1, at: '1,1', cost: 10 });
+    return a.fam === '2×3' && b.fam === undefined;
+  })());
 
 // ---- 汇总 ------------------------------------------------------------------------
 console.log('\n' + '='.repeat(64));

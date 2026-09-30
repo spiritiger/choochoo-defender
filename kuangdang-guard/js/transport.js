@@ -24,9 +24,14 @@ TRANS.load = function (n) {
 //   v1.3-rc 拍板 ④："站台一定提供 10 金币" = **额外 +10**（cargo 之外再送），
 //   保三选一退役后即使空圈也有进账。数量来源 CFG.STATION_BONUS。
 TRANS.deliver = function () {
-  var got = GS.train.cargo + CFG.STATION_BONUS;
+  var cargo = GS.train.cargo;
+  var got = cargo + CFG.STATION_BONUS;
   GS.gold += got;
   GS.train.cargo = 0;
+  // 行为记录（v1.3.5 经济类）：分项金额 + 结余快照
+  if (typeof LOG !== 'undefined') LOG.add('deliver',
+    { wave: (typeof FOES !== 'undefined') ? FOES.wave : 0,
+      cargo: cargo, bonus: CFG.STATION_BONUS, got: got, gold: GS.gold });
   return got;
 };
 

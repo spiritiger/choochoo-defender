@@ -15,6 +15,7 @@
       <div class="hud-cell"><span class="hud-key">城墙</span><span id="hudCore" class="hud-val">60</span></div>
       <div class="hud-cell"><span class="hud-key">波次</span><span id="hudWave" class="hud-val">-</span></div>
       <button id="btnExport" class="hud-btn" title="复制当前地图数据（调试用）">导出地图</button>
+      <button id="btnLog" class="hud-btn" title="复制本次行为记录（JSON 流水，供统计与平衡数值）">导出记录</button>
       <button id="btnForce" class="hud-btn" title="放开求解时间预算重算铁轨（界面会暂时卡住）">强制刷新</button>
     </header>
 
@@ -44,8 +45,10 @@
 </div>
 
 <!-- 加载序 = 依赖序（v1.3-rc 新增 towers/foes：state 之后、clock 之前；
-     运行时才互调，无加载环。改顺序前先看 docs/设计规格.md §12/§13 -->
+     运行时才互调，无加载环。v1.3.5 新增 log：零依赖行为记录器，放 config 之后。
+     改顺序前先看 docs/设计规格.md §12/§13 -->
 <script src="js/config/map.js"></script>
+<script src="js/log.js"></script>
 <script src="js/state.js"></script>
 <script src="js/station.js"></script>
 <script src="js/towers.js"></script>

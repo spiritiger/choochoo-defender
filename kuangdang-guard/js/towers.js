@@ -80,12 +80,20 @@ TOWERS.remove = function (t) {
 // ---- 抽塔（【抽塔】按钮）----------------------------------------------------
 // 10 金币 → 随机合法空格 + 随机元素 1 星。成功返回 true，失败返回错误文案。
 TOWERS.summon = function () {
-  if (GS.gold < TOWERS.CFG.COST) return '金币不足（需 ' + TOWERS.CFG.COST + '）';
+  if (GS.gold < TOWERS.CFG.COST) {
+    if (typeof LOG !== 'undefined') LOG.add('summonFail', { reason: '金币不足' });
+    return '金币不足（需 ' + TOWERS.CFG.COST + '）';
+  }
   var spots = TOWERS.freeSpots();
-  if (!spots.length) return '没有可用的空地';
+  if (!spots.length) {
+    if (typeof LOG !== 'undefined') LOG.add('summonFail', { reason: '没有可用的空地' });
+    return '没有可用的空地';
+  }
   var p = spots[Math.floor(Math.random() * spots.length)];
   GS.gold -= TOWERS.CFG.COST;
-  TOWERS.placeAt(p.c, p.r, TOWERS.randElem(), 1);
+  var t = TOWERS.placeAt(p.c, p.r, TOWERS.randElem(), 1);
+  if (typeof LOG !== 'undefined') LOG.add('summon',
+    { elem: t.elem, star: t.star, at: p.c + ',' + p.r, cost: TOWERS.CFG.COST });
   return true;
 };
 
@@ -99,11 +107,17 @@ TOWERS.canMerge = function (src, dst) {
 };
 
 TOWERS.merge = function (src, dst) {
-  if (!TOWERS.canMerge(src, dst)) return '需要同类同星的两座塔';
+  if (!TOWERS.canMerge(src, dst)) {
+    if (typeof LOG !== 'undefined') LOG.add('mergeFail',
+      { from: src ? (src.c + ',' + src.r) : null, to: dst ? (dst.c + ',' + dst.r) : null });
+    return '需要同类同星的塔';
+  }
   TOWERS.remove(src);                       // 源塔离场（格子弹出、数组移除）
   dst.elem = TOWERS.randElem();             // 类型全随机（不继承）—— 大王拍板
   dst.star += 1;                            // 星级 +1
   dst.flash = 0.4;                          // 合成闪光（renderer 用）
+  if (typeof LOG !== 'undefined') LOG.add('merge',
+    { from: src.c + ',' + src.r, to: dst.c + ',' + dst.r, elem: dst.elem, star: dst.star });
   return true;
 };
 
