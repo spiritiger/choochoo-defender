@@ -332,10 +332,26 @@ GS.countTurns = function (ring) {
   return t;
 };
 
-GS.recomputeRails = function () {
-  var COLS = CFG.MAP_COLS, ROWS = CFG.MAP_ROWS, N = COLS * ROWS;
-  var DC = [1, -1, 0, 0], DR = [0, 0, 1, -1];
-  var CORE_C = GS.core.c, CORE_R = GS.core.r;
+// ============================================================================
+// 求解器工具箱（v2 重构第一步 · 2026-10-11）：原先全部嵌在 recomputeRails
+// 函数体内的闭包函数，机械提升为模块级工厂 —— 行为逐格不变（63 用例回归为闸）。
+//   ▍为什么要提出来：v2（rail-v2 统一乘子图求解）与 v1 共用同一套几何/区域/搜索
+//     原语；嵌套结构下 v2 只能整段复制（项目历史上"同一判据写两份"的病，
+//     档案 2.1/代码注释反复警告过口径分叉），工厂化后唯一定义、两路共用。
+//   ▍工厂每次 recompute 调用新建一个实例（闭包捕获 COLS/ROWS/core/PROT 当场值，
+//     withSize 切尺寸天然兼容），函数体逐字符来自原嵌套实现，未做任何"顺手优化"。
+//   ▍RAIL_DC/RAIL_DR 用模块级常量而非裸 DC/DR：避免污染 window 全局名
+//     （原先 DC/DR 是 recomputeRails 的函数内 var，提出去若沿用旧名会变成
+//     window.DC，与其它脚本的顶层变量有撞名风险）。
+// ============================================================================
+var RAIL_DC = [1, -1, 0, 0], RAIL_DR = [0, 0, 1, -1];
+var RAIL_RANK_CAP = 19;   // 圈空间维数上限（原 RANK_CAP，bestRingExact 用；候选子图 2^19 封顶）
+
+function makeRailSolverKit(COLS, ROWS, coreC, coreR) {
+  var N = COLS * ROWS;
+  var CORE_C = coreC, CORE_R = coreR;
+  var DC = RAIL_DC, DR = RAIL_DR;
+  var PROT = null;   // 晚绑定：调用方先建 kit 取 id/inB 铺位图，位图就绪后 setPROT 注入
 
   function inB(cc, rr) { return CFG.inBounds(cc, rr); }
   function id(cc, rr) { return rr * COLS + cc; }
@@ -349,50 +365,7 @@ GS.recomputeRails = function () {
     return out;
   }
 
-  // ---- 五个上限（数值都有实测依据，别随手调） ----
-  var XMAX = 6;        // 十字格数上限：45° 斜切角一般 1 个就够，给 6 是留余量
-  var HMAX_CAP = 16;   // 补格数（H）上限：避免在怪图上白烧预算（旧名 KMAX_CAP，v0.6.18 改名对齐语义）
-  var TOL_MAX = 6;     // 容差阶梯上限：允许放弃的轮廓格数（6 是实测拐点，见设计规格 §2 步骤 7）
-  var RANK_CAP = 19;   // 圈空间维数上限：候选子图数 = 2^rank，19 → 最多 52.4 万；超了就跳过
-  var SPUR_XMAX = 8;   // ⑤ 支线解的十字上限（v0.8.0）：每个往返桥边自带 2 个桥头十字
-                       //    （进/出各多走一趟），普通十字盘面再叠 1~2 个 → 8 是宽裕上限。
-  var SPUR_BUDGET_MS = 150;  // ⑤ 支线求解器独立墙钟（v0.8.0）。它是增益通道不是保底通道，
-                       //    烧穿 = 保留主解，无正确性风险。
-                       //    ▍150 vs 250 实测（同 60 张随机中后期盘）：采纳数相同（18/60），
-                       //    avg 111→80ms、P90 298→198ms —— 多给的 100ms 一张盘都没多救回来，
-                       //    白烧。搜索运行 21/60、均摊 +55ms（对照 25ms）、贴满墙钟 ≈1/3。
-                       //    嫌卡先调这里；想多救极端盘再往上调。
-
-  // 独立预算工厂（v0.6.5）：每一级兜底拿自己的新预算，上级烧穿不连坐下级。
-  // debugNoDeadline = 测试用确定性开关（关墙钟，见 recomputeRails 末尾注释）。
-  // forceRefresh = 玩家点「强制刷新」时的一次性开关（v0.9.0，UI 侧用完即复位）：
-  //   同样关掉墙钟，把三处时间闸（①700 / ②250 / ⑤150ms）一起放开，让求解器一直搜到
-  //   节点预算耗尽为止 —— 极端"肥带"盘面在闸内搜不出覆盖全部的环时会沿用旧环（表现为
-  //   "新清的地块铁轨没接过去"），这个开关就是让玩家主动用时间换正确性。
-  //   ⚠️ 只放开**预算**，不放宽任何铺轨规则（正交/正交相邻/围住镇中心全照旧）。
-  function freshBudget(ms) {
-    var noDeadline = GS.debugNoDeadline || GS.forceRefresh;
-    return { left: 1500000, deadline: noDeadline ? 1e15 : Date.now() + ms };
-  }
-
-  // 0) 可铺轨位图：已清空为 blank 且不压建筑
-  var usable = new Uint8Array(N);
-  for (var r0 = 0; r0 < ROWS; r0++) {
-    for (var c0 = 0; c0 < COLS; c0++) {
-      var cell0 = GS.grid[r0][c0];
-      usable[id(c0, r0)] = (cell0.t === 'blank' && !cell0.b) ? 1 : 0;
-    }
-  }
-
-  // 镇中心 3x3 邻域：削脖子 / 剥层时受保护，免得削到连小环都围不住
-  var PROT = new Uint8Array(N);
-  for (var pr0 = -1; pr0 <= 1; pr0++) {
-    for (var pc0 = -1; pc0 <= 1; pc0++) {
-      if (inB(CORE_C + pc0, CORE_R + pr0)) PROT[id(CORE_C + pc0, CORE_R + pr0)] = 1;
-    }
-  }
-
-  // ======================= 一、区域求法 =======================
+  // ======================= 区域求法（原嵌套版逐字迁移） =======================
 
   // 1) 主体 U：从镇中心四邻出发的 4 连通洪水
   function floodU(um) {
@@ -534,7 +507,7 @@ GS.recomputeRails = function () {
     return removed;
   }
 
-  // 3c) 找 U 里的 1 格宽脖子（判据见文件头约定 2）
+  // 3c) 找 U 里的 1 格宽脖子（判据见 recomputeRails 文件头约定 2）
   var cutStamp = new Int32Array(N), cutQ = new Int32Array(N), cutCs = 0;
   function neckCells(U) {
     var res = [], total = 0, i, s0;
@@ -602,13 +575,9 @@ GS.recomputeRails = function () {
     return { B: B, Bl: Bl };
   }
 
-  // 5) 候选补格 H（v1.6.9 起铺两层，规格 §2 步骤 6 / §14.8）：
-  //    第一轮 = U 内、非轮廓、四邻至少一个轮廓格（旧口径）；
-  //    第二轮 = 其余可铺轨格中四邻至少一个属「轮廓 ∪ 第一轮补格」者，并入 H。
-  //    ⚠️ 为什么铺两层：只收一层时，离轮廓 ≥2 格的深腹地（清开宽走廊后的内部格）
-  //    对求解器不可见——2026-10-09 大王 17:04 盘实锤：4 个二层格是 32 环必经格，
-  //    不在 A ⇒ 东西两半断开 ⇒ 全链"正确"证明无解 rail(0)，靠旧环沿用掩盖。
-  //    正常局第二轮扫不出新格（H2 全零），零开销。
+  // 5) 候选补格 H（v1.6.9 起铺两层）：第一轮邻轮廓；第二轮邻「轮廓 ∪ 第一轮」。
+  //    ⚠️ 第二轮判据是"邻 H1"，绝不能把 H1 本体排除在候选外（历史实验踩过，
+  //    右耳圈缺格断成树 ⇒ 端头禁令把 DFS 锁死在起点）。
   function helpersOf(U, B, um) {
     var H = new Uint8Array(N), s0, sc, sr, d, nc, nr, nb;
     for (s0 = 0; s0 < N; s0++) {
@@ -621,8 +590,6 @@ GS.recomputeRails = function () {
       if (nb >= 1) H[s0] = 1;
     }
     // 第二轮：非 B、非 H 的可铺轨格，邻 B 或邻 H 即收入
-    // （⚠️ 判据是"邻 H1"，绝不能把 H1 本体排除在候选外——实验期排除过，右耳圈
-    //   缺 (5,9) 断成树 ⇒ 端头禁令把 DFS 锁死在起点，E1~E4 全被坑）
     var H2 = new Uint8Array(N), s1, sc1, sr1, d1, nc1, nr1, q1;
     for (s1 = 0; s1 < N; s1++) {
       if (!U[s1] || B[s1] || H[s1] || !um[s1]) continue;
@@ -638,38 +605,8 @@ GS.recomputeRails = function () {
     return H;
   }
 
-  // ======================= 二、闭环求解（欧拉回路） =======================
-  //
-  //  在 A = B ∪ H 上找一条闭合迹。输出 = 节点索引序列（顺序即行车顺序、首尾相接；
-  //  末位就是起点，调用方按环处理）或 null。
-  //
-  //  budget = { left: 剩余搜索节点数, deadline: 最晚时刻(ms) }：
-  //    节点数是主约束（保证同一局面结果可复现），时间只是防卡死的安全网。
-  //
-  //  ▍参数语义（v0.6.18 改名 + 补注释：只改命名与文档，行为逐格不变）
-  //    hLimit   —— **本轮允许使用的补格（H）数量上限**。是"上限"不是"下限"：
-  //                `helpersUsed >= hLimit` 时不许再踏入新的补格 → 用掉的总数 ≤ hLimit。
-  //                配合调用方 `for (ki = 0; ki <= hLimitCap; ki++)` 逐级递升，
-  //                实现的正是"补格数从 0 往上试、先试更省补格的走法"（首个命中即返回）。
-  //                ⚠️ 别写成 `helpersUsed < hLimit`（下界）：那会让 ki≥1 的档位
-  //                永远进不了第一个补格 → 约束整体失效。实测 300 张盘：
-  //                上界 平均十字 0.157 / 补格 1.93；下界退化为 0.533 / 2.42。
-  //    maxVisit —— 单格最大经过次数（1 = 每格只走一次「无十字」；2 = 允许十字）
-  //    xmax     —— **十字格数量上限**（被走 ≥2 次的格数；只有 maxVisit=2 时才有意义）
-  //    tol      —— 允许放弃的轮廓格数（容差）
-  //    startIdx —— **DFS 起点在 Bl 里的下标**（v0.6.19 新增；不传 = 0 = 旧的"最上最左"）
-  //                起点是搜索树的入口，不同入口能撞到的解不同（详见函数内起点注释）。
-  //    mm       —— 边最大使用次数（v0.8.0 新增，默认按调用方显式传入）：
-  //                1 = 每边最多走一次（旧口径，主求解 ①~④ 全用这个）；
-  //                2 = 允许"往返"——同一条边可走第 2 次，但**必须与第 1 次方向相反**
-  //                    （dirTo 记录第 1 次的终点，只有站在它上面才能折返回去）。
-  //                    这正是"支线进出"的语义：进桥绕一圈原路出桥，列车全程朝前不倒车。
-  //                    只有 ⑤ spurSolver 用 2。
-  //
-  //  ▍本函数产出的三个量（口径务必分清，详见 §13 与 docs/设计规范 §2）
-  //    · 步数 = 返回序列的长度（含重复经过的格；对玩家 = 导出里的 `rail(N)`）
-  //    · 格数 = **去重后**的格数
-  //    · 十字 = 环上被走 **≥2 次**的格数
+  // ======================= 闭环求解（欧拉回路，原嵌套版逐字迁移） =======================
+
   function closedTrail(B, Bl, H, A, budget, hLimit, maxVisit, xmax, tol, startIdx, mm, flip) {
     if (Bl.length < 4) return null;
 
@@ -957,10 +894,11 @@ GS.recomputeRails = function () {
     return found;
   }
 
+  // ======================= 围核 / 圈内 / 三量（原嵌套版逐字迁移） =======================
+
   // 环是否把镇中心围在里面：把环当墙，从地图边界 4 连通洪水，看镇中心还通不通到外面。
   // （比射线法稳：十字会产生回折多边形，射线法的奇偶规则在自交处容易误判。）
-  // ▍通用工具（v0.6.21 抽出，原本 coreEnclosed / innerCells 各写了一遍）：
-  //   把 wall 当墙，从地图四边 4 连通洪水。
+  // ▍通用工具（v0.6.21 抽出）：把 wall 当墙，从地图四边 4 连通洪水。
   //   vis/cs 是"代际戳"（stamp）：每次调用 `cs++`，`vis[z] === cs` 即表示"本轮已访问"。
   //   复用同一组 vis/q 缓冲、靠递增的 cs 区分轮次 —— 省掉每次调用新分配。
   //   ⚠️ 调用方须保证 cs 单调递增（Int32 范围内）且 vis 初值为 0。
@@ -1005,7 +943,7 @@ GS.recomputeRails = function () {
   }
 
   // ▍环的「三个量」统计 + 三级字典序择优（v0.6.22 抽出为唯一定义）
-  //   口径见文件头「三个量」总纲：steps=序列长度、cells=去重格数、cross=被走 ≥2 次的格数。
+  //   口径见 recomputeRails 文件头「三个量」总纲：steps=序列长度、cells=去重格数、cross=被走 ≥2 次的格数。
   //   cov = 环上属于轮廓位图 mark 的**去重**格数（mark 传 null 则不统计）。
   //   同一套判据原先写了两遍（solveOnRegion 的 measure/better、finalRing 的 covOfRing+shapeOf），
   //   合并到此处，避免"改了 A 忘了 B"导致两条择优路径口径分叉。
@@ -1023,13 +961,396 @@ GS.recomputeRails = function () {
       (a.cov === b.cov && a.cross === b.cross && a.cells < b.cells);
   }
 
+  // 合法性复核（与 test_rail.js ringError 同口径）：正交 / 每格 ≤2 / 无向边 ≤2（第 2 次反向）/
+  //   无同向重边 / 围住镇中心。⑥ trimDetours 与 ⑦ reweaveTwins 共用（v1.4.9 提升口径）。
+  function ringOkFull(rr) {
+    var L2 = rr.length, i2;
+    if (L2 < 4) return false;
+    var c2 = {}, e2 = {}, d2 = {};
+    for (i2 = 0; i2 < L2; i2++) {
+      var a2 = rr[i2], b2 = rr[(i2 + 1) % L2];
+      if (Math.abs(a2.c - b2.c) + Math.abs(a2.r - b2.r) !== 1) return false;
+      var ka2 = a2.c + ',' + a2.r, kb2 = b2.c + ',' + b2.r;
+      var ek2 = ka2 < kb2 ? ka2 + '|' + kb2 : kb2 + '|' + ka2;
+      e2[ek2] = (e2[ek2] || 0) + 1;
+      if (e2[ek2] > 2) return false;                 // 无向边上限 2（第 2 次须反向，见下）
+      var dk2 = ka2 + '>' + kb2;
+      if (d2[dk2]) return false;                     // 同向重走同一条边 → 非法
+      d2[dk2] = 1;
+      c2[ka2] = (c2[ka2] || 0) + 1;
+      if (c2[ka2] > 2) return false;                 // 每格最多走 2 次（度数 ≤4）
+    }
+    return enclosesCore(rr);
+  }
+  function trimDetours(ringIn, mark) {
+    var seq = ringIn, round, i, k;
+    var tried = {};                                    // 本轮试过且被否的候选 'i:k'
+    for (round = 0; round < 400; round++) {
+      var L = seq.length;
+      if (L < 5) break;
+      // 轮廓位图（双倍长度，便于环形取前缀和）+ 前缀和 pre[t] = 前 t 格的轮廓格数
+      var mk = new Uint8Array(2 * L), pre = new Int32Array(2 * L + 1);
+      for (i = 0; i < L; i++) mk[i] = mk[i + L] = mark[id(seq[i].c, seq[i].r)] ? 1 : 0;
+      for (i = 0; i < 2 * L; i++) pre[i + 1] = pre[i] + mk[i];
+      // 环上现有的无向边（闸 ① 用）
+      var ecnt = {}, a, b, ek;
+      for (i = 0; i < L; i++) {
+        a = seq[i]; b = seq[(i + 1) % L];
+        var ka = a.c + ',' + a.r, kb = b.c + ',' + b.r;
+        ek = ka < kb ? ka + '|' + kb : kb + '|' + ka;
+        ecnt[ek] = (ecnt[ek] || 0) + 1;
+      }
+      // 闸 ③ 的基准：当前圈内集合
+      var inOld = innerCells(seq), inKeys = [];
+      for (var kk in inOld) inKeys.push(kk);
+      // 挑"削减格数最多"的候选：k = 环上步进，中间格数 = k-1
+      var bi = -1, bk = 0;
+      for (i = 0; i < L; i++) {
+        for (k = 2; k <= L - 3; k++) {                 // 结果长度 = L-k+1 ≥ 4
+          if (pre[i + k] - pre[i + 1] !== 0) break;    // 中间出现轮廓格 → 更远的 k 必然也含它
+          if (k <= bk) continue;
+          var p = seq[i], q = seq[(i + k) % L];
+          if (Math.abs(p.c - q.c) + Math.abs(p.r - q.r) !== 1) continue;
+          var kp = p.c + ',' + p.r, kq = q.c + ',' + q.r;
+          var ne = kp < kq ? kp + '|' + kq : kq + '|' + kp;
+          if (ecnt[ne]) continue;                      // 闸 ①
+          if (tried[i + ':' + k]) continue;
+          bk = k; bi = i;
+        }
+      }
+      if (bi < 0) break;
+      // 应用：摘掉 bi+1 … bi+bk-1，保留 bi 与 bi+bk，收一条直边
+      var out = [seq[bi]], t;
+      for (t = bk; t < L; t++) out.push(seq[(bi + t) % L]);
+      var keepInner = true;
+      if (ringOkFull(out)) {                           // 闸 ②
+        var inNew = innerCells(out);                   // 闸 ③
+        for (t = 0; t < inKeys.length; t++) {
+          if (!inNew[inKeys[t]]) { keepInner = false; break; }
+        }
+      } else keepInner = false;
+      if (keepInner) { seq = out; tried = {}; }
+      else tried[bi + ':' + bk] = 1;
+    }
+    return seq;
+  }
+
+  // ---- ⑦ 相邻双十字重织（v1.4.9）：straightenRing 之后最后一道形状收尾 ----
+  //   ▍病根（14:56 盘实锤）：主解 mm=2 的 DFS 首命中产出"相邻双十字"——两个相邻格各被走
+  //   2 次、8 条关联边全用上，而同覆盖的干净走法存在。straightenRing 的十字配对只优化
+  //   拐弯数且不改变边集，消不掉；择优字典序只在完整解之间比，管不到解内部形状。
+  //   ⚠️ contourB 由调用方传入（v2 与 v1 各自的轮廓位图），闸 ③ 的 ringStats 口径不变。
+  function reweaveTwins(ringIn, contourB) {
+    var seq = ringIn, round, i;
+    for (round = 0; round < 8; round++) {              // 贪心循环：可有多处独立双十字
+      var n = seq.length;
+      if (n < 6) break;
+      var vis = {};
+      for (i = 0; i < n; i++) {
+        var k = seq[i].c + ',' + seq[i].r;
+        (vis[k] = vis[k] || []).push(i);
+      }
+      var twins = [];
+      for (var kk in vis) if (vis[kk].length === 2) twins.push(kk);
+      var applied = false;
+      for (var ai = 0; ai < twins.length && !applied; ai++) {
+        for (var bi = 0; bi < twins.length && !applied; bi++) {
+          if (ai === bi) continue;
+          var pa = twins[ai].split(','), pb = twins[bi].split(',');
+          if (Math.abs(pa[0] - pb[0]) + Math.abs(pa[1] - pb[1]) !== 1) continue;  // A、B 相邻
+          var va = vis[twins[ai]], vb = vis[twins[bi]];
+          // 4 种访问配对 [i1, i2, jb, ja]：要求 B 的某次访问紧跟 A 的某次访问（ja = jb+1）
+          var combos = [
+            [va[0], vb[0], vb[1], va[1]],
+            [va[0], vb[1], vb[0], va[1]],
+            [va[1], vb[0], vb[1], va[0]],
+            [va[1], vb[1], vb[0], va[0]]
+          ];
+          for (var c4 = 0; c4 < 4 && !applied; c4++) {
+            var i1 = combos[c4][0], i2 = combos[c4][1], jb = combos[c4][2], ja = combos[c4][3];
+            if ((jb + 1) % n !== ja) continue;
+            // 旋转到 ja+1 为起点：布局 [P4][A₁][P1][B₁][P2][B₂]，JA = n-1，无回绕分段
+            var s = (ja + 1) % n;
+            var I1 = (i1 - s + n) % n, I2 = (i2 - s + n) % n, JB = (jb - s + n) % n;
+            if (I1 < 1 || I2 <= I1 || JB <= I2 || JB !== n - 2) continue;
+            // ▍唯一几何前提：A₁ 的来路格与 B₁ 的去路格正交相邻
+            var X = seq[(s + I1 - 1) % n], Y = seq[(s + I2 + 1) % n];
+            if (Math.abs(X.c - Y.c) + Math.abs(X.r - Y.r) !== 1) continue;
+            var nr = [], t;
+            for (t = 0; t <= I1 - 1; t++) nr.push(seq[(s + t) % n]);       // P4（不含 A₁）
+            for (t = I2 + 1; t <= JB; t++) nr.push(seq[(s + t) % n]);      // P2（含 B₂）
+            for (t = I2 - 1; t >= I1 + 1; t--) nr.push(seq[(s + t) % n]);  // P1 反向（不含两端）
+            nr.push(seq[(s + I1) % n]);                                    // A₁（保 1 次）
+            if (!ringOkFull(nr)) continue;                                 // 闸 ①
+            var inOld = innerCells(seq), inNew = innerCells(nr), ok2 = true;
+            for (var k3 in inOld) if (!inNew[k3]) { ok2 = false; break; }
+            if (!ok2) continue;                                            // 闸 ②
+            var stO = ringStats(seq, contourB), stN = ringStats(nr, contourB);
+            if (stN.cross >= stO.cross || stN.cov < stO.cov) continue;     // 闸 ③
+            seq = nr; applied = true;
+          }
+        }
+      }
+      if (!applied) break;
+    }
+    return seq;
+  }
+
+  // ======================= 精确兜底：圈空间枚举（原嵌套版逐字迁移） =======================
+
+  function bestRingExact(U, F, um, bud) {
+    var bd = boundaryOf(U, F, um), B = bd.B, Bl = bd.Bl;
+    if (Bl.length < 4) return null;
+    var H = helpersOf(U, B, um);
+    var i, r, c, u, z, k;
+
+    // ---- 建图：顶点 = 轮廓 ∪ 补格；边 = 四邻相邻 ----
+    var inc = new Array(N), EA = [], EB = [], E = 0;
+    var earlyDeadline = bud.deadline || 1e15;
+    var earlyLeft = bud.left || 0;
+    if (earlyLeft <= 0 || Date.now() > earlyDeadline) return null;
+    for (i = 0; i < N; i++) inc[i] = null;
+    for (r = 0; r < ROWS; r++) {
+      for (c = 0; c < COLS; c++) {
+        u = id(c, r);
+        if (!B[u] && !H[u]) continue;
+        if (c + 1 < COLS && (B[u + 1] || H[u + 1])) {
+          if (!inc[u]) inc[u] = [];
+          if (!inc[u + 1]) inc[u + 1] = [];
+          inc[u].push(E); inc[u + 1].push(E); EA.push(u); EB.push(u + 1); E++;
+        }
+        if (r + 1 < ROWS && (B[u + COLS] || H[u + COLS])) {
+          if (!inc[u]) inc[u] = [];
+          if (!inc[u + COLS]) inc[u + COLS] = [];
+          inc[u].push(E); inc[u + COLS].push(E); EA.push(u); EB.push(u + COLS); E++;
+        }
+      }
+    }
+    function other(kk, vv) { return EA[kk] === vv ? EB[kk] : EA[kk]; }
+    var verts = [];
+    for (i = 0; i < N; i++) if (B[i] || H[i]) verts.push(i);
+    if (verts.length < 4 || E < 4) return null;
+
+    // ---- 生成森林（BFS）→ 基本圈基 ----
+    var parE = new Int32Array(N).fill(-1), parV = new Int32Array(N).fill(-1);
+    var dep = new Int32Array(N).fill(-1), seen = new Uint8Array(N);
+    var bfsq = new Int32Array(verts.length), comps = 0;
+    for (i = 0; i < verts.length; i++) {
+      var root = verts[i];
+      if (seen[root]) continue;
+      comps++; seen[root] = 1; dep[root] = 0;
+      var head = 0, tail = 0; bfsq[tail++] = root;
+      while (head < tail) {
+        u = bfsq[head++];
+        var lu = inc[u];
+        if (!lu) continue;
+        for (z = 0; z < lu.length; z++) {
+          k = lu[z];
+          var vv = other(k, u);
+          if (!seen[vv]) { seen[vv] = 1; parE[vv] = k; parV[vv] = u; dep[vv] = dep[u] + 1; bfsq[tail++] = vv; }
+        }
+      }
+    }
+    var rank = E - verts.length + comps;
+    if (rank <= 0 || rank > RAIL_RANK_CAP) return null;      // 维数过大 → 放弃，退回剥层
+
+    var basis = [], cyc, x, y;
+    for (k = 0; k < E; k++) {
+      var ka = EA[k], kb = EB[k];
+      if (parE[ka] === k || parE[kb] === k) continue;    // 树边不算基本圈
+      cyc = [k]; x = ka; y = kb;
+      while (dep[x] > dep[y]) { cyc.push(parE[x]); x = parV[x]; }
+      while (dep[y] > dep[x]) { cyc.push(parE[y]); y = parV[y]; }
+      while (x !== y) { cyc.push(parE[x]); x = parV[x]; cyc.push(parE[y]); y = parV[y]; }
+      basis.push(cyc);
+    }
+    if (basis.length !== rank) return null;              // 理论不会发生，纯保险
+
+    // ---- 穷举 2^rank 种子图，挑最优 ----
+    var inE = new Uint8Array(E), deg = new Int32Array(N);
+    var cwall = new Uint8Array(N), vis = new Int32Array(N).fill(-1);
+    var bq = new Int32Array(N), nB = Bl.length;
+    var stamp = 0, bestCov = -1, bestEdges = null;
+    // 多目标择优的另两个分量（v0.6.17）：十字格数、用到的格数
+    var bestCross = Infinity, bestCells = Infinity;
+    var left = bud.left, deadline = bud.deadline || 1e15;
+
+    // 深检查：偶度 + 连通 + 围住镇中心
+    function fullCheck() {
+      var start = -1, h1, t1, list2, z2, k2, v2;
+      for (h1 = 0; h1 < verts.length; h1++) if (deg[verts[h1]] % 2 === 1) return false;
+      for (h1 = 0; h1 < verts.length; h1++) if (deg[verts[h1]] > 0) { start = verts[h1]; break; }
+      if (start < 0) return false;
+      stamp++;
+      h1 = 0; t1 = 0; bq[t1++] = start; vis[start] = stamp;
+      while (h1 < t1) {
+        u = bq[h1++];
+        list2 = inc[u];
+        if (!list2) continue;
+        for (z2 = 0; z2 < list2.length; z2++) {
+          k2 = list2[z2];
+          if (!inE[k2]) continue;
+          v2 = other(k2, u);
+          if (vis[v2] !== stamp) { vis[v2] = stamp; bq[t1++] = v2; }
+        }
+      }
+      for (h1 = 0; h1 < verts.length; h1++) {
+        v2 = verts[h1];
+        if (deg[v2] > 0 && vis[v2] !== stamp) return false;   // 不连通 → 走不成一条迹
+      }
+      // 墙 = 环经过的格；从地图四边洪水，镇中心还淹得到 → 没围住
+      for (h1 = 0; h1 < N; h1++) cwall[h1] = 0;
+      for (h1 = 0; h1 < verts.length; h1++) if (deg[verts[h1]] > 0) cwall[verts[h1]] = 1;
+      return coreEnclosed(cwall);
+    }
+
+    function visit() {
+      var cov = 0, b1, nv = 0, nc2 = 0;
+      for (b1 = 0; b1 < nB; b1++) if (deg[Bl[b1]] > 0) cov++;
+      for (b1 = 0; b1 < verts.length; b1++) {
+        if (deg[verts[b1]] > 0) { nv++; if (deg[verts[b1]] > 2) nc2++; }
+      }
+      if (cov < bestCov) return;
+      if (cov === bestCov && nc2 > bestCross) return;
+      if (cov === bestCov && nc2 === bestCross && nv >= bestCells) return;
+      if (!fullCheck()) return;
+      bestCov = cov; bestCross = nc2; bestCells = nv; bestEdges = inE.slice();
+    }
+
+    // 异或切换一条基本圈：圈上的边"在/不在"之间翻转（必须真异或，见原注释）。
+    function toggle(cyc) {
+      for (var q = 0; q < cyc.length; q++) {
+        var ke = cyc[q], s = inE[ke] ? -1 : 1;
+        inE[ke] = inE[ke] ? 0 : 1;
+        deg[EA[ke]] += s; deg[EB[ke]] += s;
+      }
+    }
+    function rec(ci) {
+      if (left-- < 0) return;
+      if ((left & 4095) === 0 && Date.now() > deadline) { left = -1; return; }
+      if (ci === rank) { visit(); return; }
+      rec(ci + 1);
+      if (left < 0) return;
+      toggle(basis[ci]);
+      rec(ci + 1);
+      toggle(basis[ci]);
+    }
+    rec(0);
+    bud.left = left;
+    if (!bestEdges) return null;
+
+    // ---- Hierholzer：把选中的偶度子图走成有序闭环 ----
+    var chosen = bestEdges, cdeg = new Int32Array(N), ke2;
+    for (ke2 = 0; ke2 < E; ke2++) if (chosen[ke2]) { cdeg[EA[ke2]]++; cdeg[EB[ke2]]++; }
+    var st = -1;
+    for (i = 0; i < verts.length; i++) if (cdeg[verts[i]] > 0) { st = verts[i]; break; }
+    if (st < 0) return null;
+
+    var ptr = new Int32Array(N), stack = [st], walk = [];
+    while (stack.length) {
+      var v3 = stack[stack.length - 1], lst3 = inc[v3], moved = false;
+      while (lst3 && ptr[v3] < lst3.length) {
+        var kk = lst3[ptr[v3]++];
+        if (chosen[kk]) { chosen[kk] = 0; stack.push(other(kk, v3)); moved = true; break; }
+      }
+      if (!moved) walk.push(stack.pop());
+    }
+    walk.reverse();
+    if (walk.length < 5 || walk[0] !== walk[walk.length - 1]) return null;
+    walk.pop();                                          // 去掉重复的收尾起点
+
+    var ring = ringOf(walk);
+    return enclosesCore(ring) ? ring : null;             // 最后一道保险
+  }
+
+  // 反缩水保险的覆盖数比较（原 contourCov，v0.6.4 口径）
+  function contourCov(ring, B) {
+    var seen = {}, cov = 0, i, z;
+    for (i = 0; i < ring.length; i++) {
+      z = id(ring[i].c, ring[i].r);
+      if (B[z] && !seen[z]) { seen[z] = 1; cov++; }
+    }
+    return cov;
+  }
+
+  return {
+    N: N, id: id, colOf: colOf, rowOf: rowOf, inB: inB, ringOf: ringOf,
+    setPROT: function (p) { PROT = p; },
+    floodU: floodU, computeF: computeF, pruneU: pruneU, normalize: normalize,
+    keepCoreComponent: keepCoreComponent, neckCells: neckCells, thinNeck: thinNeck,
+    boundaryOf: boundaryOf, helpersOf: helpersOf,
+    closedTrail: closedTrail, bestRingExact: bestRingExact,
+    floodFromBorder: floodFromBorder, coreEnclosed: coreEnclosed, enclosesCore: enclosesCore,
+    innerCells: innerCells, ringStats: ringStats, ringBetter: ringBetter,
+    ringOkFull: ringOkFull, contourCov: contourCov, trimDetours: trimDetours,
+    reweaveTwins: reweaveTwins
+  };
+}
+
+GS.recomputeRails = function () {
+  var COLS = CFG.MAP_COLS, ROWS = CFG.MAP_ROWS, N = COLS * ROWS;
+  var DC = RAIL_DC, DR = RAIL_DR;       // v2 重构：原函数内 var 提升为模块常量（防 window 撞名）
+  var CORE_C = GS.core.c, CORE_R = GS.core.r;
+
+  // —— v2 重构（机械拆解）：原嵌套函数已整体迁至模块级 makeRailSolverKit，
+  //    这里只建实例 + 起别名，函数体逐字未动 ⇒ 行为逐格不变（63 用例回归为闸）。——
+  var KIT = makeRailSolverKit(COLS, ROWS, CORE_C, CORE_R);
+  var inB = KIT.inB, id = KIT.id, colOf = KIT.colOf, rowOf = KIT.rowOf, ringOf = KIT.ringOf;
+  var floodU = KIT.floodU, computeF = KIT.computeF, pruneU = KIT.pruneU, normalize = KIT.normalize;
+  var keepCoreComponent = KIT.keepCoreComponent, neckCells = KIT.neckCells, thinNeck = KIT.thinNeck;
+  var boundaryOf = KIT.boundaryOf, helpersOf = KIT.helpersOf;
+  var closedTrail = KIT.closedTrail, bestRingExact = KIT.bestRingExact;
+  var floodFromBorder = KIT.floodFromBorder, coreEnclosed = KIT.coreEnclosed, enclosesCore = KIT.enclosesCore;
+  var innerCells = KIT.innerCells, ringStats = KIT.ringStats, ringBetter = KIT.ringBetter;
+  var ringOkFull = KIT.ringOkFull, contourCov = KIT.contourCov, trimDetours = KIT.trimDetours;
+
+  // ---- 四个上限（数值都有实测依据，别随手调；RANK_CAP 随 bestRingExact 迁为模块常量 RAIL_RANK_CAP） ----
+  var XMAX = 6;        // 十字格数上限：45° 斜切角一般 1 个就够，给 6 是留余量
+  var HMAX_CAP = 16;   // 补格数（H）上限：避免在怪图上白烧预算（旧名 KMAX_CAP，v0.6.18 改名对齐语义）
+  var TOL_MAX = 6;     // 容差阶梯上限：允许放弃的轮廓格数（6 是实测拐点，见设计规格 §2 步骤 7）
+  var SPUR_XMAX = 8;   // ⑤ 支线解的十字上限（v0.8.0）：每个往返桥边自带 2 个桥头十字
+                       //    （进/出各多走一趟），普通十字盘面再叠 1~2 个 → 8 是宽裕上限。
+  var SPUR_BUDGET_MS = 150;  // ⑤ 支线求解器独立墙钟（v0.8.0）。它是增益通道不是保底通道，
+                       //    烧穿 = 保留主解，无正确性风险。
+                       //    ▍150 vs 250 实测（同 60 张随机中后期盘）：采纳数相同（18/60），
+                       //    avg 111→80ms、P90 298→198ms —— 多给的 100ms 一张盘都没多救回来，
+                       //    白烧。搜索运行 21/60、均摊 +55ms（对照 25ms）、贴满墙钟 ≈1/3。
+                       //    嫌卡先调这里；想多救极端盘再往上调。
+
+  // 独立预算工厂（v0.6.5）：每一级兜底拿自己的新预算，上级烧穿不连坐下级。
+  // debugNoDeadline = 测试用确定性开关（关墙钟，见 recomputeRails 末尾注释）。
+  // forceRefresh = 玩家点「强制刷新」时的一次性开关（v0.9.0，UI 侧用完即复位）：
+  //   同样关掉墙钟，把三处时间闸（①700 / ②250 / ⑤150ms）一起放开，让求解器一直搜到
+  //   节点预算耗尽为止 —— 极端"肥带"盘面在闸内搜不出覆盖全部的环时会沿用旧环（表现为
+  //   "新清的地块铁轨没接过去"），这个开关就是让玩家主动用时间换正确性。
+  //   ⚠️ 只放开**预算**，不放宽任何铺轨规则（正交/正交相邻/围住镇中心全照旧）。
+  function freshBudget(ms) {
+    var noDeadline = GS.debugNoDeadline || GS.forceRefresh;
+    return { left: 1500000, deadline: noDeadline ? 1e15 : Date.now() + ms };
+  }
+
+  // 0) 可铺轨位图：已清空为 blank 且不压建筑
+  var usable = new Uint8Array(N);
+  for (var r0 = 0; r0 < ROWS; r0++) {
+    for (var c0 = 0; c0 < COLS; c0++) {
+      var cell0 = GS.grid[r0][c0];
+      usable[id(c0, r0)] = (cell0.t === 'blank' && !cell0.b) ? 1 : 0;
+    }
+  }
+
+  // 镇中心 3x3 邻域：削脖子 / 剥层时受保护，免得削到连小环都围不住
+  var PROT = new Uint8Array(N);
+  for (var pr0 = -1; pr0 <= 1; pr0++) {
+    for (var pc0 = -1; pc0 <= 1; pc0++) {
+      if (inB(CORE_C + pc0, CORE_R + pr0)) PROT[id(CORE_C + pc0, CORE_R + pr0)] = 1;
+    }
+  }
+  KIT.setPROT(PROT);   // 削脖子（neckCells）的保护位图：位图就绪后注入工具箱（晚绑定）
+
   // 并行分片合并用（v1.6 solver-async）：worker 解完把终环的三量统计回传主线程，
-  //   主线程按 ringBetter 同判据合并取最优。ringStats/ringBetter 是 recomputeRails
-  //   函数体内的嵌套实现（本文件 334 行起整个求解器都嵌在体内，每次调用重建），
-  //   ⚠️ 所以本赋值也在体内 —— **首次 recomputeRails 之后 GS.ringStatsOf 才存在**：
-  //     · worker 胶水：先调 recomputeRails 再读它 ⇒ 必然就绪；
-  //     · 主线程合并：只比较 worker 回传的统计数字，不调用它；
-  //     · newGame 开局即调一次 recomputeRails ⇒ 正常游戏随时可用。
+  //   主线程按 ringBetter 同判据合并取最优。ringStats/ringBetter 已随 v2 机械拆解迁入
+  //   makeRailSolverKit（模块级唯一定义，本函数开头起别名引用）；GS.ringStatsOf 仍在此
+  //   挂到 GS 上 —— worker 胶水先调 recomputeRails 再读它 ⇒ 必然就绪。
   GS.ringStatsOf = function (ring) { return ringStats(ring, GS.contourB); };
 
   // 6) 给定区域求环：轮廓 → 补格 → 闭合迹 → 必须围住镇中心
@@ -1130,212 +1451,6 @@ GS.recomputeRails = function () {
     for (var s0 = 0; s0 < N; s0++) if (B[s0] && !PROT[s0]) del.push(s0);
     for (var m = 0; m < del.length; m++) U[del[m]] = 0;
     return del.length;
-  }
-
-  // 6b) 精确兜底（v0.6.2 新增）：容差阶梯也无解时**先别急着剥层**，换一套算法把
-  //     「同一张图上所有可能的闭合迹」里最优的那条找出来。
-  //
-  //     ▍为什么会有 8 格小环（2026-09-20 截图 bug 的根因）
-  //       closedTrail 是「沿轮廓走一圈、中途不许分叉」的深度优先搜索。外轮廓一旦出现台阶/
-  //       凹角，"一圈走完"在这张图上就不可行 —— DFS 推进 1 个节点就再也走不动，直接判无解。
-  //       旧版此时退回「剥掉一层外轮廓」，让区域朝镇中心收缩，环于是从应有的几十格塌成
-  //       紧贴镇中心的 8 格。但同一张图上其实存在覆盖 2/3 轮廓的大环 —— 是**算法选错了**，
-  //       不是真的无解。
-  //
-  //     ▍解法：圈空间（cycle space）枚举
-  //       ① 一条闭合迹 ⟺ 取用的边构成的子图「连通」且「每个顶点度数为偶数」
-  //          （网格图上度数只能是 2 或 4，"偶数"由构造自动满足，不必查）。
-  //       ② 所有"偶度子图" = 若干**基本圈**做异或（对称差）的任意组合。基本圈 = 每条
-  //          "非树边" + 它在生成森林上的唯一回路。维数 rank = 边数 − 顶点数 + 连通块数。
-  //       ③ 于是把 2^rank 种子图全枚举一遍，取「覆盖轮廓格最多、且连通、且围住镇中心」的解。
-  //          先做一次 O(|轮廓|) 的覆盖率比较，覆盖率不够的直接丢掉 —— 多数候选到不了深检查。
-  //       ④ 选中的子图天然偶度 + 连通，用 Hierholzer 走一遍即得有序闭环，可直接喂给渲染。
-  //
-  //     ▍代价（400 局实测）：平均 3.6ms、最差 81ms，与阶梯共用同一份预算，结果可复现。
-  //       命中：67 局"阶梯全败"里改善 56 局，覆盖轮廓格总数 323 → 884；
-  //       剩下 8 局图上确实不存在围住镇中心的偶度环，仍退回剥层。
-  //       详见 docs/铁轨bug诊断-001.md §9。
-  function bestRingExact(U, F, um, bud) {
-    var bd = boundaryOf(U, F, um), B = bd.B, Bl = bd.Bl;
-    if (Bl.length < 4) return null;
-    var H = helpersOf(U, B, um);
-    var i, r, c, u, z, k;
-
-    // ---- 建图：顶点 = 轮廓 ∪ 补格；边 = 四邻相邻。邻接表存「顶点 → 边编号列表」----
-    //   v0.6.17：本函数现在挂在主求解路径上（双路择优），所以建图阶段也要尊重预算。
-    //   建图是 O(N) 的一次扫描，正常情况下零点几毫秒；但如果外层预算已经耗尽（上一路
-    //   烧穿了独立预算），就没必要白建一遍图 —— 直接放弃，让调用方保留 DFS 的解。
-    var inc = new Array(N), EA = [], EB = [], E = 0;
-    var earlyDeadline = bud.deadline || 1e15;
-    var earlyLeft = bud.left || 0;
-    if (earlyLeft <= 0 || Date.now() > earlyDeadline) return null;
-    for (i = 0; i < N; i++) inc[i] = null;
-    for (r = 0; r < ROWS; r++) {
-      for (c = 0; c < COLS; c++) {
-        u = id(c, r);
-        if (!B[u] && !H[u]) continue;
-        if (c + 1 < COLS && (B[u + 1] || H[u + 1])) {
-          if (!inc[u]) inc[u] = [];
-          if (!inc[u + 1]) inc[u + 1] = [];
-          inc[u].push(E); inc[u + 1].push(E); EA.push(u); EB.push(u + 1); E++;
-        }
-        if (r + 1 < ROWS && (B[u + COLS] || H[u + COLS])) {
-          if (!inc[u]) inc[u] = [];
-          if (!inc[u + COLS]) inc[u + COLS] = [];
-          inc[u].push(E); inc[u + COLS].push(E); EA.push(u); EB.push(u + COLS); E++;
-        }
-      }
-    }
-    function other(kk, vv) { return EA[kk] === vv ? EB[kk] : EA[kk]; }
-    var verts = [];
-    for (i = 0; i < N; i++) if (B[i] || H[i]) verts.push(i);
-    if (verts.length < 4 || E < 4) return null;
-
-    // ---- 生成森林（BFS）→ 基本圈基：每条非树边 + 它在树上的唯一回路 ----
-    var parE = new Int32Array(N).fill(-1), parV = new Int32Array(N).fill(-1);
-    var dep = new Int32Array(N).fill(-1), seen = new Uint8Array(N);
-    var bfsq = new Int32Array(verts.length), comps = 0;
-    for (i = 0; i < verts.length; i++) {
-      var root = verts[i];
-      if (seen[root]) continue;
-      comps++; seen[root] = 1; dep[root] = 0;
-      var head = 0, tail = 0; bfsq[tail++] = root;
-      while (head < tail) {
-        u = bfsq[head++];
-        var lu = inc[u];
-        if (!lu) continue;
-        for (z = 0; z < lu.length; z++) {
-          k = lu[z];
-          var vv = other(k, u);
-          if (!seen[vv]) { seen[vv] = 1; parE[vv] = k; parV[vv] = u; dep[vv] = dep[u] + 1; bfsq[tail++] = vv; }
-        }
-      }
-    }
-    var rank = E - verts.length + comps;
-    if (rank <= 0 || rank > RANK_CAP) return null;      // 维数过大 → 放弃，退回剥层
-
-    var basis = [], cyc, x, y;
-    for (k = 0; k < E; k++) {
-      var ka = EA[k], kb = EB[k];
-      if (parE[ka] === k || parE[kb] === k) continue;    // 树边不算基本圈
-      cyc = [k]; x = ka; y = kb;
-      while (dep[x] > dep[y]) { cyc.push(parE[x]); x = parV[x]; }
-      while (dep[y] > dep[x]) { cyc.push(parE[y]); y = parV[y]; }
-      while (x !== y) { cyc.push(parE[x]); x = parV[x]; cyc.push(parE[y]); y = parV[y]; }
-      basis.push(cyc);
-    }
-    if (basis.length !== rank) return null;              // 理论不会发生，纯保险
-
-    // ---- 穷举 2^rank 种子图，挑最优 ----
-    var inE = new Uint8Array(E), deg = new Int32Array(N);
-    var cwall = new Uint8Array(N), vis = new Int32Array(N).fill(-1);
-    var bq = new Int32Array(N), nB = Bl.length;
-    var stamp = 0, bestCov = -1, bestEdges = null;
-    // 多目标择优的另两个分量（v0.6.17，见 visit() 注释）：十字格数、用到的格数
-    var bestCross = Infinity, bestCells = Infinity;
-    var left = bud.left, deadline = bud.deadline || 1e15;
-
-    // 深检查：偶度 + 连通 + 围住镇中心
-    function fullCheck() {
-      var start = -1, h1, t1, list2, z2, k2, v2;
-      // 圈空间的异或构造本该天然保证偶度（见 toggle 注释），这里仍便宜地复核一遍：
-      // 一旦有奇度点，Hierholzer 只能走出一条"路"而非"环"。
-      for (h1 = 0; h1 < verts.length; h1++) if (deg[verts[h1]] % 2 === 1) return false;
-      for (h1 = 0; h1 < verts.length; h1++) if (deg[verts[h1]] > 0) { start = verts[h1]; break; }
-      if (start < 0) return false;
-      stamp++;
-      h1 = 0; t1 = 0; bq[t1++] = start; vis[start] = stamp;
-      while (h1 < t1) {
-        u = bq[h1++];
-        list2 = inc[u];
-        if (!list2) continue;
-        for (z2 = 0; z2 < list2.length; z2++) {
-          k2 = list2[z2];
-          if (!inE[k2]) continue;
-          v2 = other(k2, u);
-          if (vis[v2] !== stamp) { vis[v2] = stamp; bq[t1++] = v2; }
-        }
-      }
-      for (h1 = 0; h1 < verts.length; h1++) {
-        v2 = verts[h1];
-        if (deg[v2] > 0 && vis[v2] !== stamp) return false;   // 不连通 → 走不成一条迹
-      }
-      // 墙 = 环经过的格；从地图四边洪水，镇中心还淹得到 → 没围住
-      for (h1 = 0; h1 < N; h1++) cwall[h1] = 0;
-      for (h1 = 0; h1 < verts.length; h1++) if (deg[verts[h1]] > 0) cwall[verts[h1]] = 1;
-      return coreEnclosed(cwall);
-    }
-
-    function visit() {
-      var cov = 0, b1, nv = 0, nc2 = 0;
-      for (b1 = 0; b1 < nB; b1++) if (deg[Bl[b1]] > 0) cov++;
-      // ---- 多目标择优（v0.6.17）----
-      //   旧版只比"覆盖轮廓格数"：一旦拿到某覆盖率就立刻定案（`cov === bestCov && bestEdges`
-      //   直接 return），于是同覆盖率下**第一条碰到的环**胜出 —— 而枚举顺序会让它常常是
-      //   "带十字的那条"。大王 2026-09-23 报的"右下角不必要的十字"就是这条路径的产物：
-      //   同一批 22 个格子里既有 24 步 2 十字的走法、也有 22 步 0 十字的走法，旧版取了前者。
-      //   现在按字典序三级比较：① 覆盖轮廓格数（越大越好，守住"不缩水"）
-      //                       ② 十字格数（越少越好 —— 度数 4 的格 = 被走 2 次）
-      //                       ③ 用到的格数（越少越好）
-      //   三者都不劣于当前最优才做深检查，因此枚举成本不增反降（多数候选被便宜比较挡掉）。
-      for (b1 = 0; b1 < verts.length; b1++) {
-        if (deg[verts[b1]] > 0) { nv++; if (deg[verts[b1]] > 2) nc2++; }
-      }
-      if (cov < bestCov) return;
-      if (cov === bestCov && nc2 > bestCross) return;
-      if (cov === bestCov && nc2 === bestCross && nv >= bestCells) return;
-      if (!fullCheck()) return;
-      bestCov = cov; bestCross = nc2; bestCells = nv; bestEdges = inE.slice();
-    }
-
-    // 异或切换一条基本圈：圈上的边"在/不在"之间翻转。
-    // ⚠️ 必须是**真异或**，不能写成"置 1 / 置 0"：基本圈之间会共用生成树的边，
-    //    "置 1 → 置 0"在共用边上会退化成**并集**，于是枚举出奇度子图 —— 那种东西
-    //    物理上走不成闭环（Hierholzer 只能走出一条"路"）。异或的逆运算是它自己，故可原样还原。
-    function toggle(cyc) {
-      for (var q = 0; q < cyc.length; q++) {
-        var ke = cyc[q], s = inE[ke] ? -1 : 1;
-        inE[ke] = inE[ke] ? 0 : 1;
-        deg[EA[ke]] += s; deg[EB[ke]] += s;
-      }
-    }
-    function rec(ci) {
-      if (left-- < 0) return;
-      if ((left & 4095) === 0 && Date.now() > deadline) { left = -1; return; }
-      if (ci === rank) { visit(); return; }
-      rec(ci + 1);
-      if (left < 0) return;
-      toggle(basis[ci]);
-      rec(ci + 1);
-      toggle(basis[ci]);
-    }
-    rec(0);
-    bud.left = left;
-    if (!bestEdges) return null;
-
-    // ---- Hierholzer：把选中的偶度子图走成有序闭环（输出格式与 closedTrail 一致：
-    //      首格是起点，不重复收尾）----
-    var chosen = bestEdges, cdeg = new Int32Array(N), ke2;
-    for (ke2 = 0; ke2 < E; ke2++) if (chosen[ke2]) { cdeg[EA[ke2]]++; cdeg[EB[ke2]]++; }
-    var st = -1;
-    for (i = 0; i < verts.length; i++) if (cdeg[verts[i]] > 0) { st = verts[i]; break; }
-    if (st < 0) return null;
-
-    var ptr = new Int32Array(N), stack = [st], walk = [];
-    while (stack.length) {
-      var v3 = stack[stack.length - 1], lst3 = inc[v3], moved = false;
-      while (lst3 && ptr[v3] < lst3.length) {
-        var kk = lst3[ptr[v3]++];
-        if (chosen[kk]) { chosen[kk] = 0; stack.push(other(kk, v3)); moved = true; break; }
-      }
-      if (!moved) walk.push(stack.pop());
-    }
-    walk.reverse();
-    if (walk.length < 5 || walk[0] !== walk[walk.length - 1]) return null;
-    walk.pop();                                          // 去掉重复的收尾起点
-
-    var ring = ringOf(walk);
-    return enclosesCore(ring) ? ring : null;             // 最后一道保险
   }
 
   // 6c) ⑤ 往返支线求解器（v0.8.0，大王拍板："允许每边 ≤2 次、桥上双向、列车全程不倒车"）
@@ -1493,14 +1608,6 @@ GS.recomputeRails = function () {
   //    区域长大之后它往往只剩一半轮廓贴合（玩家看到的"铁轨不跟着清空区走"、金币收不到），
   //    但它格式上更长——按长度比就会一直压过更合身的新解。按覆盖数比，新解更贴合时就正常换新；
   //    而剥层兜底给出的"缩水小环"覆盖数必然更低，仍会被旧环压住，反缩水的本意不受影响。
-  function contourCov(ring, B) {
-    var seen = {}, cov = 0, i, z;
-    for (i = 0; i < ring.length; i++) {
-      z = id(ring[i].c, ring[i].r);
-      if (B[z] && !seen[z]) { seen[z] = 1; cov++; }
-    }
-    return cov;
-  }
   function finalRing(reg, um, B, prevRing, bud) {
     var ring = solveWithLadder(reg, um, bud), prev = null;
     if (prevRing && prevRing.length >= 4) {
@@ -1607,169 +1714,6 @@ GS.recomputeRails = function () {
                        spurWon: spurWon };
   }
 
-  // ---- ⑥ 去冗余绕行（v0.9.1）---------------------------------------------------
-  //   ▍要解决的病（大王 2026-09-25 11:03 盘面实锤）
-  //     环是**增量**维护的：finalRing 的反缩水保险只在覆盖率**严格更高**时才换环（v0.6.4），
-  //     ⑤spurSolver 又在 `cov0 >= Bl.length` 时整趟跳过（已 100% 覆盖就没什么可补）。
-  //     两条叠加 ⇒ 覆盖率一旦摸到 100%，**环的形状就永久冻结**：此后清空区继续长大、
-  //     环上某段老轮廓退化成 interior（不再是轮廓格），那段绕行仍留在环上——
-  //     玩家看到的就是"冗余的弯道"。本盘实例：`… 4,8 3,8 2,8 2,9 3,9 3,10 …`
-  //     其中 (2,8)/(2,9) 已不在轮廓上，(3,8) 也不在，本可直接 `3,8 → 3,9` 竖直南下。
-  //   ▍修法：纯几何后处理，**不动任何铺轨规则**（能铺轨 / 正交 / 围住镇中心全照旧）
-  //     若环上 ring[i] 与 ring[j] 正交相邻，且 i…j 之间的**中间格全是非轮廓格**
-  //     （mark=0，即已不贴轮廓的陈旧格），就用一条直边 ring[i]→ring[j] 取代这段绕行。
-  //   ▍为什么这条替换在三级字典序下"只会更好或持平"（逐条可证）
-  //     · 覆盖数不变：被删的中间格都不在轮廓上；ring[i]/ring[j] 原样保留在环上；
-  //     · 十字数不增：两端格的经过次数不变，被删格的次数只减到 0；
-  //     · 去重格数每轮至少少 1（贪心按"削减最多"优先，逐轮应用）。
-  //   ▍三道保守闸（任一不过就换下一个候选，全试完则原样返回）
-  //     ① 新边必须是环上**尚不存在**的无向边 —— 否则可能在环上叠出往返支线/重边；
-  //     ② 每次应用前做完整合法性复核：逐边正交 / 每格 ≤2 次 / 无向边 ≤2 次 /
-  //        无同向重边 / 仍围住镇中心（与 test_rail.js 的 ringError 同口径）；
-  //     ③ 不得"放出"任何原有圈内格（innerCells 的新集合 ⊇ 旧集合）——
-  //        防止把金币格/已开发区漏到环外（这是本优化唯一可能伤到玩法的方向）。
-  // 合法性复核（与 test_rail.js ringError 同口径，见文件头"三个量"/铁轨规则）。
-  //   v1.4.9：从 trimDetours 局部函数提升为 recomputeRails 级 —— ⑦ reweaveTwins 共用
-  //   同一口径（口径改一处两边同步，别再各写一份）。
-  function ringOkFull(rr) {
-    var L2 = rr.length, i2;
-    if (L2 < 4) return false;
-    var c2 = {}, e2 = {}, d2 = {};
-    for (i2 = 0; i2 < L2; i2++) {
-      var a2 = rr[i2], b2 = rr[(i2 + 1) % L2];
-      if (Math.abs(a2.c - b2.c) + Math.abs(a2.r - b2.r) !== 1) return false;
-      var ka2 = a2.c + ',' + a2.r, kb2 = b2.c + ',' + b2.r;
-      var ek2 = ka2 < kb2 ? ka2 + '|' + kb2 : kb2 + '|' + ka2;
-      e2[ek2] = (e2[ek2] || 0) + 1;
-      if (e2[ek2] > 2) return false;                 // 无向边上限 2（第 2 次须反向，见下）
-      var dk2 = ka2 + '>' + kb2;
-      if (d2[dk2]) return false;                     // 同向重走同一条边 → 非法
-      d2[dk2] = 1;
-      c2[ka2] = (c2[ka2] || 0) + 1;
-      if (c2[ka2] > 2) return false;                 // 每格最多走 2 次（度数 ≤4）
-    }
-    return enclosesCore(rr);
-  }
-  function trimDetours(ringIn, mark) {
-    var seq = ringIn, round, i, k;
-    var tried = {};                                    // 本轮试过且被否的候选 'i:k'
-    for (round = 0; round < 400; round++) {
-      var L = seq.length;
-      if (L < 5) break;
-      // 轮廓位图（双倍长度，便于环形取前缀和）+ 前缀和 pre[t] = 前 t 格的轮廓格数
-      var mk = new Uint8Array(2 * L), pre = new Int32Array(2 * L + 1);
-      for (i = 0; i < L; i++) mk[i] = mk[i + L] = mark[id(seq[i].c, seq[i].r)] ? 1 : 0;
-      for (i = 0; i < 2 * L; i++) pre[i + 1] = pre[i] + mk[i];
-      // 环上现有的无向边（闸 ① 用）
-      var ecnt = {}, a, b, ek;
-      for (i = 0; i < L; i++) {
-        a = seq[i]; b = seq[(i + 1) % L];
-        var ka = a.c + ',' + a.r, kb = b.c + ',' + b.r;
-        ek = ka < kb ? ka + '|' + kb : kb + '|' + ka;
-        ecnt[ek] = (ecnt[ek] || 0) + 1;
-      }
-      // 闸 ③ 的基准：当前圈内集合
-      var inOld = innerCells(seq), inKeys = [];
-      for (var kk in inOld) inKeys.push(kk);
-      // 挑"削减格数最多"的候选：k = 环上步进，中间格数 = k-1
-      var bi = -1, bk = 0;
-      for (i = 0; i < L; i++) {
-        for (k = 2; k <= L - 3; k++) {                 // 结果长度 = L-k+1 ≥ 4
-          if (pre[i + k] - pre[i + 1] !== 0) break;    // 中间出现轮廓格 → 更远的 k 必然也含它
-          if (k <= bk) continue;
-          var p = seq[i], q = seq[(i + k) % L];
-          if (Math.abs(p.c - q.c) + Math.abs(p.r - q.r) !== 1) continue;
-          var kp = p.c + ',' + p.r, kq = q.c + ',' + q.r;
-          var ne = kp < kq ? kp + '|' + kq : kq + '|' + kp;
-          if (ecnt[ne]) continue;                      // 闸 ①
-          if (tried[i + ':' + k]) continue;
-          bk = k; bi = i;
-        }
-      }
-      if (bi < 0) break;
-      // 应用：摘掉 bi+1 … bi+bk-1，保留 bi 与 bi+bk，收一条直边
-      var out = [seq[bi]], t;
-      for (t = bk; t < L; t++) out.push(seq[(bi + t) % L]);
-      var keepInner = true;
-      if (ringOkFull(out)) {                           // 闸 ②
-        var inNew = innerCells(out);                   // 闸 ③
-        for (t = 0; t < inKeys.length; t++) {
-          if (!inNew[inKeys[t]]) { keepInner = false; break; }
-        }
-      } else keepInner = false;
-      if (keepInner) { seq = out; tried = {}; }
-      else tried[bi + ':' + bk] = 1;
-    }
-    return seq;
-  }
-
-  // ---- ⑦ 相邻双十字重织（v1.4.9，大王拍板方案 A 2026-10-08；规格 §2 求解步骤第 10 条）----
-  //   ▍病根（14:56 盘实锤）：主解 mm=2 的 DFS 首命中产出"相邻双十字"——两个相邻格各被走
-  //     2 次、8 条关联边全用上（实锤：rail(50)，(3,9)/(3,10) 双十字，覆盖已满 40/40），
-  //     而同覆盖的干净走法存在（48 步 / 2 重走格）。straightenRing 的十字配对只优化拐弯数
-  //     且不改变边集，消不掉；择优字典序只在完整解之间比，管不到解内部形状。
-  //   ▍重织规则：取相邻双走格 A、B（各恰好 2 次），环序呈 A₁…B₁…B₂ A₂ 布局（B 的第 2 次
-  //     访问紧跟 A 的第 2 次访问），且【A₁ 的来路格与 B₁ 的去路格正交相邻】（唯一几何前提）
-  //     ⇒ 重织为 [P4][P2][P1 反向][A₁]：丢 A、B 的第 2 次经过 + 2 条旧边、新接 1 条边。
-  //     步数 −2 / 去重格数不变 / 十字 −2 / 覆盖不变。
-  //   ▍三道保守闸（与 ⑥ 同口径）：① ringOkFull 全量合法性复核 ② 圈内格只增不减
-  //     ③ 十字严格减少且覆盖不降。⚠️ T 岔不在受理范围（割边半岛 T 岔是几何必需，
-  //     实锤盘的 (3,3)/(3,4) 原样保留——这正是想要的效果）。
-  function reweaveTwins(ringIn) {
-    var seq = ringIn, round, i;
-    for (round = 0; round < 8; round++) {              // 贪心循环：可有多处独立双十字
-      var n = seq.length;
-      if (n < 6) break;
-      var vis = {};
-      for (i = 0; i < n; i++) {
-        var k = seq[i].c + ',' + seq[i].r;
-        (vis[k] = vis[k] || []).push(i);
-      }
-      var twins = [];
-      for (var kk in vis) if (vis[kk].length === 2) twins.push(kk);
-      var applied = false;
-      for (var ai = 0; ai < twins.length && !applied; ai++) {
-        for (var bi = 0; bi < twins.length && !applied; bi++) {
-          if (ai === bi) continue;
-          var pa = twins[ai].split(','), pb = twins[bi].split(',');
-          if (Math.abs(pa[0] - pb[0]) + Math.abs(pa[1] - pb[1]) !== 1) continue;  // A、B 相邻
-          var va = vis[twins[ai]], vb = vis[twins[bi]];
-          // 4 种访问配对 [i1, i2, jb, ja]：要求 B 的某次访问紧跟 A 的某次访问（ja = jb+1）
-          var combos = [
-            [va[0], vb[0], vb[1], va[1]],
-            [va[0], vb[1], vb[0], va[1]],
-            [va[1], vb[0], vb[1], va[0]],
-            [va[1], vb[1], vb[0], va[0]]
-          ];
-          for (var c4 = 0; c4 < 4 && !applied; c4++) {
-            var i1 = combos[c4][0], i2 = combos[c4][1], jb = combos[c4][2], ja = combos[c4][3];
-            if ((jb + 1) % n !== ja) continue;
-            // 旋转到 ja+1 为起点：布局 [P4][A₁][P1][B₁][P2][B₂]，JA = n-1，无回绕分段
-            var s = (ja + 1) % n;
-            var I1 = (i1 - s + n) % n, I2 = (i2 - s + n) % n, JB = (jb - s + n) % n;
-            if (I1 < 1 || I2 <= I1 || JB <= I2 || JB !== n - 2) continue;
-            // ▍唯一几何前提：A₁ 的来路格与 B₁ 的去路格正交相邻
-            var X = seq[(s + I1 - 1) % n], Y = seq[(s + I2 + 1) % n];
-            if (Math.abs(X.c - Y.c) + Math.abs(X.r - Y.r) !== 1) continue;
-            var nr = [], t;
-            for (t = 0; t <= I1 - 1; t++) nr.push(seq[(s + t) % n]);       // P4（不含 A₁）
-            for (t = I2 + 1; t <= JB; t++) nr.push(seq[(s + t) % n]);      // P2（含 B₂）
-            for (t = I2 - 1; t >= I1 + 1; t--) nr.push(seq[(s + t) % n]);  // P1 反向（不含两端）
-            nr.push(seq[(s + I1) % n]);                                    // A₁（保 1 次）
-            if (!ringOkFull(nr)) continue;                                 // 闸 ①
-            var inOld = innerCells(seq), inNew = innerCells(nr), ok2 = true;
-            for (var k3 in inOld) if (!inNew[k3]) { ok2 = false; break; }
-            if (!ok2) continue;                                            // 闸 ②
-            var stO = ringStats(seq, contourB), stN = ringStats(nr, contourB);
-            if (stN.cross >= stO.cross || stN.cov < stO.cov) continue;     // 闸 ③
-            seq = nr; applied = true;
-          }
-        }
-      }
-      if (!applied) break;
-    }
-    return seq;
-  }
   // v1.4.11b（大王令）：预览快速档跳过全部形状抛光（⑥/straighten/⑦）——它们只改
   //   路线长度与重复方式，不改覆盖格集合，预览不需要；正常玩法照旧全跑。
   if (!GS.railFast && ring && ring.length >= 4) ring = trimDetours(ring, contourB);
@@ -1784,7 +1728,7 @@ GS.recomputeRails = function () {
 
   // ---- ⑦ 相邻双十字重织（v1.4.9）：straightenRing 之后最后一道形状收尾 ----
   //   straighten 只重排配对不改变边集；双十字需要整段换边，只能在这里织掉。
-  if (!GS.railFast && ring && ring.length >= 4) ring = reweaveTwins(ring);   // 快速档跳过（同上）
+  if (!GS.railFast && ring && ring.length >= 4) ring = KIT.reweaveTwins(ring, contourB);   // 快速档跳过（同上；工具箱签名带轮廓位图）
 
   if (!ring || ring.length < 4) {
     GS.railPath = [];
