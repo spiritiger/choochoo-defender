@@ -606,8 +606,17 @@ function makeRailSolverKit(COLS, ROWS, coreC, coreR) {
   }
 
   // ======================= 闭环求解（欧拉回路，原嵌套版逐字迁移） =======================
-
-  function closedTrail(B, Bl, H, A, budget, hLimit, maxVisit, xmax, tol, startIdx, mm, flip) {
+  // gate（v2 新增，第 13 参，缺省 = 旧行为逐分支不变）：端头禁令的"脖子门格"放行开关。
+  //   旧禁令：经割边进入孤立边双分量（compIso=1）一律禁——本意是禁"死链"（进去只能
+  //   原路折返整条链，链尾必产 deg=1 端头）。但**单点分量挂着环形分量**的脖子格
+  //   （如 2×2 半岛的单格脖子：脖子两侧都是桥边、对面是环）是可以"去程穿过、
+  //   绕环、回程反穿"的合法通道（该格两次经过、度 4、每边一去一回）——旧禁令
+  //   把 P1（规格 §3-O1）要纳入的半岛整个挡死（debug_v2.js 实锤：全档 null、
+  //   预算不烧，搜索在根部被剪）。
+  //   gate=1 时 treeDead 精化：孤立分量 v 若存在**非孤立分量的邻居**（通向环形
+  //   分量 = 脖子门格）→ 放行；纯走廊链（邻居全是孤立分量或无边）→ 仍禁。
+  //   gate 缺省（v1 全链调用）时 treeDead ≡ compIso，行为逐分支等价（63 用例为闸）。
+  function closedTrail(B, Bl, H, A, budget, hLimit, maxVisit, xmax, tol, startIdx, mm, flip, gate) {
     if (Bl.length < 4) return null;
 
     // 邻居表预先摊平（每个节点最多 4 个邻居），热循环里不再做取模/越界判断
@@ -708,6 +717,23 @@ function makeRailSolverKit(COLS, ROWS, coreC, coreR) {
         while (tstack.length) compId[tstack.pop()] = cid;
         if (lastIso) compIso[cid] = 1;
       }
+      // v2 gate：treeDead[w]=1 才禁入。孤立分量若有"非孤立分量邻居"（脖子门格，
+      //   通向环形分量）→ 放行；无 gate 时与 compIso 完全一致（v1 行为不变）。
+      var treeDead = compIso;                       // gate 缺省：直接沿用旧判定数组
+      if (gate) {
+        treeDead = new Uint8Array(N);
+        for (var tv = 0; tv < N; tv++) {
+          if (!A[tv] || compId[tv] < 0 || !compIso[compId[tv]]) continue;
+          var tvc = colOf(tv), tvr = rowOf(tv), open = false;
+          for (var td = 0; td < 4 && !open; td++) {
+            var tnc = tvc + DC[td], tnr = tvr + DR[td];
+            if (!inB(tnc, tnr)) continue;
+            var tn = id(tnc, tnr);
+            if (A[tn] && compId[tn] >= 0 && !compIso[compId[tn]]) open = true;   // 有环形邻居
+          }
+          treeDead[tv] = open ? 0 : 1;
+        }
+      }
     }
 
     // ▍起点（v0.6.19 可指定）-----------------------------------------------
@@ -783,11 +809,8 @@ function makeRailSolverKit(COLS, ROWS, coreC, coreR) {
         //   非桥边两侧本来就连通，双走不产生新覆盖，只会把走线织成辫子（10:42 盘教训）。
         var goBack = (mm === 2 && uc1 === 1 && dirTo[e1] === cur && isBridge[e1] === 1);
         if (uc1 !== 0 && !goBack) continue;
-        // v1.0 端头禁令：经割边进入"树分量"（边双分量 = 孤立点，无环）一律禁 ——
-        //   进去只能原路折返整条链，链尾必产 deg=1 端头（尽头车挡），大王 2026-09-28 拍板禁掉。
-        //   组件含环 ⟺ 分量 ≥2 点 ⟺ compIso=0。仅 mm=2 判（mm=1 进得去回不来，BFS 剪枝自动拦）。
-        //   ⚠️ 与下方 BFS 可达性 / 死格检查三处同口径，改一处必改三处。
-        if (mm === 2 && uc1 === 0 && isBridge[e1] === 1 && compIso[compId[w]] === 1) continue;
+        // v1.0 端头禁令：经割边进入"树分量"一律禁（v2 gate 下 treeDead 已精化，见函数头）
+        if (mm === 2 && uc1 === 0 && isBridge[e1] === 1 && treeDead[w] === 1) continue;
         var grp = goBack ? (wantIdx >= 0 ? 2 : 1)
                          : ((wantIdx >= 0 && t2 === wantIdx) ? 0 : (wantIdx >= 0 ? 1 : 0));
         // v0.9 flip：直行/拐弯试序翻转（生成多样性 —— DFS 先命中先返回，直行优先会让
@@ -836,7 +859,7 @@ function makeRailSolverKit(COLS, ROWS, coreC, coreR) {
             if (uc4 !== 0 && !(mm === 2 && uc4 === 1 && dirTo[e4] === u && isBridge[e4] === 1)) continue;
             var v4 = anbr[ub + t4];
             // v1.0 端头禁令（与前进判据同口径，否则剪枝高估可达性）：禁经割边入树分量
-            if (mm === 2 && uc4 === 0 && isBridge[e4] === 1 && compIso[compId[v4]] === 1) continue;
+            if (mm === 2 && uc4 === 0 && isBridge[e4] === 1 && treeDead[v4] === 1) continue;
             // ⚠️ v4 === start 必须豁免（v0.8.4 修）：起点 vis=1，若按 maxVisit 挡，
             //   maxVisit=1 档的 BFS 永远 reachStart=false → mv=1 调用全灭（探针实锤：
             //   每档只烧 1 个节点）。这个 bug 从 v0.6.x 就在 —— "优先每格一次的干净解"
@@ -862,7 +885,7 @@ function makeRailSolverKit(COLS, ROWS, coreC, coreR) {
               //   v1.0 端头禁令同口径：割边对面的树分量不算出路（进得去出不来）。
               if (e5 >= 0 && (vis[nb5] < maxVisit || nb5 === start)) {
                 if (uc5 === 0) {
-                  if (!(mm === 2 && isBridge[e5] === 1 && compIso[compId[nb5]] === 1)) { have = 1; break; }
+                  if (!(mm === 2 && isBridge[e5] === 1 && treeDead[nb5] === 1)) { have = 1; break; }
                 } else if (mm === 2 && uc5 === 1 && dirTo[e5] === bs && isBridge[e5] === 1) {
                   have = 1; break;
                 }
@@ -1730,6 +1753,11 @@ GS.recomputeRails = function () {
   //   straighten 只重排配对不改变边集；双十字需要整段换边，只能在这里织掉。
   if (!GS.railFast && ring && ring.length >= 4) ring = KIT.reweaveTwins(ring, contourB);   // 快速档跳过（同上；工具箱签名带轮廓位图）
 
+  // —— T1 世界观探针（规格 §5-T1）：输出块前捕获一次，空环/成环两分支都覆盖 ——
+  if (GS.railProbeOn) {
+    __railProbeCapture('v1', region.U, contourB, null, null, null, ring,
+      ring ? ringStats(ring, contourB) : null, { provenance: 'v1-chain' });
+  }
   if (!ring || ring.length < 4) {
     GS.railPath = [];
     GS.railSet = {};
@@ -1763,6 +1791,341 @@ GS.recomputeRails = function () {
   // 站台（v0.9.2，规则 3）：铁轨一变，站台随即重选（叠加在轨格上，不占新格）。
   //   守卫生效场景：test_rail.js 沙箱不加载 station.js。
   if (typeof STATION !== 'undefined') STATION.solve(GS.railPath);
+};
+
+// ============================================================================
+// T1 世界观探针（规格 §5-T1，2026-10-11）：一键 dump 求解器世界观。
+//   用法：GS.railProbeOn = true; GS.recomputeRails(); console.log(GS.railProbeText());
+//   动机：档案 1.1/1.2 两起盲区病各耗半天，有探针十分钟破案（重构前性价比最高的工装）。
+//   捕获点：v1 在输出块前（空环/成环双分支）；v2 在函数尾（含区域构成与终选来源）。
+// ============================================================================
+GS.railProbeOn = false;
+GS.railProbeData = null;
+
+function __railProbeCapture(mode, U, B, H, pen, rm, ring, st, extra) {
+  var N = CFG.MAP_COLS * CFG.MAP_ROWS;
+  function cp(a) { return a ? a.slice() : null; }
+  GS.railProbeData = {
+    mode: mode, U: cp(U), B: cp(B), H: cp(H),
+    pen: cp(pen),            // v2：加回的块状半岛（含脖子通道，P1 判据命中）
+    rm: cp(rm),              // v2：仍被削掉的一格宽走廊（P1 排除）
+    ring: ring ? ring.slice() : null, st: st, extra: extra || {}
+  };
+}
+
+GS.railProbeText = function () {
+  var d = GS.railProbeData;
+  if (!d) return '(no probe data — GS.railProbeOn = true 后再跑一次求解)';
+  var COLS = CFG.MAP_COLS, ROWS = CFG.MAP_ROWS;
+  var cnt = function (a) { var n = 0; if (a) for (var i = 0; i < a.length; i++) n += a[i] ? 1 : 0; return n; };
+  var lines = [];
+  var st = d.st || { cov: 0, cross: 0, cells: 0 };
+  lines.push('== rail probe（' + d.mode + '）==');
+  lines.push('|U|=' + cnt(d.U) + '  |B|=' + cnt(d.B) + '  |H|=' + cnt(d.H) +
+             '  |半岛加回|=' + cnt(d.pen) + '  |走廊削除|=' + cnt(d.rm));
+  lines.push('环: 步数=' + (d.ring ? d.ring.length : 0) + '  cov=' + st.cov + '/' + cnt(d.B) +
+             '  重走格=' + st.cross + '  去重格=' + st.cells + '  来源=' + (d.extra.provenance || '?'));
+  if (d.extra.note) lines.push(d.extra.note);
+  lines.push('');
+  var railSet = {};
+  if (d.ring) for (var q = 0; q < d.ring.length; q++) railSet[d.ring[q].c + ',' + d.ring[q].r] = 1;
+  for (var r = 0; r < ROWS; r++) {
+    var s = '';
+    for (var c = 0; c < COLS; c++) {
+      var i = r * COLS + c, cell = GS.grid[r][c], ch;
+      if (cell.b) ch = cell.b.type === 'core' ? 'C' : 'T';
+      else if (railSet[c + ',' + r]) ch = 'R';
+      else if (d.B && d.B[i]) ch = 'B';
+      else if (d.H && d.H[i]) ch = 'h';
+      else if (d.pen && d.pen[i]) ch = 'P';
+      else if (d.rm && d.rm[i]) ch = 'x';
+      else if (d.U && d.U[i]) ch = 'u';
+      else ch = cell.t === 'rubble' ? '#' : '.';
+      s += ch;
+    }
+    lines.push(s);
+  }
+  lines.push('图例: C镇中心 T建筑 R铁轨 B轮廓 h补格 P半岛加回 x走廊削除 u区域内 #废墟 .空地(区外)');
+  return lines.join('\n');
+};
+
+// ============================================================================
+// rail-v2：统一乘子图求解器（规格 docs/铁轨求解统一需求规格.md v0.2，2026-10-11）
+//
+//   ▍与 v1 的结构差异（设计方向 D1–D7，规格附录 A）
+//     · 区域（D1+P1）：不再永久截肢块状半岛 —— thinNeck 照跑，但被削分量里
+//       **含 2×2 块**（块状空地，P1 拍板 2026-10-11）的整分量加回；一格宽长走廊
+//       （1 维链）仍排除。覆盖基准集 B* 因此含半岛轮廓格（09:12 盘正确性缺陷的根治）。
+//     · 求解（D2）：单一 mm=2 乘子图通道（主解/⑤支线合一），xcap 阶梯 0/2/4/6/8
+//       （0 = 干净解优先，继承旧 mv=1 哲学）× flip 双跑；「si=0 定容差档 → 全起点
+//       择优 + 双闸早停」结构与 v1 主解同构（分片合并口径因此保持一致）。
+//       补格不爬阶梯（hCap 直接给满，⑤ 的实证结论：爬阶梯的失败证明是指数阶白烧）。
+//     · 保底（D3+R3）：进场先备好合法环（旧环复验 → 核心贴身环），锦标赛颗粒无收
+//       也绝不 rail(0)（09:12 盘 p50=1005ms 输出空环的教训升格为硬需求）。
+//     · 裁判（D6）：主解不完美时跑圈空间精确枚举（RAIL_RANK_CAP 封顶）。
+//     · 终选（R4）：prev 环覆盖**不少于**新解即沿用（并列也沿用，规格 v0.2 口径；
+//       注意 v1 代码是严格大于才沿用 —— v2 按 spec 文字执行，差异见 AB 报告）。
+//     · 后处理（D5）：⑥trimDetours → straightenRing → ⑦reweaveTwins 全保留，mark=B*。
+//   ▍预算（P4 拍板「按新结构重分配」）：主解 700ms/150 万节点 + 精确 250ms，
+//     快速档（railFast 预览）90ms 且跳过裁判与后处理；debugNoDeadline/forceRefresh
+//     语义与 v1 一致（R7）。
+//   ▍烧穿省略闸（Q2-①）：同一盘面指纹 + 上轮已完成全量求解 ⇒ 结果确定性相同，
+//     直接沿用现环（跳过全部搜索）。仅全量档判定与写入（快速档的烧穿不具代表性）。
+//   ▍开关（规格 §8.4）：GS.railV2 默认 false = v1 链路行为零变化。
+// ============================================================================
+GS.railV2 = false;
+GS.__v2cache = null;      // 烧穿省略闸缓存 {fp, railLen}（仅全量档写入）
+GS.__v2testNodes = 0;     // 测试旋钮：非 0 时主解/裁判节点预算被压到该值（确定性烧穿用例）
+GS.__v2last = null;       // 最近一次 v2 求解的观测数据（A/B 报告与测试用）
+
+GS.recomputeRailsV2 = function () {
+  var COLS = CFG.MAP_COLS, ROWS = CFG.MAP_ROWS, N = COLS * ROWS;
+  var CORE_C = GS.core.c, CORE_R = GS.core.r;
+  var KIT = makeRailSolverKit(COLS, ROWS, CORE_C, CORE_R);
+  var id = KIT.id, colOf = KIT.colOf, rowOf = KIT.rowOf;
+  var __t0 = Date.now();
+
+  // 0) 可铺轨位图 + 保护位图
+  var usable = new Uint8Array(N);
+  for (var r0 = 0; r0 < ROWS; r0++) {
+    for (var c0 = 0; c0 < COLS; c0++) {
+      var cell0 = GS.grid[r0][c0];
+      usable[id(c0, r0)] = (cell0.t === 'blank' && !cell0.b) ? 1 : 0;
+    }
+  }
+  var PROT = new Uint8Array(N);
+  for (var pr0 = -1; pr0 <= 1; pr0++) {
+    for (var pc0 = -1; pc0 <= 1; pc0++) {
+      if (KIT.inB(CORE_C + pc0, CORE_R + pr0)) PROT[id(CORE_C + pc0, CORE_R + pr0)] = 1;
+    }
+  }
+  KIT.setPROT(PROT);
+
+  // 盘面指纹（只看可铺轨位图；金币/装饰不影响解）
+  var fp = [];
+  for (var rr0 = 0; rr0 < ROWS; rr0++) {
+    var s = '';
+    for (var cc0 = 0; cc0 < COLS; cc0++) s += usable[id(cc0, rr0)] ? '1' : '0';
+    fp.push(s);
+  }
+  fp = fp.join('|');
+
+  // 旧环复验（保底环候选 A）：每格可铺 + 逐边正交 + 仍围核心
+  function prevRingValid() {
+    var pr = GS.railPath;
+    if (!pr || pr.length < 4 || !KIT.enclosesCore(pr)) return null;
+    for (var i = 0; i < pr.length; i++) {
+      var a = pr[i], b = pr[(i + 1) % pr.length];
+      if (!usable[id(a.c, a.r)] || Math.abs(a.c - b.c) + Math.abs(a.r - b.r) !== 1) return null;
+    }
+    return pr;
+  }
+  var prev = prevRingValid();
+
+  // —— 烧穿省略闸：同指纹 + 上轮已完成全量求解 + 输出字段未被别路覆盖 ⇒ 原样保留 ——
+  if (!GS.railFast && GS.__v2cache && GS.__v2cache.fp === fp && prev &&
+      GS.__v2cache.railLen === GS.railPath.length) {
+    GS.__v2last = { provenance: 'skip', ms: Date.now() - __t0, fp: fp };
+    if (GS.railProbeOn) {
+      __railProbeCapture('v2-skip', null, GS.contourB, null, null, null, GS.railPath,
+        KIT.ringStats(GS.railPath || [], GS.contourB), { provenance: 'skip' });
+    }
+    return;
+  }
+
+  // —— 保底环候选 B：核心贴身环（3×3 外圈 8 格全可铺才有）——
+  function coreRing() {
+    var seq8 = [[0, -1], [1, -1], [1, 0], [1, 1], [0, 1], [-1, 1], [-1, 0], [-1, -1]];
+    var out = [];
+    for (var i = 0; i < 8; i++) {
+      var c = CORE_C + seq8[i][0], r = CORE_R + seq8[i][1];
+      if (!CFG.inBounds(c, r) || !usable[id(c, r)]) return null;
+      out.push({ c: c, r: r });
+    }
+    return out;
+  }
+  var bottom = prev || coreRing();
+
+  // —— 区域 v2（D1+P1）：完整泛洪 → 削脖子 → 块状半岛加回 ——
+  var Ufull = KIT.floodU(usable);
+  var U2 = new Uint8Array(Ufull);
+  KIT.thinNeck(U2);
+  KIT.keepCoreComponent(U2);
+  KIT.pruneU(U2);
+  var removed = [], i0;
+  for (i0 = 0; i0 < N; i0++) if (Ufull[i0] && !U2[i0]) removed.push(i0);
+  var penBlocked = new Uint8Array(N), rmCorridor = new Uint8Array(N);
+  if (removed.length) {
+    // 被削格按「在 Ufull 内相邻」分连通分量；含 2×2 块（P1 判据）的整分量加回
+    var seenR = new Uint8Array(N), comps = [], ri, d, m;
+    for (ri = 0; ri < removed.length; ri++) {
+      var s0 = removed[ri];
+      if (seenR[s0]) continue;
+      var st = [s0], comp = [];
+      seenR[s0] = 1;
+      while (st.length) {
+        var p = st.pop();
+        comp.push(p);
+        var pc = colOf(p), pr = rowOf(p);
+        for (d = 0; d < 4; d++) {
+          var nc = pc + RAIL_DC[d], nr = pr + RAIL_DR[d];
+          if (!CFG.inBounds(nc, nr)) continue;
+          var q = id(nc, nr);
+          if (Ufull[q] && !U2[q] && !seenR[q]) { seenR[q] = 1; st.push(q); }
+        }
+      }
+      comps.push(comp);
+    }
+    for (var ci = 0; ci < comps.length; ci++) {
+      var cp2 = comps[ci], inC = new Uint8Array(N), block = false, m2, z, zc, zr;
+      for (m2 = 0; m2 < cp2.length; m2++) inC[cp2[m2]] = 1;
+      for (m2 = 0; m2 < cp2.length && !block; m2++) {
+        z = cp2[m2]; zc = colOf(z); zr = rowOf(z);
+        if (CFG.inBounds(zc + 1, zr) && CFG.inBounds(zc, zr + 1) && CFG.inBounds(zc + 1, zr + 1) &&
+            inC[id(zc + 1, zr)] && inC[id(zc, zr + 1)] && inC[id(zc + 1, zr + 1)]) block = true;
+      }
+      if (block) { for (m = 0; m < cp2.length; m++) { U2[cp2[m]] = 1; penBlocked[cp2[m]] = 1; } }
+      else { for (m = 0; m < cp2.length; m++) rmCorridor[cp2[m]] = 1; }
+    }
+  }
+  var F = KIT.computeF(U2);
+  var bd = KIT.boundaryOf(U2, F, usable), B = bd.B, Bl = bd.Bl;
+  var H = KIT.helpersOf(U2, B, usable), A = new Uint8Array(N);
+  var hcount = 0, s1;
+  for (s1 = 0; s1 < N; s1++) { if (B[s1] || H[s1]) A[s1] = 1; if (H[s1]) hcount++; }
+  var hCap = hcount < 16 ? hcount : 16;
+
+  // —— 统一锦标赛（D2；si=0 定容差档 → 全起点择优，与 v1 主解同构）——
+  var V2_MAIN_MS = GS.railFast ? 90 : 700, V2_EXACT_MS = 250;
+  // 主池节点 = 450 万（对齐 v1 全链四级预算总量 ~3×150万；hard6 实测：单池 150 万在
+  //   1.67M 节点处的解被截断、烧穿落核心环，×10 则命中同 v1 的 52 步满覆盖）。
+  //   生产端 700ms 墙钟仍是硬顶，此值只放宽无墙钟口径（测试/强刷）的搜索上限。
+  var V2_NODES = GS.__v2nodesOverride || GS.__v2testNodes || 4500000;   // override=调参旋钮 / test=确定性烧穿用例
+  function freshV2(ms) {
+    var noDeadline = GS.debugNoDeadline || GS.forceRefresh;
+    return { left: V2_NODES, deadline: noDeadline ? 1e15 : Date.now() + ms };
+  }
+  var bud = freshV2(V2_MAIN_MS);
+  var main = null, mainSt = null, tolStar = -1, hitKi = -1;
+
+  // ▍搜索结构 = v1 主解镜像（2026-10-11 深夜 A/B 教训）：补格阶梯 0→cap 定档、
+  //   档内 mv=1 干净解优先 → mv=2(×8) 放开、每档首命中即该起点结果、跨起点按
+  //   ringBetter 择优。首版曾把 hCap 直接给满（⑤spur 的实证结论）+ xcap/flip 阶梯
+  //   —— 84 盘 A/B 实锤 10 盘烧穿颗粒无收（v1 同盘 6~74ms 满覆盖）：无阶梯的大 A
+  //   让 DFS 溺水，正是档案已证伪清单第 1 条（扩搜索空间 → 满覆盖反降）在 v2 重演。
+  //   与 v1 的唯一差异：gate=1（脖子门格放行，P1 半岛通道）+ xmax 上限 8（含 T 岔）。
+  function solveAt(si, tol, kiFixed) {
+    var lo = 0, hi = hCap;
+    if (kiFixed !== null && kiFixed !== undefined) { lo = kiFixed; hi = kiFixed; }
+    for (var ki = lo; ki <= hi; ki++) {
+      if (bud.left < 0) return null;
+      var idx = KIT.closedTrail(B, Bl, H, A, bud, ki, 1, 0, tol, si, 2, false, 1) ||
+                KIT.closedTrail(B, Bl, H, A, bud, ki, 2, 8, tol, si, 2, false, 1);
+      if (idx) {
+        var rg = KIT.ringOf(idx);
+        if (KIT.enclosesCore(rg)) return { ring: rg, ki: ki };
+      }
+    }
+    return null;
+  }
+
+  // ① 定档：si=0 跑 tol × ki 双阶梯（各分片都跑 ⇒ 分片合并口径一致）
+  for (var tol = 0; tol <= 6; tol++) {
+    if (bud.left < 0) break;
+    var hit = solveAt(0, tol, null);
+    if (hit) { main = hit.ring; mainSt = KIT.ringStats(hit.ring, B); tolStar = tol; hitKi = hit.ki; break; }
+  }
+  // ② 择优：定档位全起点首命中 + ringBetter 锦标赛（分片跳格 + 双闸早停，v1 同款）
+  if (main) {
+    var bestRing = main, bestSt2 = mainSt, si;
+    for (si = 1; si < Bl.length; si++) {
+      if (bud.left < 0) break;
+      if (GS.__shard && si % GS.__shard.n !== GS.__shard.k) continue;
+      if (bestSt2.cross === 0 && bestSt2.cov >= Bl.length) break;   // 双闸早停（v1.5 同款）
+      var h2 = solveAt(si, tolStar, hitKi);
+      if (h2) {
+        var st2 = KIT.ringStats(h2.ring, B);
+        if (KIT.ringBetter(st2, bestSt2)) { bestRing = h2.ring; bestSt2 = st2; }
+      }
+    }
+    main = bestRing; mainSt = bestSt2;
+  }
+
+  // —— 精确裁判（D6）：主解不完美才跑；快速档跳过 ——
+  var exact = null;
+  if (!GS.railFast) {
+    var perfect = mainSt && mainSt.cov >= Bl.length && mainSt.cross === 0;
+    if (!perfect && Bl.length >= 4) exact = KIT.bestRingExact(U2, F, usable, freshV2(V2_EXACT_MS));
+  }
+
+  // —— 终选（R4）：prev 覆盖不少于新解 ⇒ 沿用 prev（并列也沿用，规格口径）——
+  var ring = null, ringSt = null, prov = 'none';
+  if (main) { ring = main; ringSt = mainSt; prov = 'main'; }
+  if (exact) {
+    var eSt = KIT.ringStats(exact, B);
+    if (!ring || KIT.ringBetter(eSt, ringSt)) { ring = exact; ringSt = eSt; prov = 'exact'; }
+  }
+  if (prev) {
+    var pSt = KIT.ringStats(prev, B);
+    if (!ring || !KIT.ringBetter(ringSt, pSt)) { ring = prev; ringSt = pSt; prov = 'prev'; }
+  }
+  if (!ring && bottom) { ring = bottom; ringSt = KIT.ringStats(bottom, B); prov = 'core'; }
+
+  // —— 后处理（D5；快速档跳过，与 v1 同哲学）——
+  if (!GS.railFast && ring && ring.length >= 4) {
+    ring = KIT.trimDetours(ring, B);
+    ring = GS.straightenRing(ring);
+    ring = KIT.reweaveTwins(ring, B);
+  }
+
+  // —— 输出（与 v1 完全同一套 7 字段 + 站台重选）——
+  if (!ring || ring.length < 4) {
+    GS.railPath = [];
+    GS.railSet = {};
+    GS.railInner = {};
+    GS.railRect = null;
+    GS.railGrowHints = [];
+    GS.contourB = B;
+    if (typeof STATION !== 'undefined') STATION.solve(GS.railPath);
+    GS.__v2last = { provenance: 'none', ms: Date.now() - __t0, tolStar: tolStar, budgetLeft: bud.left };
+    if (GS.railProbeOn) __railProbeCapture('v2', U2, B, H, penBlocked, rmCorridor, null, null,
+      { provenance: 'none(退化盘)', note: 'R3 例外：核心贴身环也不可铺' });
+    return;
+  }
+  GS.railPath = ring;
+  GS.railSet = {};
+  var minC = ring[0].c, maxC = ring[0].c, minR = ring[0].r, maxR = ring[0].r, i1;
+  for (i1 = 0; i1 < ring.length; i1++) {
+    GS.railSet[ring[i1].c + ',' + ring[i1].r] = true;
+    if (ring[i1].c < minC) minC = ring[i1].c;
+    if (ring[i1].c > maxC) maxC = ring[i1].c;
+    if (ring[i1].r < minR) minR = ring[i1].r;
+    if (ring[i1].r > maxR) maxR = ring[i1].r;
+  }
+  GS.railRect = { c0: minC, r0: minR, c1: maxC, r1: maxR };
+  GS.railInner = KIT.innerCells(ring);
+  GS.railGrowHints = [];
+  GS.contourB = B;
+  if (typeof STATION !== 'undefined') STATION.solve(GS.railPath);
+
+  // —— 烧穿省略闸缓存（仅全量档；写入即作废更早盘面的缓存）——
+  if (!GS.railFast) GS.__v2cache = { fp: fp, railLen: GS.railPath.length };
+
+  GS.__v2last = { provenance: prov, ms: Date.now() - __t0, tolStar: tolStar,
+                  budgetLeft: bud.left, st: ringSt,
+                  blN: Bl.length, pen: [], corridor: [] };
+  if (GS.railProbeOn) {
+    __railProbeCapture('v2', U2, B, H, penBlocked, rmCorridor, ring, ringSt,
+      { provenance: prov, note: 'tolStar=' + tolStar + '  budgetLeft=' + bud.left +
+        '  耗时=' + (Date.now() - __t0) + 'ms' });
+  }
+};
+
+// —— v2 分发（规格 §8.4：默认 v1，开关翻转对 v1 路径零影响）——
+GS.__recomputeRailsV1 = GS.recomputeRails;
+GS.recomputeRails = function () {
+  if (GS.railV2) return GS.recomputeRailsV2();
+  return GS.__recomputeRailsV1();
 };
 
 // ---- 三选一：清理形状 + 经济建筑 ----

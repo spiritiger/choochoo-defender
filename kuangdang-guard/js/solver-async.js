@@ -72,6 +72,7 @@ window.SOLVER_ASYNC = (function () {
     "  if (!d || d.type !== 'solve') return;",
     '  var rows = d.rows;',
     '  GS.__shard = d.shard || null;',     // 分片旋钮：{n,k} | null（同步全量）
+    '  GS.railV2 = !!d.railV2;',           // rail-v2 开关随请求透传（v2 分发器读取；缺省 falsy=v1）
     '  GS.grid = []; GS.goldTiles = []; GS.buildings = [];',
     '  for (var r = 0; r < rows.length; r++) {',
     '    var row = [];',
@@ -98,6 +99,7 @@ window.SOLVER_ASYNC = (function () {
     '    railInner: GS.railInner, contourB: GS.contourB,',
     '    railGrowHints: GS.railGrowHints, station: GS.station });',
     '  GS.__shard = null;',                // 用完即清，防残留影响下一发
+    '  GS.railV2 = false;',                // 同上（__v2cache 有意不清：烧穿省略闸靠它跨消息生效）
     '};'
   ].join('\n');
 
@@ -221,7 +223,7 @@ window.SOLVER_ASYNC = (function () {
     var n = workers.length;
     for (var i = 0; i < n; i++) {
       workers[i].postMessage({ type: 'solve', seq: seq, rows: rows, prevRing: GS.railPath,
-                               shard: n > 1 ? { n: n, k: i } : null });
+                               shard: n > 1 ? { n: n, k: i } : null, railV2: !!GS.railV2 });
     }
   };
 
