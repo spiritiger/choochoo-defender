@@ -53,13 +53,34 @@ GS.newGame = function () {
   GS.coreMaxHP = CFG.CORE_HP;
   GS.coreHP = CFG.CORE_HP;
   GS.gameOver = false;
+  // v1.4 卡牌大改：牌库（[{kind:'shape',shape}|{kind:'hero',elem}]）
+  // ⚠️ GS.wagons 独立车厢列表已退役（v1.4.1 大王纠偏"车厢是独立作战单位"）：
+  //   车厢 = GS.towers 的镜像投影（每座英雄塔一节同元素同星车厢，见 engine.js ENG.WAGON）
+  GS.deck = [];
+  // v1.4.4（大王拍板 2026-10-08）：抽卡价格线性递增，每次 +5；v1.4.8 首抽 10→5。
+  //   公式唯一入口 = GS.drawCost()；GS.drawCount = 本局已付钱抽卡的次数（新局清零，
+  //   三选一弹层里放弃/选卡都不退钱也不计数，只在实际扣费时 +1）。
+  GS.drawCount = 0;
+  // v1.4.5：撤销点（最近一次形状卡清理的 was 快照 + 被消耗的卡），新局清零。
+  //   由 UI.settleClean 成功时打包，ENG.undoShape 消费后置 null。
+  GS.undoClean = null;
 
   GS.selToken = null;      // 当前使用的工具：{kind:'shape',si,cells} | {kind:'econ'}
   GS.offer = [];
 
   GS.recomputeRails();
+  // v1.6 求解后台化：新局作废飞行中的异步结果（指纹守卫之外的双保险）。
+  //   newGame 的开局环保持同步算（12 格小环毫秒级，且列车/渲染立即可用）。
+  if (typeof SOLVER_ASYNC !== 'undefined') SOLVER_ASYNC.invalidate();
   // v1.3-rc：三选一退役（拍板分叉 ①），不再自动发牌。nextOffer 保留不调用（回退保险）。
   // GS.nextOffer(false);
+};
+
+// v1.6.15（大王令 2026-10-10）：下一抽的价格 = 10 + 10 × 已抽次数
+//   （首抽 10 → 20 → 30 → …，无上限封顶；沿革：v1.4.4 首抽 10 / v1.4.8 改 5 / 本次改回 10 起步步进 10）。
+//   UI 层（按钮文案 / 禁用判断 / 扣费）一律走这里。
+GS.drawCost = function () {
+  return 10 + 10 * (GS.drawCount || 0);
 };
 
 // 开局撒金币地块（大王定案 2026-09-21，v0.6.12 修订）：不再预置经济建筑，改为 10 个金币地块。
@@ -380,6 +401,30 @@ GS.recomputeRails = function () {
       nc = CORE_C + DC[d]; nr = CORE_R + DR[d];
       if (inB(nc, nr) && um[id(nc, nr)]) { q = id(nc, nr); U[q] = 1; st.push(q); }
     }
+    // v1.6.7 兜底（§14.7）：镇中心四邻全是塔、起手种子为空时，取候选集的
+    // **最大连通分量**作为 U（原语义"含镇中心的那块"已被塔隔断、不存在；
+    // 最大块最可能围出含 core 的环——ouxk6f 局 54 环为证）。
+    // 只在种子空时激活，正常局零开销。
+    if (!st.length) {
+      var seenF = new Uint8Array(N), best = null, bestN = 0, s1, dF;
+      for (s1 = 0; s1 < N; s1++) {
+        if (!um[s1] || seenF[s1]) continue;
+        var stF = [s1], comp = [];
+        seenF[s1] = 1;
+        while (stF.length) {
+          var pF = stF.pop(), pcF = colOf(pF), prF = rowOf(pF);
+          comp.push(pF);
+          for (dF = 0; dF < 4; dF++) {
+            var ncF = pcF + DC[dF], nrF = prF + DR[dF];
+            if (!inB(ncF, nrF)) continue;
+            var qF = id(ncF, nrF);
+            if (um[qF] && !seenF[qF]) { seenF[qF] = 1; stF.push(qF); }
+          }
+        }
+        if (comp.length > bestN) { bestN = comp.length; best = comp; }
+      }
+      if (best) for (s1 = 0; s1 < best.length; s1++) U[best[s1]] = 1;
+    }
     while (st.length) {
       var p = st.pop(), pc = colOf(p), pr = rowOf(p);
       for (d = 0; d < 4; d++) {
@@ -449,6 +494,29 @@ GS.recomputeRails = function () {
       if (!inB(nc, nr)) continue;
       q = id(nc, nr);
       if (U[q] && keepStamp[q] !== keepCs) { keepStamp[q] = keepCs; keepQ[tail++] = q; }
+    }
+    // v1.6.7 兜底（§14.7）：core 四邻没有 U 格（种子为空）时，保留 U 的**最大连通
+    // 分量**——只需把该分量的任一格作种子压入队列，下面的 BFS 自然铺满整块并保留，
+    // 其余碎片照旧清除。与 floodU 兜底配套，同样只在盲区激活。
+    if (tail === 0) {
+      var seenK = new Int32Array(N), bestK = -1, bestN = 0, s2, d2;
+      for (s2 = 0; s2 < N; s2++) {
+        if (!U[s2] || seenK[s2]) continue;
+        var stK = [s2], nK = 0;
+        seenK[s2] = 1;
+        while (stK.length) {
+          var pK = stK.pop(); nK++;
+          var pcK = colOf(pK), prK = rowOf(pK);
+          for (d2 = 0; d2 < 4; d2++) {
+            var ncK = pcK + DC[d2], nrK = prK + DR[d2];
+            if (!inB(ncK, nrK)) continue;
+            var qK = id(ncK, nrK);
+            if (U[qK] && !seenK[qK]) { seenK[qK] = 1; stK.push(qK); }
+          }
+        }
+        if (nK > bestN) { bestN = nK; bestK = s2; }
+      }
+      if (bestK >= 0) { keepStamp[bestK] = keepCs; keepQ[tail++] = bestK; }
     }
     while (head < tail) {
       p = keepQ[head++]; pc = colOf(p); pr = rowOf(p);
@@ -534,7 +602,13 @@ GS.recomputeRails = function () {
     return { B: B, Bl: Bl };
   }
 
-  // 5) 候选补格 H：U 内、可铺轨、且至少一个四邻是轮廓格
+  // 5) 候选补格 H（v1.6.9 起铺两层，规格 §2 步骤 6 / §14.8）：
+  //    第一轮 = U 内、非轮廓、四邻至少一个轮廓格（旧口径）；
+  //    第二轮 = 其余可铺轨格中四邻至少一个属「轮廓 ∪ 第一轮补格」者，并入 H。
+  //    ⚠️ 为什么铺两层：只收一层时，离轮廓 ≥2 格的深腹地（清开宽走廊后的内部格）
+  //    对求解器不可见——2026-10-09 大王 17:04 盘实锤：4 个二层格是 32 环必经格，
+  //    不在 A ⇒ 东西两半断开 ⇒ 全链"正确"证明无解 rail(0)，靠旧环沿用掩盖。
+  //    正常局第二轮扫不出新格（H2 全零），零开销。
   function helpersOf(U, B, um) {
     var H = new Uint8Array(N), s0, sc, sr, d, nc, nr, nb;
     for (s0 = 0; s0 < N; s0++) {
@@ -546,6 +620,21 @@ GS.recomputeRails = function () {
       }
       if (nb >= 1) H[s0] = 1;
     }
+    // 第二轮：非 B、非 H 的可铺轨格，邻 B 或邻 H 即收入
+    // （⚠️ 判据是"邻 H1"，绝不能把 H1 本体排除在候选外——实验期排除过，右耳圈
+    //   缺 (5,9) 断成树 ⇒ 端头禁令把 DFS 锁死在起点，E1~E4 全被坑）
+    var H2 = new Uint8Array(N), s1, sc1, sr1, d1, nc1, nr1, q1;
+    for (s1 = 0; s1 < N; s1++) {
+      if (!U[s1] || B[s1] || H[s1] || !um[s1]) continue;
+      sc1 = colOf(s1); sr1 = rowOf(s1);
+      for (d1 = 0; d1 < 4; d1++) {
+        nc1 = sc1 + DC[d1]; nr1 = sr1 + DR[d1];
+        if (!inB(nc1, nr1)) continue;
+        q1 = id(nc1, nr1);
+        if (B[q1] || H[q1]) { H2[s1] = 1; break; }
+      }
+    }
+    for (s1 = 0; s1 < N; s1++) if (H2[s1]) H[s1] = 1;
     return H;
   }
 
@@ -934,6 +1023,15 @@ GS.recomputeRails = function () {
       (a.cov === b.cov && a.cross === b.cross && a.cells < b.cells);
   }
 
+  // 并行分片合并用（v1.6 solver-async）：worker 解完把终环的三量统计回传主线程，
+  //   主线程按 ringBetter 同判据合并取最优。ringStats/ringBetter 是 recomputeRails
+  //   函数体内的嵌套实现（本文件 334 行起整个求解器都嵌在体内，每次调用重建），
+  //   ⚠️ 所以本赋值也在体内 —— **首次 recomputeRails 之后 GS.ringStatsOf 才存在**：
+  //     · worker 胶水：先调 recomputeRails 再读它 ⇒ 必然就绪；
+  //     · 主线程合并：只比较 worker 回传的统计数字，不调用它；
+  //     · newGame 开局即调一次 recomputeRails ⇒ 正常游戏随时可用。
+  GS.ringStatsOf = function (ring) { return ringStats(ring, GS.contourB); };
+
   // 6) 给定区域求环：轮廓 → 补格 → 闭合迹 → 必须围住镇中心
   //   tol  = 允许放弃的轮廓格数（0 = 必须覆盖全部轮廓格，与旧版行为一致）
   //   desc = true 时补格上限从大到小试（快速兜底用）：正常求解优先"最少补格"，逐级上升；
@@ -988,13 +1086,13 @@ GS.recomputeRails = function () {
     bestCover = m0.cov; bestCross = m0.cross; bestCells = m0.cells;
 
     // ② 择优：在 k* 档上跑其余起点（si=0 已在 ① 里跑过）。
-    //   ▍早停剪枝（v0.6.19）：**十字数 0 是理论最优**（环上每格恰好走一次），
-    //     一旦拿到十字 0 就不必再试剩下的起点 —— `test_rail [4]` 里最大耗时 3519ms
-    //     基本都出在"已经拿到十字 0 还在空跑 11 个起点"上。
-    //     ⚠️ 实际判据**只有** `bestCross === 0` 一条（代码里没有"必须先满覆盖"的第二道闸；
-    //        旧注释曾声称有，属描述错误）。因字典序里覆盖优先于十字，理论上可能停在
-    //        覆盖更低的解上；但 331 盘 + 500 盘定点 A/B 均未观察到覆盖回归
-    //        （finalRing 反缩水 + 双路择优都只在覆盖不降时才替换）。
+    //   ▍早停剪枝（v0.6.19 → v1.5 双闸收紧）：**十字 0 且满覆盖**才是字典序理论最优
+    //     （①覆盖优先于②十字），两个条件都满足才不必再试剩下的起点。
+    //     ⚠️ v1.5 之前只有 `bestCross === 0` 一条闸 —— 1846 盘（2026-10-08 sid 09:46）
+    //        关墙钟口径实锤踩中：先命中"覆盖 70、0 十字"即收工，输出覆盖 70 < 满覆盖 72，
+    //        违反字典序（真实玩法靠墙钟掐换档位侥幸没踩）。300 求解回合 A/B 实测收紧代价
+    //        +0.1%（26748→26783ms、最差 1007→1010ms、超 700ms 盘数不变）——剩余起点
+    //        每起点仅烧 0.5~2k 节点 + 墙钟硬闸兜底；输出差异 10/300：覆盖更高 2 / 更低 0。
     //   ▍起点全量（v1.1，大王 2026-09-28 14:48 盘拍板"别挑了，全试"）：
     //     旧 `START_TRIES=9` 是 mm=1 时代的实测拐点（2026-09-23 盘 42 起点只有 3 个能出十字 1）。
     //     mm=2 后解空间方差变大 —— 14:48 盘 36步/十字2 的更优解只在 si=21/23/24/26/28 出现，
@@ -1005,7 +1103,12 @@ GS.recomputeRails = function () {
     var startN = Bl.length;
     for (si = 1; si < startN; si++) {
       if (budget.left < 0) break;
-      if (bestCross === 0) break;               // ★ 早停：十字 0 已是最优
+      // ★ 并行分片跳格（v1.6）：GS.__shard={n,k} 时本调用只扫 si≡k (mod n) 的起点。
+      //   ①定档（si=0）在所有分片里原样跑 ⇒ k* 各片一致，②的搜索空间按起点划分
+      //   互不重叠、并起来恰为全量。shard=null（同步路径/单 worker）时一句不过 ⇒ 零行为变化。
+      //   铁闸与早停双闸都在跳格判断之后原样生效。
+      if (GS.__shard && si % GS.__shard.n !== GS.__shard.k) continue;
+      if (bestCross === 0 && bestCover >= Bl.length) break;   // ★ 早停（v1.5 双闸）：十字 0 且满覆盖
       idx = closedTrail(B, Bl, H, A, budget, hitKi, 1, 0, tol, si, 2) ||
             closedTrail(B, Bl, H, A, budget, hitKi, 2, XMAX, tol, si, 2);
       if (!idx) continue;
@@ -1301,6 +1404,9 @@ GS.recomputeRails = function () {
     //   ⚠️ 容差仍卡死 tolTop（任何解 cov ≥ cov0+1 严格更优铁闸不变）。
     for (si = 0; si < startN; si++) {
       if (bud.left < 0) break;
+      // ★ 并行分片跳格（v1.6）：与主解②同一把 GS.__shard 旋钮，语义相同。
+      //   循环层级（起点外→十字中→容差内）与 v0.9 铁闸 `st.cov <= cov0 continue` 原样不动。
+      if (GS.__shard && si % GS.__shard.n !== GS.__shard.k) continue;
       for (var xcap = 2; xcap <= SPUR_XMAX; xcap += 2) {
       for (t = 0; t <= tolTop; t++) {
         if (bud.left < 0) break;
@@ -1437,7 +1543,11 @@ GS.recomputeRails = function () {
   // GS.debugStages（main/exact/spur 的 ms + 支线是否被采纳）与 GS.debugSpur（支线搜索的
   // cov0/|Bl|/tolTop/耗时/是否命中）。只加 Date.now() 与对象赋值，不影响求解结果。
   var __p0 = GS.debugProbe ? Date.now() : 0;
-  var ring = finalRing(region, usable, contourB, GS.railPath, freshBudget(700));
+  // GS.railFast（v1.4.11 预览快速档）：仅 UI.updateCleanPreview 拖拽预览期间短暂置 true。
+  //   只砍耗时门槛，不碰求解逻辑本身 —— 主解墙钟 700→90ms（预览只要"大概形状"，
+  //   超时拿次优/无环都只影响预览显示，松手结算仍走全量）。正常玩法永不置位。
+  var ring = finalRing(region, usable, contourB, GS.railPath,
+                       freshBudget(GS.railFast ? 90 : 700));
   var __p1 = GS.debugProbe ? Date.now() : 0;
 
   // ---- 双路择优（v0.6.17）------------------------------------------------------
@@ -1464,8 +1574,9 @@ GS.recomputeRails = function () {
   var __blN = 0;
   for (var __q = 0; __q < contourB.length; __q++) __blN += contourB[__q];
   var __stMain = ring ? ringStats(ring, contourB) : null;
-  var exact = (__stMain && __stMain.cov >= __blN && __stMain.cross === 0) ? null
-            : bestRingExact(region.U, region.F, usable, freshBudget(250));
+  var exact = GS.railFast ? null      // 预览快速档：跳过 ②（占总耗时大头，采纳 0/600）
+            : ((__stMain && __stMain.cov >= __blN && __stMain.cross === 0) ? null
+            : bestRingExact(region.U, region.F, usable, freshBudget(250)));
   var __p2 = GS.debugProbe ? Date.now() : 0;
   if (exact && ring && ring.length >= 4) {
     // 覆盖数口径：环上用到的、属于当前轮廓（contourB）的**去重格数**。
@@ -1479,7 +1590,7 @@ GS.recomputeRails = function () {
   //   spurSolver 内部已保证"任何返回解的覆盖数严格 > 当前解"（容差卡死，见其注释），
   //   这里再按 contourB 口径复核一道双保险；无支线机会的盘面它在 cov0 检查处直接 null，
   //   结果与 v0.7.0 逐格一致。
-  var spur = spurSolver(usable, ring, (function () {
+  var spur = GS.railFast ? null : spurSolver(usable, ring, (function () {   // 快速档跳过 ⑤（采纳 ~1%）
     // v0.9：节点上限随 spur 内部起点数放大（全量起点后单一 150 万会在"证明无解"上
     //   烧干，s241 实锤）。预算对象结构与 freshBudget 一致，仅 left 放大。
     var b = freshBudget(SPUR_BUDGET_MS);
@@ -1517,27 +1628,29 @@ GS.recomputeRails = function () {
   //        无同向重边 / 仍围住镇中心（与 test_rail.js 的 ringError 同口径）；
   //     ③ 不得"放出"任何原有圈内格（innerCells 的新集合 ⊇ 旧集合）——
   //        防止把金币格/已开发区漏到环外（这是本优化唯一可能伤到玩法的方向）。
-  function trimDetours(ringIn, mark) {
-    // 合法性复核（与 test_rail.js ringError 同口径，见文件头"三个量"/铁轨规则）
-    function trimOk(rr) {
-      var L2 = rr.length, i2;
-      if (L2 < 4) return false;
-      var c2 = {}, e2 = {}, d2 = {};
-      for (i2 = 0; i2 < L2; i2++) {
-        var a2 = rr[i2], b2 = rr[(i2 + 1) % L2];
-        if (Math.abs(a2.c - b2.c) + Math.abs(a2.r - b2.r) !== 1) return false;
-        var ka2 = a2.c + ',' + a2.r, kb2 = b2.c + ',' + b2.r;
-        var ek2 = ka2 < kb2 ? ka2 + '|' + kb2 : kb2 + '|' + ka2;
-        e2[ek2] = (e2[ek2] || 0) + 1;
-        if (e2[ek2] > 2) return false;                 // 无向边上限 2（第 2 次须反向，见下）
-        var dk2 = ka2 + '>' + kb2;
-        if (d2[dk2]) return false;                     // 同向重走同一条边 → 非法
-        d2[dk2] = 1;
-        c2[ka2] = (c2[ka2] || 0) + 1;
-        if (c2[ka2] > 2) return false;                 // 每格最多走 2 次（度数 ≤4）
-      }
-      return enclosesCore(rr);
+  // 合法性复核（与 test_rail.js ringError 同口径，见文件头"三个量"/铁轨规则）。
+  //   v1.4.9：从 trimDetours 局部函数提升为 recomputeRails 级 —— ⑦ reweaveTwins 共用
+  //   同一口径（口径改一处两边同步，别再各写一份）。
+  function ringOkFull(rr) {
+    var L2 = rr.length, i2;
+    if (L2 < 4) return false;
+    var c2 = {}, e2 = {}, d2 = {};
+    for (i2 = 0; i2 < L2; i2++) {
+      var a2 = rr[i2], b2 = rr[(i2 + 1) % L2];
+      if (Math.abs(a2.c - b2.c) + Math.abs(a2.r - b2.r) !== 1) return false;
+      var ka2 = a2.c + ',' + a2.r, kb2 = b2.c + ',' + b2.r;
+      var ek2 = ka2 < kb2 ? ka2 + '|' + kb2 : kb2 + '|' + ka2;
+      e2[ek2] = (e2[ek2] || 0) + 1;
+      if (e2[ek2] > 2) return false;                 // 无向边上限 2（第 2 次须反向，见下）
+      var dk2 = ka2 + '>' + kb2;
+      if (d2[dk2]) return false;                     // 同向重走同一条边 → 非法
+      d2[dk2] = 1;
+      c2[ka2] = (c2[ka2] || 0) + 1;
+      if (c2[ka2] > 2) return false;                 // 每格最多走 2 次（度数 ≤4）
     }
+    return enclosesCore(rr);
+  }
+  function trimDetours(ringIn, mark) {
     var seq = ringIn, round, i, k;
     var tried = {};                                    // 本轮试过且被否的候选 'i:k'
     for (round = 0; round < 400; round++) {
@@ -1578,7 +1691,7 @@ GS.recomputeRails = function () {
       var out = [seq[bi]], t;
       for (t = bk; t < L; t++) out.push(seq[(bi + t) % L]);
       var keepInner = true;
-      if (trimOk(out)) {                               // 闸 ②
+      if (ringOkFull(out)) {                           // 闸 ②
         var inNew = innerCells(out);                   // 闸 ③
         for (t = 0; t < inKeys.length; t++) {
           if (!inNew[inKeys[t]]) { keepInner = false; break; }
@@ -1589,12 +1702,77 @@ GS.recomputeRails = function () {
     }
     return seq;
   }
-  var __t0 = GS.debugProbe ? Date.now() : 0;
-  var __rlen0 = ring ? ring.length : 0;
-  if (ring && ring.length >= 4) ring = trimDetours(ring, contourB);
-  if (GS.debugProbe) {
-    GS.debugTrim = { trimMs: Date.now() - __t0, gain: __rlen0 - (ring ? ring.length : 0) };
+
+  // ---- ⑦ 相邻双十字重织（v1.4.9，大王拍板方案 A 2026-10-08；规格 §2 求解步骤第 10 条）----
+  //   ▍病根（14:56 盘实锤）：主解 mm=2 的 DFS 首命中产出"相邻双十字"——两个相邻格各被走
+  //     2 次、8 条关联边全用上（实锤：rail(50)，(3,9)/(3,10) 双十字，覆盖已满 40/40），
+  //     而同覆盖的干净走法存在（48 步 / 2 重走格）。straightenRing 的十字配对只优化拐弯数
+  //     且不改变边集，消不掉；择优字典序只在完整解之间比，管不到解内部形状。
+  //   ▍重织规则：取相邻双走格 A、B（各恰好 2 次），环序呈 A₁…B₁…B₂ A₂ 布局（B 的第 2 次
+  //     访问紧跟 A 的第 2 次访问），且【A₁ 的来路格与 B₁ 的去路格正交相邻】（唯一几何前提）
+  //     ⇒ 重织为 [P4][P2][P1 反向][A₁]：丢 A、B 的第 2 次经过 + 2 条旧边、新接 1 条边。
+  //     步数 −2 / 去重格数不变 / 十字 −2 / 覆盖不变。
+  //   ▍三道保守闸（与 ⑥ 同口径）：① ringOkFull 全量合法性复核 ② 圈内格只增不减
+  //     ③ 十字严格减少且覆盖不降。⚠️ T 岔不在受理范围（割边半岛 T 岔是几何必需，
+  //     实锤盘的 (3,3)/(3,4) 原样保留——这正是想要的效果）。
+  function reweaveTwins(ringIn) {
+    var seq = ringIn, round, i;
+    for (round = 0; round < 8; round++) {              // 贪心循环：可有多处独立双十字
+      var n = seq.length;
+      if (n < 6) break;
+      var vis = {};
+      for (i = 0; i < n; i++) {
+        var k = seq[i].c + ',' + seq[i].r;
+        (vis[k] = vis[k] || []).push(i);
+      }
+      var twins = [];
+      for (var kk in vis) if (vis[kk].length === 2) twins.push(kk);
+      var applied = false;
+      for (var ai = 0; ai < twins.length && !applied; ai++) {
+        for (var bi = 0; bi < twins.length && !applied; bi++) {
+          if (ai === bi) continue;
+          var pa = twins[ai].split(','), pb = twins[bi].split(',');
+          if (Math.abs(pa[0] - pb[0]) + Math.abs(pa[1] - pb[1]) !== 1) continue;  // A、B 相邻
+          var va = vis[twins[ai]], vb = vis[twins[bi]];
+          // 4 种访问配对 [i1, i2, jb, ja]：要求 B 的某次访问紧跟 A 的某次访问（ja = jb+1）
+          var combos = [
+            [va[0], vb[0], vb[1], va[1]],
+            [va[0], vb[1], vb[0], va[1]],
+            [va[1], vb[0], vb[1], va[0]],
+            [va[1], vb[1], vb[0], va[0]]
+          ];
+          for (var c4 = 0; c4 < 4 && !applied; c4++) {
+            var i1 = combos[c4][0], i2 = combos[c4][1], jb = combos[c4][2], ja = combos[c4][3];
+            if ((jb + 1) % n !== ja) continue;
+            // 旋转到 ja+1 为起点：布局 [P4][A₁][P1][B₁][P2][B₂]，JA = n-1，无回绕分段
+            var s = (ja + 1) % n;
+            var I1 = (i1 - s + n) % n, I2 = (i2 - s + n) % n, JB = (jb - s + n) % n;
+            if (I1 < 1 || I2 <= I1 || JB <= I2 || JB !== n - 2) continue;
+            // ▍唯一几何前提：A₁ 的来路格与 B₁ 的去路格正交相邻
+            var X = seq[(s + I1 - 1) % n], Y = seq[(s + I2 + 1) % n];
+            if (Math.abs(X.c - Y.c) + Math.abs(X.r - Y.r) !== 1) continue;
+            var nr = [], t;
+            for (t = 0; t <= I1 - 1; t++) nr.push(seq[(s + t) % n]);       // P4（不含 A₁）
+            for (t = I2 + 1; t <= JB; t++) nr.push(seq[(s + t) % n]);      // P2（含 B₂）
+            for (t = I2 - 1; t >= I1 + 1; t--) nr.push(seq[(s + t) % n]);  // P1 反向（不含两端）
+            nr.push(seq[(s + I1) % n]);                                    // A₁（保 1 次）
+            if (!ringOkFull(nr)) continue;                                 // 闸 ①
+            var inOld = innerCells(seq), inNew = innerCells(nr), ok2 = true;
+            for (var k3 in inOld) if (!inNew[k3]) { ok2 = false; break; }
+            if (!ok2) continue;                                            // 闸 ②
+            var stO = ringStats(seq, contourB), stN = ringStats(nr, contourB);
+            if (stN.cross >= stO.cross || stN.cov < stO.cov) continue;     // 闸 ③
+            seq = nr; applied = true;
+          }
+        }
+      }
+      if (!applied) break;
+    }
+    return seq;
   }
+  // v1.4.11b（大王令）：预览快速档跳过全部形状抛光（⑥/straighten/⑦）——它们只改
+  //   路线长度与重复方式，不改覆盖格集合，预览不需要；正常玩法照旧全跑。
+  if (!GS.railFast && ring && ring.length >= 4) ring = trimDetours(ring, contourB);
 
   // 十字直行优先（v0.6.10）：只重排经过十字的走法，环长与格子集合不变。
   //   ⚠️ 实测结论（300 张随机盘面 + 穷举交叉验证）：环在十字上的配对**几乎总是唯一**——
@@ -1602,7 +1780,11 @@ GS.recomputeRails = function () {
   //      只能拐弯；而且这些十字本身是必需的（把 maxVisit 限制成"每格一次"后、
   //      即使把预算放大到 4000ms 也找不到一个无十字的环，47/47 全无解）。
   //      所以本函数是"能直行就直行"的最优选择器，不改变既有行为。
-  if (ring && ring.length >= 4) ring = GS.straightenRing(ring);
+  if (!GS.railFast && ring && ring.length >= 4) ring = GS.straightenRing(ring);   // 快速档跳过（同上）
+
+  // ---- ⑦ 相邻双十字重织（v1.4.9）：straightenRing 之后最后一道形状收尾 ----
+  //   straighten 只重排配对不改变边集；双十字需要整段换边，只能在这里织掉。
+  if (!GS.railFast && ring && ring.length >= 4) ring = reweaveTwins(ring);   // 快速档跳过（同上）
 
   if (!ring || ring.length < 4) {
     GS.railPath = [];
@@ -1713,6 +1895,47 @@ GS.nextOffer = function (pay) {
   GS.offer = GS.buildOffer();
   GS.selToken = null;
   return true;
+};
+
+// ============================================================================
+// v1.4 卡牌大改（规格 §14）：新三选一 + 牌库 + 车厢
+//   · 形状卡 50% / 英雄卡 50% 独立抽三张，去重（形状按尺寸家族、英雄按元素）；
+//   · 形状卡进牌库 ≤ GS.DECK_SHAPE_MAX 张（满了该位重抽为英雄卡）；
+//   · 英雄卡卡面写明元素；辅助卡（kind:'aux'）留接口不进池；
+//   · 抽卡收费在 UI 层（价格 = GS.drawCost()，v1.6.15 起线性递增 10/20/30…），这里只管发牌。
+// ============================================================================
+GS.DECK_SHAPE_MAX = 3;    // 牌库形状卡上限（大王拍板 ③：一次性消耗、攒≤3）
+
+GS.pickHeroCard = function (elem) {
+  return { kind: 'hero', id: ++GS._cardSeq, elem: elem || TOWERS.ELEMS[Math.floor(Math.random() * 4)] };
+};
+
+// 牌库里形状卡张数
+GS.deckShapeCount = function () {
+  var n = 0;
+  for (var i = 0; i < GS.deck.length; i++) if (GS.deck[i].kind === 'shape') n++;
+  return n;
+};
+
+// 三选一发牌（v1.4）：三张独立随机、互不重复
+GS.drawCardOffer = function () {
+  var cards = [], sigs = {};
+  var guard = 0;
+  while (cards.length < 3 && guard++ < 50) {
+    var full = GS.deckShapeCount() >= GS.DECK_SHAPE_MAX;   // 满了不出形状卡
+    var card;
+    if (full || Math.random() < 0.5) {
+      card = GS.pickHeroCard();
+      if (sigs['hero:' + card.elem]) continue;             // 同元素英雄卡去重
+      sigs['hero:' + card.elem] = 1;
+    } else {
+      card = GS.pickShapeCard();                           // 尺寸/横竖随机
+      if (sigs['shape:' + GS.cardSig(card)]) continue;     // 尺寸家族去重
+      sigs['shape:' + GS.cardSig(card)] = 1;
+    }
+    cards.push(card);
+  }
+  return cards;
 };
 
 // ---- 查询工具 ----

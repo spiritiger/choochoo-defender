@@ -1,24 +1,30 @@
-// UI：HUD、【清理】/【抽塔】双按钮、Canvas 拖动手势（拖塔合成 / 拖形状清理）
-// v1.3-rc 塔防迭代：三选一牌组退役（GS.buildOffer/nextOffer 在 state.js 冻结保留），
-//   施工手势从"点卡→点格子"改为"按住拖动"。
+// UI：HUD、开波/抽卡按钮、底部牌库、Canvas 拖动手势（拖塔合成 / 拖卡使用）
+// v1.4 卡牌大改（规格 §14）：清理按钮退役；抽卡 = 三选一弹层 → 选卡进牌库 →
+//   从牌库拖到场上（形状卡清障碍 / 英雄卡建塔+加车厢）。旧 summon 随机落点冻结。
 window.UI = {};
 
 UI.init = function (canvas) {
   UI.canvas = canvas;
   UI.gold = document.getElementById('hudGold');
-  UI.cargo = document.getElementById('hudCargo');
+  // v1.4.7：HUD 车斗格子退役（hudCargo 删了）—— 车上浮字 +N 是车斗量的唯一显示，
+  //   UI.cargo 缓存一并清掉；导出地图里的 cargo 行保留（调试对账用）。
   UI.core = document.getElementById('hudCore');
   UI.wave = document.getElementById('hudWave');
   UI.btnSummon = document.getElementById('btnSummon');
-  UI.btnClean = document.getElementById('btnClean');
   UI.btnDepart = document.getElementById('btnDepart');
+  UI.btnUndo = document.getElementById('btnUndo');   // v1.4.5：撤销最近一次形状卡清理
+  UI.btnSpeed = document.getElementById('btnSpeed'); // v1.6.2：全局倍速 ×1/×2/×3 循环
   UI.status = document.getElementById('status');
   UI.overOverlay = document.getElementById('overOverlay');
   UI.overWave = document.getElementById('overWave');
   UI.btnRestart = document.getElementById('btnRestart');
+  UI.deckRow = document.getElementById('deckRow');          // v1.4 底部牌库
+  UI.offerOverlay = document.getElementById('offerOverlay'); // v1.4 三选一弹层
+  UI.offerCards = document.getElementById('offerCards');
   UI.move = null;        // 悬停格（鼠标）
-  UI.drag = null;        // 拖动状态 {kind:'tower',tower,px,py} | {kind:'clean',shape,px,py}
-  UI._sig = '';
+  UI.drag = null;        // {kind:'tower',tower,px,py} | {kind:'clean',shape,cardIdx,px,py}
+                         // | {kind:'hero',elem,cardIdx,px,py}
+  UI.trainSel = null;    // v1.6.13 长按的列车单元 {kind:'head'}|{kind:'wagon',i}，null=未按住
 
   // Pointer 事件统一鼠标/触摸（旧版 click+mousemove 无法拖动）。canvas 已设
   //   touch-action:none（css），移动端按住拖动不会触发页面滚动。
@@ -26,9 +32,16 @@ UI.init = function (canvas) {
   canvas.addEventListener('pointermove', UI.onMove);
   canvas.addEventListener('pointerup', UI.onUp);
   canvas.addEventListener('pointercancel', UI.onCancel);
-  UI.btnClean.addEventListener('pointerdown', UI.onCleanDown);
   UI.btnSummon.addEventListener('click', UI.onSummon);
   if (UI.btnDepart) UI.btnDepart.addEventListener('click', UI.onDepart);
+  if (UI.btnUndo) UI.btnUndo.addEventListener('click', UI.onUndo);
+  if (UI.btnSpeed) {
+    CLOCK.speedInit();                                 // 恢复会话内记住的档位（关网页才重置）
+    UI.btnSpeed.textContent = '×' + CLOCK.timeScale;
+    UI.btnSpeed.addEventListener('click', function () {
+      UI.btnSpeed.textContent = '×' + CLOCK.cycleSpeed();
+    });
+  }
   UI.btnExport = document.getElementById('btnExport');
   if (UI.btnExport) UI.btnExport.addEventListener('click', UI.onExport);
   UI.btnLog = document.getElementById('btnLog');
@@ -36,6 +49,7 @@ UI.init = function (canvas) {
   UI.btnForce = document.getElementById('btnForce');
   if (UI.btnForce) UI.btnForce.addEventListener('click', UI.onForceRefresh);
   UI.btnRestart.addEventListener('click', UI.onRestart);
+  UI.renderDeck();     // 开局画一次空牌库（此后由选卡/用卡/重开触发刷新）
 };
 
 // 可以施工/拖动吗：白天 且 没有失败（v1.3-rc 加 gameOver 闸）
@@ -60,8 +74,25 @@ UI.cellFromEvent = function (e) {
   return CFG.pickCell(LAY, p.mx, p.my);
 };
 
-// ---- 按下：塔上按下 = 开始拖塔 -------------------------------------------------
+// ---- 按下：车头/车厢 = 长按查射程；塔上按下 = 开始拖塔 -------------------------
+// v1.6.13（大王令）：射程环显示从"点选切换"（v1.6.11）改为**长按显示** ——
+//   按住车头/车厢期间画该节自己的射程环（UI.trainSel 按住态），**松手即消失**。
+//   查射程是纯只读操作，白天夜晚都可用 —— 故判定放在 isDay 闸**之前**。
 UI.onDown = function (e) {
+  var p = UI.pointFromEvent(e);
+  // —— 车头/车厢长按（优先于拖塔：车在轨上跑，从不与塔格手势冲突）——
+  //   命中判据：按下点到单元中心距离 ≤0.55 格；车头与车厢中心距 GAP=1 格，
+  //   0.55 半径略有重叠，取**最近**的一节即可（pickTrain 内做最小距离竞争）。
+  if (p && typeof ENG !== 'undefined' && GS.railPath.length) {
+    var hit = UI.pickTrain(p.mx, p.my);
+    if (hit) {
+      UI.trainSel = hit;   // 按住态：renderer 据此画环，pointerup/cancel 清除
+      // setPointerCapture：按住期间指针拖出画布也能收到 up（否则松手在画布外会"卡住"显示）
+      try { UI.canvas.setPointerCapture(e.pointerId); } catch (err) {}
+      return;
+    }
+    UI.trainSel = null;    // 按在空白/塔/地面 = 无按住态（拖塔手势照常继续）
+  }
   if (!UI.isDay()) return;
   var cell = UI.cellFromEvent(e);
   if (!cell) return;
@@ -69,9 +100,28 @@ UI.onDown = function (e) {
   if (!b || b.type !== 'tower') return;
   // setPointerCapture：按住拖出画布也能收到 move/up（否则拖快了会"甩丢"指针）
   try { UI.canvas.setPointerCapture(e.pointerId); } catch (err) {}
-  var p = UI.pointFromEvent(e);
   UI.drag = { kind: 'tower', tower: b, px: p.mx, py: p.my };
   UI.setStatus('');
+};
+
+// 点选列车单元：返回 {kind:'head'} | {kind:'wagon', i}（命中**最近**的一节）或 null。
+//   车厢 = GS.towers 的运行时投影（规格 §14.2），第 i 节位置 ENG.wagonPos(i)（浮点格）。
+//   车头像素位置直接用 ENG.trainPos()（与 renderer 画环同源，零漂移）。
+//   v1.6.13 起用于**长按**判定（按住显示、松手消失），非点选切换。
+UI.pickTrain = function (mx, my) {
+  if (!GS.railPath.length) return null;
+  var R = LAY.cell * 0.55, best = null, bestD = R * R;
+  var hp = ENG.trainPos();
+  var d = (mx - hp.x) * (mx - hp.x) + (my - hp.y) * (my - hp.y);
+  if (d <= bestD) { best = { kind: 'head' }; bestD = d; }
+  for (var i = 0; i < GS.towers.length; i++) {
+    var wp = ENG.wagonPos(i);
+    if (!wp) continue;
+    var wx = CFG.ccx(LAY, wp.c), wy = CFG.ccy(LAY, wp.r);
+    var d2 = (mx - wx) * (mx - wx) + (my - wy) * (my - wy);
+    if (d2 <= bestD) { best = { kind: 'wagon', i: i }; bestD = d2; }
+  }
+  return best;
 };
 
 // ---- 移动：更新拖动幽灵位置 / 悬停格 --------------------------------------------
@@ -84,97 +134,280 @@ UI.onMove = function (e) {
   }
 };
 
-// ---- 抬起：结算拖动 -------------------------------------------------------------
+// ---- 抬起：结算拖动（⚠️ 只处理 canvas 上开始的拖塔合成；
+//   牌库卡的拖拽在 pointerdown 时转嫁给 document，见 UI.startDeckDrag）----------
 UI.onUp = function (e) {
-  if (!UI.drag) return;
+  UI.trainSel = null;   // v1.6.13：长按查射程松手即消失（先于拖塔结算，两手势互不干扰）
+  if (!UI.drag || UI.drag.kind !== 'tower') return;
   var drag = UI.drag;
   UI.drag = null;
   var cell = UI.cellFromEvent(e);
-  if (drag.kind === 'tower') {
-    // 拖塔合成：释放在同类同星塔上 → 合成；否则弹回（不扣任何东西）
-    if (!cell) return;                                   // 拖出画布 = 弹回
-    var dst = GS.grid[cell.r][cell.c].b;
-    if (TOWERS.canMerge(drag.tower, dst)) {
-      var res = TOWERS.merge(drag.tower, dst);
-      UI.setStatus(res === true ? '合成成功！' : res);
-    } else if (dst && dst.type === 'tower' && dst !== drag.tower) {
-      UI.setStatus('需要同类同星的塔才能合成');
-    }
-  } else if (drag.kind === 'clean') {
-    // 拖形状清理：合法性走 applyShape（相接≥1 或压内区，与 v1.2 完全同口径）
-    if (!cell) { UI.setStatus('形状作废'); if (typeof LOG !== 'undefined') LOG.add('cleanDiscard', {}); return; }
-    var res2 = ENG.applyShape(cell.c, cell.r, drag.shape.cells);
-    if (typeof LOG !== 'undefined') {
-      var lev2 = { shape: drag.shape.name, at: cell.c + ',' + cell.r, ok: res2 === true };
-      if (res2 !== true) lev2.reason = res2;
-      LOG.add(res2 === true ? 'cleanApply' : 'cleanFail', lev2);
-    }
-    UI.setStatus(res2 === true ? '已清理' : res2);
-    // 失败也作废（按钮每次按下都是付费抽新形状 —— 规格 §13.1 第 8 条口径）
+  // 拖塔合成：释放在同名同星塔上 → 合成（v1.4 产物元素继承）；否则弹回
+  if (!cell) return;                                   // 拖出画布 = 弹回
+  var dst = GS.grid[cell.r][cell.c].b;
+  if (TOWERS.canMerge(drag.tower, dst)) {
+    var res = TOWERS.merge(drag.tower, dst);
+    UI.setStatus(res === true ? '合成成功！' : res);
+  } else if (dst && dst.type === 'tower' && dst !== drag.tower) {
+    UI.setStatus('需要同名同星的塔才能合成');
   }
 };
 
-UI.onCancel = function () { UI.drag = null; };   // 指针被打断（来电等）= 弹回，不结算
+UI.onCancel = function () { UI.drag = null; UI.trainSel = null; };   // 指针被打断（来电等）= 弹回/环消失，不结算
 
-// ---- 【抽塔】按钮 ----------------------------------------------------------------
+// ---- 【抽卡】按钮（v1.4）：扣费 → 三选一弹层 → 必须选一张进牌库 ----------
+// v1.6.15：价格线性递增（GS.drawCost() = 10 + 10×已抽次数，大王令），10 → 20 → 30 → …
 UI.onSummon = function () {
+  var cost = GS.drawCost();
   if (!UI.isDay()) { UI.setStatus(GS.gameOver ? '挑战已失败' : '防守阶段施工暂停，等列车回到站台'); return; }
-  var res = TOWERS.summon();
-  UI.setStatus(res === true ? '召唤了一座 1 星塔' : res);
+  if (GS.gold < cost) { UI.setStatus('金币不足（需 ' + cost + '）'); return; }
+  GS.gold -= cost;
+  GS.drawCount += 1;                       // 只在实际扣费时计数（放弃/选卡不退钱）
+  if (typeof LOG !== 'undefined') LOG.add('drawPay', { cost: cost, count: GS.drawCount });
+  UI.showOffer(GS.drawCardOffer());
 };
 
-// ---- 【清理】按钮：每次按下 = 付费抽新形状 + 立即进入拖动（规格 §13.1 第 8 条）----
-// ⚠️ 反馈断层修复（2026-09-29 大王报"形状没出来"）：旧版按下后 px=-1（画布外），
-//   renderer 的 drag.px>=0 条件不画幽灵 → 按住按钮期间画布零反馈，"点一下"更是
-//   金币白扣+作废全程无提示。现改为：抽到形状**立即显示在画布左上角**，状态栏报
-//   形状名与玩法；指针出画布时幽灵钳在边缘跟着走（松手位置照旧须在画布内才结算）。
-UI.onCleanDown = function (e) {
+// 三选一弹层：渲染三张卡，点一张 → 进牌库 → 关弹层
+UI.showOffer = function (cards) {
+  UI.offerCards.innerHTML = '';
+  cards.forEach(function (card) {
+    var el = document.createElement('div');
+    el.className = 'oc';
+    UI.fillCardDom(el, card, true);
+    el.addEventListener('click', function () {
+      GS.deck.push(card);
+      if (typeof LOG !== 'undefined') LOG.add('pick', { kind: card.kind, name: UI.cardLabel(card) });
+      UI.offerOverlay.classList.add('hidden');
+      UI.renderDeck();
+      UI.setStatus('已入牌库：' + UI.cardLabel(card));
+    });
+    UI.offerCards.appendChild(el);
+  });
+  UI.offerOverlay.classList.remove('hidden');
+};
+
+// 卡面文案（牌库/弹层共用）
+UI.cardLabel = function (card) {
+  if (card.kind === 'shape') return '形状 ' + card.name;
+  if (card.kind === 'hero') return '英雄·' + card.elem;
+  return '辅助';
+};
+
+// 往卡 DOM 里填内容。isOffer=true 时用弹层大卡类名（o-*），否则牌库小卡（p-*）
+UI.fillCardDom = function (el, card, isOffer) {
+  var pre = isOffer ? 'o' : 'p';
+  if (card.kind === 'shape') {
+    var kind1 = document.createElement('div'); kind1.className = pre + '-kind'; kind1.textContent = '形状卡';
+    var main = document.createElement('div'); main.className = pre + '-name'; main.textContent = card.name;
+    el.appendChild(kind1); el.appendChild(main);
+    // mini 形状网格
+    var w = 0, h = 0, i;
+    for (i = 0; i < card.cells.length; i++) {
+      if (card.cells[i][0] + 1 > w) w = card.cells[i][0] + 1;
+      if (card.cells[i][1] + 1 > h) h = card.cells[i][1] + 1;
+    }
+    var grid = document.createElement('div');
+    grid.className = pre + '-shape';
+    grid.style.gridTemplateColumns = 'repeat(' + w + ', auto)';
+    var map = {};
+    for (i = 0; i < card.cells.length; i++) map[card.cells[i][0] + ',' + card.cells[i][1]] = 1;
+    for (var r = 0; r < h; r++) for (var c = 0; c < w; c++) {
+      var dot = document.createElement('i');
+      if (!map[c + ',' + r]) dot.style.visibility = 'hidden';
+      grid.appendChild(dot);
+    }
+    el.appendChild(grid);
+  } else if (card.kind === 'hero') {
+    var kind2 = document.createElement('div'); kind2.className = pre + '-kind'; kind2.textContent = '英雄卡';
+    var main2 = document.createElement('div'); main2.className = pre + '-main';
+    main2.textContent = card.elem;
+    main2.style.color = REND.C.tower[card.elem] || '#888';
+    var sub2 = document.createElement('div'); sub2.className = pre + '-sub'; sub2.textContent = '建造后 +1 车厢';
+    el.appendChild(kind2); el.appendChild(main2); el.appendChild(sub2);
+  } else {
+    var kind3 = document.createElement('div'); kind3.className = pre + '-kind'; kind3.textContent = '辅助卡';
+    el.appendChild(kind3);
+  }
+};
+
+// ---- 底部牌库渲染：每张卡可拖到场上（形状=清理 / 英雄=建造）---------------------
+UI.renderDeck = function () {
+  UI.deckRow.innerHTML = '';
+  if (!GS.deck.length) {
+    var empty = document.createElement('div');
+    empty.id = 'deckEmpty';
+    empty.textContent = '牌库空 —— 点【抽卡】获得形状/英雄卡';
+    UI.deckRow.appendChild(empty);
+    return;
+  }
+  GS.deck.forEach(function (card, idx) {
+    var el = document.createElement('div');
+    el.className = 'pcard';
+    UI.fillCardDom(el, card, false);
+    el.addEventListener('pointerdown', function (e) { UI.startDeckDrag(e, idx); });
+    UI.deckRow.appendChild(el);
+  });
+};
+
+// 从牌库拖卡：pointerdown 在卡 DOM 上 → 后续 move/up 转嫁 document（画布收不到）
+UI.startDeckDrag = function (e, idx) {
   if (!UI.isDay()) { UI.setStatus(GS.gameOver ? '挑战已失败' : '防守阶段施工暂停，等列车回到站台'); return; }
-  if (GS.gold < 10) { UI.setStatus('金币不足（需 10）'); return; }
-  GS.gold -= 10;
-  UI.cleanShape = CFG.randomShape();       // { name, cells }（矩形 4/6/8 三档，与 v1.2 同池）
-  if (typeof LOG !== 'undefined') LOG.add('cleanPay', { shape: UI.cleanShape.name, cost: 10 });
-  // 初始位置放地图区内第一格中央（⚠️ 必须落在 LAY 地图区内：renderer 用
-  //   CFG.pickCell(LAY,…) 换算，画布左上角 (0,0) 在地图区外会换算成 null 不画）
-  UI.drag = { kind: 'clean', shape: UI.cleanShape, px: LAY.x + LAY.cell / 2, py: LAY.y + LAY.cell / 2 };
-  UI.setStatus('已抽 ' + UI.cleanShape.name + '，按住拖到场上松手清理');
-  try { UI.btnClean.setPointerCapture(e.pointerId); } catch (err) {}
-  // 按钮上按下后拖到画布 —— pointermove/up 都挂在 canvas 上收不到！
-  // 所以这里把后续事件转嫁：给 document 挂一次性 up/move 由 UI 结算（见下）。
+  var card = GS.deck[idx];
+  if (!card) return;
+  var drag = { cardIdx: idx, px: LAY.x + LAY.cell / 2, py: LAY.y + LAY.cell / 2 };
+  if (card.kind === 'shape') drag.kind = 'clean', drag.shape = { name: card.name, cells: card.cells };
+  else if (card.kind === 'hero') drag.kind = 'hero', drag.elem = card.elem;
+  else return;                                          // 辅助卡本期不可用
+  UI.drag = drag;
+  UI.dragPreview = null;
+  UI.setStatus(UI.cardLabel(card) + '：拖到场上松手');
+  try { e.target.setPointerCapture(e.pointerId); } catch (err) {}
   var mv = function (ev) {
     var p = UI.pointFromEvent(ev);
     if (p) { UI.drag.px = p.mx; UI.drag.py = p.my; }
     else {
-      // 出画布：幽灵**钳到地图区边缘**跟着指针走（保持"形状在手"的视觉）；
-      //   松手结算仍以"是否在画布内"为准（见 up），贴边不等于可放置。
+      // 出画布：幽灵钳到地图区边缘（松手须在画布内才结算）
       var rect = UI.canvas.getBoundingClientRect();
       var rawX = (ev.clientX - rect.left) * (CFG.CANVAS_W / rect.width);
       var rawY = (ev.clientY - rect.top) * (CFG.fieldH() / rect.height);
       UI.drag.px = Math.max(LAY.x, Math.min(LAY.x + LAY.w - 1, rawX));
       UI.drag.py = Math.max(LAY.y, Math.min(LAY.y + LAY.h - 1, rawY));
     }
+    UI.updateCleanPreview(drag);                        // v1.4.11：锚点变了才真算，格内抖动零开销
   };
   var up = function (ev) {
     document.removeEventListener('pointermove', mv);
     document.removeEventListener('pointerup', up);
-    // 抬起位置换算成画布坐标再结算（复用 onUp 的 clean 分支逻辑）
     var drag = UI.drag;
     UI.drag = null;
-    if (!drag || drag.kind !== 'clean') return;
+    UI.dragPreview = null;                              // v1.4.11：预览环随拖拽结束消失
+    if (!drag) return;
     var p = UI.pointFromEvent(ev);
-    if (!p) { UI.setStatus('形状作废'); if (typeof LOG !== 'undefined') LOG.add('cleanDiscard', {}); return; }
-    var cell = CFG.pickCell(LAY, p.mx, p.my);
-    if (!cell) { UI.setStatus('形状作废'); if (typeof LOG !== 'undefined') LOG.add('cleanDiscard', {}); return; }
-    var res = ENG.applyShape(cell.c, cell.r, drag.shape.cells);
-    if (typeof LOG !== 'undefined') {
-      var lev = { shape: drag.shape.name, at: cell.c + ',' + cell.r, ok: res === true };
-      if (res !== true) lev.reason = res;
-      LOG.add(res === true ? 'cleanApply' : 'cleanFail', lev);
-    }
-    UI.setStatus(res === true ? '已清理' : res);
+    var cell = p ? CFG.pickCell(LAY, p.mx, p.my) : null;
+    if (drag.kind === 'clean') UI.settleClean(drag, cell);
+    else if (drag.kind === 'hero') UI.settleHero(drag, cell);
   };
   document.addEventListener('pointermove', mv);
   document.addEventListener('pointerup', up);
+};
+
+// v1.4.11 清理预览（大王拍板"先做了试试，体验差就干掉"）：拖形状卡时实时预测
+//   "清完之后铁轨大概长什么样"。落点合法时把清理后重算出的环交给 renderer 画
+//   金黄虚线（本层不碰渲染）；非法落点维持红框不画环。
+//   ⚠️ v1.4.11 优化（大王问"能不能不全量重算"）——两层提速，行为零风险：
+//   ① 求解快速档：置 GS.railFast=true，recomputeRails 只跑主解（90ms 墙钟），
+//     跳过 ②枚举/⑤支线（占总耗时大头、采纳率本就 0~1%）。预览环 = 快速近似，
+//     松手结算仍走全量求解，真实铁轨不受影响；
+//   ② 还原不重算：recomputeRails 对 7 个派生字段（railPath/railSet/railRect/
+//     railInner/contourB/railGrowHints/station）全部**整体替换、从不原地改**
+//     （station 见 STATION.solve 的整体赋值），拖前按引用快照、拖后原样放回
+//     = bit-exact 还原，省掉第二遍全量求解（原实现还原时还要再重算一遍）。
+//   性能闸：只在锚点格变化时重算（同格内指针抖动零开销）；单次 >
+//   UI.PREVIEW_MS(150ms) 的重盘自动降级——本拖拽剩余时间只显绿/红形状框。
+UI.PREVIEW_MS = 150;
+UI.dragPreview = null;          // { rail: [{c,r}...] } —— 仅拖形状卡且落点合法时有值
+UI.updateCleanPreview = function (drag) {
+  if (!drag || drag.kind !== 'clean') return;
+  var cell = CFG.pickCell(LAY, drag.px, drag.py);
+  var key = cell ? cell.c + ',' + cell.r : null;
+  if (key === drag.prevAnchor) return;                  // 锚点没变：沿用上次结果
+  drag.prevAnchor = key;
+  UI.dragPreview = null;
+  if (!cell || drag.previewOff || !UI.isDay()) return;  // 出图/已降级/夜晚：不预览
+  var now = function () {
+    return (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
+  };
+  var t0 = now();
+  // v1.4.12：以指针为中心的锚点（与 renderer 幽灵预览同走 ENG.shapeAnchor，口径只此一份）
+  var anc = ENG.shapeAnchor(cell, drag.shape.cells);
+  // 按引用快照 7 个派生字段（求解器只整体替换它们，绝不原地改 ⇒ 引用放回即还原）
+  var saved = { railPath: GS.railPath, railSet: GS.railSet, railRect: GS.railRect,
+                railInner: GS.railInner, contourB: GS.contourB,
+                railGrowHints: GS.railGrowHints, station: GS.station };
+  var res;
+  GS.railFast = true;
+  try { res = ENG.applyShape(anc.c, anc.r, drag.shape.cells); }
+  finally { GS.railFast = false; }                      // 异常也绝不把快速档漏进正常玩法
+  if (res === true) UI.dragPreview = { rail: GS.railPath.slice() };   // 先抓预览环再还原
+  var snap = ENG.lastShapeApply;                        // ① 地形还原：逐格放回清理前 t
+  if (res === true && snap) {
+    for (var i = 0; i < snap.length; i++) GS.grid[snap[i].r][snap[i].c].t = snap[i].was;
+  }
+  for (var k in saved) GS[k] = saved[k];                // ② 派生字段 bit-exact 放回（不重算）
+  if (now() - t0 > UI.PREVIEW_MS) {                     // 重盘：本拖拽内降级，不卡手感
+    drag.previewOff = true;
+    UI.dragPreview = null;
+  }
+};
+
+// 形状卡结算：成功 = 卡消耗离库；失败 = 卡回牌库（拍板 ③："清理成功后卡消失"）
+UI.settleClean = function (drag, cell) {
+  if (!cell) { UI.setStatus('形状作废（卡已收回）'); if (typeof LOG !== 'undefined') LOG.add('cleanDiscard', { shape: drag.shape.name }); return; }
+  var anc = ENG.shapeAnchor(cell, drag.shape.cells);    // v1.4.12：以指针为中心
+  var res = ENG.applyShape(anc.c, anc.r, drag.shape.cells);
+  if (typeof LOG !== 'undefined') {
+    var lev = { shape: drag.shape.name, at: anc.c + ',' + anc.r, ok: res === true };
+    if (res !== true) lev.reason = res;
+    LOG.add(res === true ? 'cleanApply' : 'cleanFail', lev);
+  }
+  if (res === true) {
+    // v1.4.5：打包撤销点（逐格 was 快照 + 被消耗的卡 + 原库位），供【撤销清理】一键回撤
+    GS.undoClean = { pts: ENG.lastShapeApply, card: GS.deck[drag.cardIdx],
+                     cardIdx: drag.cardIdx, shape: drag.shape.name };
+    GS.deck.splice(drag.cardIdx, 1);                   // 成功才消耗
+    UI.setStatus('已清理（可点【撤销清理】回撤）');
+  } else {
+    UI.setStatus(res + '（卡已收回）');
+  }
+  UI.renderDeck();
+};
+
+// v1.4.5 【撤销清理】：把最近一次形状卡清理整体回撤（废墟还原 + 铁轨重算 + 卡回牌库）。
+//   动机（大王）：某些清理会让路径规划失败（环覆盖塌了），需要撤回重新规划。
+UI.onUndo = function () {
+  if (!UI.isDay()) { UI.setStatus(GS.gameOver ? '挑战已失败' : '防守阶段施工暂停，等列车回到站台'); return; }
+  var shapeName = GS.undoClean ? GS.undoClean.shape : '';   // undoShape 会清掉撤销点，先取名字
+  var res = ENG.undoShape();
+  if (res !== true) { UI.setStatus(res); return; }
+  if (typeof LOG !== 'undefined') LOG.add('cleanUndo', { shape: shapeName });
+  UI.setStatus('已撤销清理，卡回牌库');
+  UI.renderDeck();
+};
+
+// 英雄卡结算：释放在合法空地 → 建塔（免费）+ 车尾 +1 对应元素车厢 → 卡消耗
+UI.settleHero = function (drag, cell) {
+  if (!cell) {
+    UI.setStatus('建造取消（卡已收回）');
+    if (typeof LOG !== 'undefined') LOG.add('heroCancel', { reason: 'offmap' });   // v1.4.10：拖空收回入流水
+    return;
+  }
+  // v1.6.10 手牌直接合成：拖到同名 1 星塔上松手 = 直接升星（免"先建塔再拖动"两步）。
+  // 判据/执行走 canMergeCard/mergeFromHand（= canMerge/merge 单一口径，虚源 from:'hand'）。
+  var dt = GS.grid[cell.r][cell.c].b;
+  if (dt && dt.type === 'tower') {
+    var mres = TOWERS.mergeFromHand(drag.elem, dt);
+    if (mres === true) {
+      GS.deck.splice(drag.cardIdx, 1);
+      UI.setStatus('英雄·' + drag.elem + ' 直接合成，' + dt.elem + ' 升至 ' + dt.star + ' 星');
+      UI.renderDeck();
+      return;
+    }
+    UI.setStatus(mres + '（卡已收回）');
+    if (typeof LOG !== 'undefined') LOG.add('heroCancel', { reason: 'mergeMismatch', at: cell.c + ',' + cell.r });
+    UI.renderDeck();
+    return;
+  }
+  if (!TOWERS.isFreeSpot(cell.c, cell.r)) {
+    UI.setStatus('只能建在空地（非轨/非金币/无建筑，卡已收回）');
+    if (typeof LOG !== 'undefined') LOG.add('heroCancel', { reason: 'occupied', at: cell.c + ',' + cell.r });
+    UI.renderDeck(); return;
+  }
+  TOWERS.placeAt(cell.c, cell.r, drag.elem, 1);
+  // 车厢不再单独登记（v1.4.1）：车厢 = GS.towers 镜像投影，建塔即自动 +1 节
+  GS.deck.splice(drag.cardIdx, 1);
+  if (typeof LOG !== 'undefined') LOG.add('buildHero', { elem: drag.elem, at: cell.c + ',' + cell.r });
+  UI.setStatus('英雄·' + drag.elem + ' 已建造，+1 车厢');
+  UI.renderDeck();
 };
 
 // ---- 开波（原「发车」）-----------------------------------------------------------
@@ -189,6 +422,8 @@ UI.onDepart = function () {
 UI.onRestart = function () {
   ENG.restart();
   UI.overOverlay.classList.add('hidden');
+  UI.renderDeck();                                   // v1.4：牌库随重开清空
+  UI.trainSel = null;                                // v1.6.13：长按状态随重开清空
   UI.setStatus('新的挑战开始');
 };
 
@@ -326,15 +561,18 @@ UI.onForceRefresh = function () {
 UI.tick = function () {
   var day = UI.isDay();
   UI.gold.textContent = Math.floor(GS.gold);
-  if (UI.cargo) UI.cargo.textContent = Math.floor(GS.train.cargo);
+  // v1.4.7：车斗 HUD 刷新已退役（车上浮字 +N 唯一显示，见 UI.init 注释）
   // 城墙血量（低血变红）与波次
   if (UI.core) {
     UI.core.textContent = Math.max(0, Math.ceil(GS.coreHP));
     UI.core.style.color = GS.coreHP <= GS.coreMaxHP * 0.3 ? '#e8563f' : '';
   }
   if (UI.wave) UI.wave.textContent = FOES.wave > 0 ? FOES.wave : '-';
-  UI.btnSummon.disabled = !day || GS.gold < TOWERS.CFG.COST;
-  UI.btnClean.disabled = !day || GS.gold < 10;
+  var drawCost = GS.drawCost();                    // v1.4.4/v1.4.8：线性递增价（5+5×已抽次数）
+  UI.btnSummon.disabled = !day || GS.gold < drawCost;
+  UI.btnSummon.textContent = '抽卡(' + drawCost + ')';
+  // v1.4.5：撤销按钮 —— 有可撤销点且白天才可点
+  if (UI.btnUndo) UI.btnUndo.disabled = !day || !GS.undoClean;
   // 开波按钮：建造阶段「开波」，防守阶段显示倒计时 / 波次；非建造阶段不可点
   if (UI.btnDepart) {
     UI.btnDepart.disabled = !day;

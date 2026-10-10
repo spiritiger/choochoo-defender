@@ -4,7 +4,8 @@
 // 大王拍板（2026-09-29）：顶栏新增【导出记录】按钮（导出地图旁），复制本次
 //   玩家行为的 JSON 行流水。记录范围（拍板：施工/经济/战斗三类，铁轨重算不记）：
 //   · 施工：cleanPay（抽形状付费）/ cleanApply / cleanFail（清理成败与原因）/
-//     cleanDiscard（形状作废）/ summon / summonFail / merge / mergeFail
+//     cleanDiscard（形状作废）/ cleanUndo（撤销清理，v1.4.5）/ buildHero（英雄卡建造）/
+//     heroCancel（英雄卡拖空或非法位收回，v1.4.10）/ summon / summonFail / merge / mergeFail
 //   · 经济：waveStart（带金币快照）/ waveEnd / deliver（车斗+站台分项、结余）
 //   · 战斗：coreHit（镇中心每次受伤后的血量）/ gameOver / newGame（含重开）
 //
@@ -18,7 +19,7 @@
 // ============================================================================
 window.LOG = {};
 
-LOG.VER = 'v1.3.5';   // 记录器数据格式版本（随规格版本更新；头部 # ver= 行用它）
+LOG.VER = 'v1.6.21';   // 记录器数据格式版本（随规格版本更新；头部 # ver= 行用它）
 LOG.CAP = 3000;   // 环形上限：超出丢弃最旧事件
 LOG.buf = [];     // 事件缓冲：{t, ev, ...附加字段}
 LOG._t0 = (typeof performance !== 'undefined' && performance.now)
@@ -78,6 +79,7 @@ LOG.exportText = function () {
     ' clean=' + (stat.cleanApply || 0) + '+' + (stat.cleanFail || 0) + 'fail' +
     '+' + (stat.cleanDiscard || 0) + 'discard' +
     ' summon=' + (stat.summon || 0) + '+' + (stat.summonFail || 0) + 'fail' +
+    ' hero=' + (stat.buildHero || 0) + '+' + (stat.heroCancel || 0) + 'cancel' +
     ' merge=' + (stat.merge || 0) + '+' + (stat.mergeFail || 0) + 'fail' +
     ' deliver=' + (stat.deliver || 0) + ' goldEarned=' + goldEarned +
     ' coreHit=' + (stat.coreHit || 0) + ' gameOvers=' + (stat.gameOver || 0));

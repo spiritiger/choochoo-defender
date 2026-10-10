@@ -16,7 +16,9 @@
 
   var last = performance.now();
   function frame(now) {
-    var dt = Math.min(0.05, (now - last) / 1000);
+    // 倍速（v1.6.2）：真实帧时长 × CLOCK.timeScale，再钳 0.05 防大跳帧。
+    // 60fps 下 ×3 = 每帧 0.05 恰好达上限，三档全速有效；掉帧时游戏只慢不炸。
+    var dt = Math.min(0.05, (now - last) / 1000 * CLOCK.timeScale);
     last = now;
     ENG.update(dt);
     REND.draw(ctx, LAY, UI.move, UI.drag);

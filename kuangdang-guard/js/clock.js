@@ -15,9 +15,10 @@
 //   'day'   建造：列车停在站台（engine.js 的 parkAtStation 对齐），可施工/重抽。
 //           UI 点「开波」→ startNight()。
 //   'night' 防守：倒计时 CFG.NIGHT_SEC 秒，列车沿环行驶、拾取的金币堆在车斗。
-//           · 倒计时内怪物清空（onCleared）→ 立刻收尾（toDusk）：跑完当前这圈就停。
+//           · 倒计时内怪物清空（onCleared）→ v1.6.19 奖励时间：留在 night 继续跑圈
+//             不停靠（到站照常交付），剩余倒计时走完 → toDusk；
 //           · 倒计时走完：
-//               - 还有怪物（hasFoes）→ overtime，继续跑，等清空；
+//               - 还有怪物（hasFoes）→ overtime，继续跑，等清空（清空 → toDusk）；
 //               - 没有怪物 → 直接收尾（toDusk）。
 //   'dusk'  收尾：列车继续跑，**到站即停**（engine.js 到站判定 → finishNight →
 //           CLOCK.notifyStation()）→ 交付金币、回到 'day'（下一轮建造）。
@@ -31,13 +32,38 @@
 window.CLOCK = {};
 
 CLOCK.CFG = {
-  NIGHT_SEC: 20         // 防守阶段倒计时秒数
+  NIGHT_SEC: 40,        // 防守阶段倒计时秒数（v1.6.21 大王令 30→40：奖励时间机制下清场越早跑得越久）
+  REWARD_HINT: '奖励时间' // 状态栏文案（label 用）
 };
 
 CLOCK.phase = 'day';      // 'day' 建造 | 'night' 防守 | 'dusk' 收尾（键名沿用历史口径）
 CLOCK.remain = 0;         // 防守阶段剩余秒数（night 相位有意义）
 CLOCK.overtime = false;   // 倒计时已走完但怪物还没清空 → 继续跑
+CLOCK.reward = false;     // v1.6.19 奖励时间：倒计时内清空怪物 → 剩余倒计时继续跑圈不停靠
 CLOCK.hasFoes = false;    // 场上是否有活怪（foes.js 维护）
+
+// ---- 全局倍速（v1.6.2 大王令：1/2/3 倍循环按钮）----
+// main.js 把帧 dt 乘上 timeScale 后再喂给 ENG.update，游戏整体（倒计时/刷怪/列车/
+// 攻击冷却）等比加速。档位循环 1→2→3→1；档位记在 sessionStorage —— 关掉网页
+// 才重置回 1，同一会话内刷新/开新局都保持（大王口径："除非重新打开网页才重置"）。
+CLOCK.timeScale = 1;
+CLOCK.SPEEDS = [1, 2, 3];
+
+CLOCK.speedInit = function () {
+  try {
+    var s = (typeof sessionStorage !== 'undefined') ? sessionStorage.getItem('kdgSpeed') : null;
+    if (s && CLOCK.SPEEDS.indexOf(+s) >= 0) CLOCK.timeScale = +s;
+  } catch (e) { /* 隐私模式等取不到就算了，用默认 1 */ }
+};
+
+CLOCK.cycleSpeed = function () {
+  var i = CLOCK.SPEEDS.indexOf(CLOCK.timeScale);
+  CLOCK.timeScale = CLOCK.SPEEDS[(i + 1) % CLOCK.SPEEDS.length];
+  try {
+    if (typeof sessionStorage !== 'undefined') sessionStorage.setItem('kdgSpeed', String(CLOCK.timeScale));
+  } catch (e) { /* 同上，存储失败不影响功能 */ }
+  return CLOCK.timeScale;
+};
 
 CLOCK.isDay = function () { return CLOCK.phase === 'day'; };
 CLOCK.isNight = function () { return CLOCK.phase === 'night'; };
@@ -49,6 +75,7 @@ CLOCK.reset = function () {
   CLOCK.phase = 'day';
   CLOCK.remain = 0;
   CLOCK.overtime = false;
+  CLOCK.reward = false;
   CLOCK.hasFoes = false;
 };
 
@@ -57,6 +84,7 @@ CLOCK.startNight = function () {
   CLOCK.phase = 'night';
   CLOCK.remain = CLOCK.CFG.NIGHT_SEC;
   CLOCK.overtime = false;
+  CLOCK.reward = false;
   return true;
 };
 
@@ -65,6 +93,7 @@ CLOCK.toDusk = function () {
   CLOCK.phase = 'dusk';
   CLOCK.remain = 0;
   CLOCK.overtime = false;
+  CLOCK.reward = false;
 };
 
 CLOCK.tick = function (dt) {
@@ -76,10 +105,17 @@ CLOCK.tick = function (dt) {
   else CLOCK.toDusk();
 };
 
-// 怪物清空钩子：倒计时内清空 → 立刻收尾；超时等清空 → 这时才收尾
+// 怪物清空钩子（v1.6.19 奖励时间）：
+//   · 倒计时内清空 → **进入奖励时间**：留在 night 相位继续倒计时，列车继续跑圈
+//     不停靠（到站照常交付、不停车），直到倒计时走完 → toDusk → 下一圈到站停。
+//     奖励时长 = 剩余倒计时（清得越快跑得越久）。
+//   · overtime（倒计时走完才清空）→ 维持旧口径：此刻收尾到站即停。
 CLOCK.onCleared = function () {
   CLOCK.hasFoes = false;
-  if (CLOCK.phase === 'night') CLOCK.toDusk();
+  if (CLOCK.phase === 'night') {
+    if (CLOCK.overtime) CLOCK.toDusk();
+    else CLOCK.reward = true;
+  }
 };
 
 // 列车到站钩子：收尾相位到站 = 这一夜结束 → 回到白天。返回是否真的换相位。
@@ -103,6 +139,7 @@ CLOCK.label = function () {
   var w = (typeof FOES !== 'undefined' && FOES.wave > 0) ? ('第' + FOES.wave + '波 ') : '';
   if (CLOCK.phase === 'day') return '开波';
   if (CLOCK.phase === 'dusk') return '收车中';
+  if (CLOCK.reward) return w + '·奖励时间 ' + Math.ceil(CLOCK.remain) + 's';
   if (CLOCK.overtime) return w + '·等清场';
   return w + '防守 ' + Math.ceil(CLOCK.remain) + 's';
 };

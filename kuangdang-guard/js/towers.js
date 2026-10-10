@@ -98,8 +98,9 @@ TOWERS.summon = function () {
 };
 
 // ---- 合成（拖 A 塔放到 B 塔上）----------------------------------------------
-// 判据（大王定案）：同类（elem 相同）+ 同星（star 相同）。
-// 产物：**B 的位置**生成随机元素的 star+1 塔 —— 注意 elem 全随机不继承。
+// 判据（大王定案）：同名（elem 相同）+ 同星（star 相同）。
+// ⚠️ v1.4 改口径（规格 §14.1）：产物**继承原元素** —— 英雄卡时代成长要确定，
+//   旧"元素全随机"拍板随 v1.3 随机落点召唤一起退役。
 TOWERS.canMerge = function (src, dst) {
   return src && dst && src !== dst &&
          src.type === 'tower' && dst.type === 'tower' &&
@@ -109,22 +110,34 @@ TOWERS.canMerge = function (src, dst) {
 TOWERS.merge = function (src, dst) {
   if (!TOWERS.canMerge(src, dst)) {
     if (typeof LOG !== 'undefined') LOG.add('mergeFail',
-      { from: src ? (src.c + ',' + src.r) : null, to: dst ? (dst.c + ',' + dst.r) : null });
-    return '需要同类同星的塔';
+      { from: src && src.c >= 0 ? (src.c + ',' + src.r) : 'hand', to: dst ? (dst.c + ',' + dst.r) : null });
+    return '需要同名同星的两座塔';
   }
-  TOWERS.remove(src);                       // 源塔离场（格子弹出、数组移除）
-  dst.elem = TOWERS.randElem();             // 类型全随机（不继承）—— 大王拍板
+  if (src.c >= 0) TOWERS.remove(src);       // 源塔离场（格子弹出、数组移除）
+                                            // ⚠️ v1.6.10：手牌虚源（c=-1 占位）不在场，跳过离场
+  // v1.4：元素继承不变（删旧 randElem 行）—— 同名卡攒出确定成长
   dst.star += 1;                            // 星级 +1
   dst.flash = 0.4;                          // 合成闪光（renderer 用）
   if (typeof LOG !== 'undefined') LOG.add('merge',
-    { from: src.c + ',' + src.r, to: dst.c + ',' + dst.r, elem: dst.elem, star: dst.star });
+    { from: src.c >= 0 ? (src.c + ',' + src.r) : 'hand', to: dst.c + ',' + dst.r, elem: dst.elem, star: dst.star });
   return true;
 };
 
+// ---- 手牌直接合成（v1.6.10，大王令）------------------------------------------
+// 英雄卡（手牌塔恒 1 星）拖到场上同名 1 星塔上松手 = 直接升星，免"先建塔再拖动"两步。
+// 判据/执行**复用 canMerge/merge 单一路径**（幽灵源 c=-1 占位），杜绝两套口径漂移。
+TOWERS.canMergeCard = function (elem, dst) {
+  return TOWERS.canMerge({ type: 'tower', elem: elem, star: 1, c: -1, r: -1 }, dst);
+};
+TOWERS.mergeFromHand = function (elem, dst) {
+  return TOWERS.merge({ type: 'tower', elem: elem, star: 1, c: -1, r: -1 }, dst);
+};
+
 // ---- 攻击（每帧）------------------------------------------------------------
-// 单体攻击：射程内挑**离镇中心最近**的怪（防漏最急的那个）。命中瞬时结算，
-// 攻击连线塞进 TOWERS.beams 给 renderer 画（像素坐标由 renderer 自己换算）。
-TOWERS.beams = [];    // {ac,ar, bc,br, t}  t = 剩余显示秒
+// ⚠️ v1.4.2 大王纠偏："塔没有攻击能力，车厢才有" —— 塔 = 星级容器（合成升星
+//   提升对应车厢），**不再索敌开火**。旧塔攻击循环冻结保留在下方 __towerAtk_retired
+//   （无 VCS，留档可随时复活）；TOWERS.update 现在只维护连线衰减与闪光衰减。
+TOWERS.beams = [];    // {ac,ar, bc,br, t}  t = 剩余显示秒（车头/车厢攻击连线共用）
 
 TOWERS.update = function (dt) {
   // 攻击连线闪光衰减（白天也要衰减，残留连线不能冻住）
@@ -132,6 +145,15 @@ TOWERS.update = function (dt) {
     TOWERS.beams[b].t -= dt;
     if (TOWERS.beams[b].t <= 0) TOWERS.beams.splice(b, 1);
   }
+  // 塔闪光衰减（合成闪光 renderer 用）—— 攻击 flash 已无来源，衰减照留防残留冻结
+  for (var i = 0; i < GS.towers.length; i++) {
+    if (GS.towers[i].flash > 0) GS.towers[i].flash -= dt;
+  }
+};
+
+// ⚠️ 退役留档：旧"塔单体攻击"循环（v1.3-rc~v1.4.1）。复活要点：塔对象带
+//   cd/flash 字段、TOWERS.CFG.STATS 提供元素伤害表、连线塞 TOWERS.beams。
+TOWERS.__towerAtk_retired = function (dt) {
   if (GS.gameOver) return;
   var foes = GS.foes;
   if (!foes || !foes.length) return;

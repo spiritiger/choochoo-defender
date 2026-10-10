@@ -13,6 +13,7 @@ REND.C = {
   ok: 'rgba(61,220,106,0.18)',
   okl: 'rgba(61,220,106,0.9)',
   bad: 'rgba(232,70,58,0.25)',
+  preview: '#ffd75e',    // v1.4.11 清理预览环（金黄虚线，与真轨亮灰/形状绿红都拉开）
   // v1.3-rc 塔元素色板（顺序对应 TOWERS.ELEMS = fire/ice/thunder/poison）
   tower: { fire: '#e8563f', ice: '#6ec6ff', thunder: '#f7d94c', poison: '#9ce06a' },
   // v1.3.3 攻击范围环用的 rgb 模板串（与上面一一对应；车头 = 攻击连线同款浅紫）
@@ -22,13 +23,51 @@ REND.C = {
 };
 
 // v1.3.3 攻击范围提示（"不抢视觉"口径，规格 §13.5）：细虚线圆 + 极淡填充，
-// **按需出现**，平时零视觉占用 —— 塔环只在按住/拖塔/建造阶段悬停时画，车头环只在防守阶段画。
+// **按需出现**，平时零视觉占用 —— v1.6.11 起唯一存活的是列车环：只在点选
+// 车头/车厢时画（常驻显示退役，大王令）。
 REND.RANGE = {
   LINE_W: 1.2,
   DASH: [4, 4],
-  drag:  { line: 0.45, fill: 0.08 },   // 按住/拖塔（交互中，最清晰一档）
-  hover: { line: 0.25, fill: 0.04 },   // 建造阶段纯悬停（更淡一档，看一眼就走）
-  train: { line: 0.30, fill: 0.05 }    // 车头攻击环（防守阶段跟随车头）
+  train: { line: 0.30, fill: 0.05 }    // 列车射程环（点选车头/车厢时显示）
+  // ⚠️ v1.6.5：drag/hover 两档随塔射程环整体退役（大王拍板"塔没有攻击能力"），
+  //    塔相关覆盖显示由 mergeHint（合成高亮）接棒。
+};
+
+// 双层硬币（v1.6.12b）：深金币缘（厚度感）+ 亮金币面 + 左上白高光。
+//   埋着/清出的金币格共用（r=像素半径，harvested=本圈已收 → 空心双圈降淡）。
+REND.coin = function (ctx, x, y, r, harvested) {
+  if (harvested) {
+    ctx.strokeStyle = 'rgba(240,180,41,0.40)';
+    ctx.lineWidth = 1.5;
+    ctx.beginPath(); ctx.arc(x, y, r, 0, 7); ctx.stroke();
+    ctx.strokeStyle = 'rgba(240,180,41,0.28)';
+    ctx.beginPath(); ctx.arc(x, y, r * 0.62, 0, 7); ctx.stroke();
+    return;
+  }
+  ctx.beginPath(); ctx.arc(x, y, r, 0, 7);
+  ctx.fillStyle = '#d99a1b';                       // 币缘（深金 = 厚度）
+  ctx.fill();
+  ctx.strokeStyle = 'rgba(90,60,0,0.55)';          // 币缘描边
+  ctx.lineWidth = 1;
+  ctx.stroke();
+  ctx.beginPath(); ctx.arc(x, y, r * 0.62, 0, 7);
+  ctx.fillStyle = '#ffd257';                       // 币面（亮金）
+  ctx.fill();
+  ctx.beginPath();                                 // 左上高光点
+  ctx.arc(x - r * 0.25, y - r * 0.3, r * 0.16, 0, 7);
+  ctx.fillStyle = 'rgba(255,255,255,0.85)';
+  ctx.fill();
+};
+
+// 圆角矩形路径（v1.4.3 列车整体感）：只建路径不填充，调用方自己 fill/stroke。
+//   车头/车厢共用同一描边风格 —— 同一列车的单元必须长得像一家人。
+REND.rr = function (ctx, x, y, w, h, r) {  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.arcTo(x + w, y, x + w, y + h, r);
+  ctx.arcTo(x + w, y + h, x, y + h, r);
+  ctx.arcTo(x, y + h, x, y, r);
+  ctx.arcTo(x, y, x + w, y, r);
+  ctx.closePath();
 };
 
 REND.draw = function (ctx, L, hover, drag) {
@@ -36,47 +75,63 @@ REND.draw = function (ctx, L, hover, drag) {
   ctx.fillStyle = REND.C.bg;
   ctx.fillRect(0, 0, CFG.CANVAS_W, CFG.CANVAS_H);
 
-  // 地形
+  // 地形（v1.6.12 大王令"金币格太像空地"重订视觉语言，规格 §4a）：
+  //   金色语言 = 金币格（埋着：废墟底+金裂纹+金框；清出：空白底+金框），
+  //   红色语言 = 废墟（红裂纹+弱红斜纹）。底色不叠黄 tint（v0.6.7 教训：
+  //   深灰叠暗黄变棕褐像障碍），辨识度全靠框/裂纹/图标。
   for (var r = 0; r < CFG.MAP_ROWS; r++) {
     for (var c = 0; c < CFG.MAP_COLS; c++) {
       var t = GS.grid[r][c].t;
-      // 金币地块（v0.6.12 起内部是"废墟 + 金币"，属障碍物）**外观保持原样**：
-      // 仍按空白底 + 金币图标画，不走废墟纹理，视觉上与改动前完全一致。
-      if (t === 'rubble' && !GS.grid[r][c].gold) {
+      var gc = GS.grid[r][c];
+      var px = L.x + c * L.cell, py = L.y + r * L.cell;
+      if (t === 'rubble') {
         ctx.fillStyle = REND.C.rubble;
-        ctx.fillRect(L.x + c * L.cell, L.y + r * L.cell, L.cell, L.cell);
-        // 废墟裂纹
-        ctx.strokeStyle = 'rgba(232,70,58,0.28)';
-        ctx.lineWidth = 1;
+        ctx.fillRect(px, py, L.cell, L.cell);
         var cx = CFG.ccx(L, c), cy = CFG.ccy(L, r), s = L.cell * 0.22;
-        ctx.beginPath();
-        ctx.moveTo(cx - s, cy - s); ctx.lineTo(cx + s, cy + s);
-        ctx.moveTo(cx - s * 0.4, cy + s * 0.6); ctx.lineTo(cx + s * 0.6, cy - s * 0.4);
-        ctx.stroke();
+        if (gc.gold) {
+          // 金币格埋在废墟里（未清）：金裂纹 + 金色内框 + **金币本体**（v1.6.12b
+          // 修复：重构时金币图标漏画在 blank 分支，埋着格只剩框没币——大王反馈
+          // "看不出来像金币"的真正根源）。框/裂纹降淡当配角，金币当主角。
+          ctx.strokeStyle = 'rgba(240,180,41,0.20)';
+          ctx.lineWidth = 1;
+          ctx.beginPath();
+          ctx.moveTo(cx - s, cy - s); ctx.lineTo(cx + s, cy + s);
+          ctx.moveTo(cx - s * 0.4, cy + s * 0.6); ctx.lineTo(cx + s * 0.6, cy - s * 0.4);
+          ctx.stroke();
+          ctx.strokeStyle = 'rgba(240,180,41,0.35)';
+          ctx.strokeRect(px + 1.5, py + 1.5, L.cell - 3, L.cell - 3);
+          REND.coin(ctx, CFG.ccx(L, c), CFG.ccy(L, r), L.cell * 0.30, gc.harvested);
+        } else {
+          // 普通废墟：红裂纹 + 弱红 45° 斜纹排线（v1.6.12 一并强化"堵死"感）
+          ctx.strokeStyle = 'rgba(232,70,58,0.28)';
+          ctx.lineWidth = 1;
+          ctx.beginPath();
+          ctx.moveTo(cx - s, cy - s); ctx.lineTo(cx + s, cy + s);
+          ctx.moveTo(cx - s * 0.4, cy + s * 0.6); ctx.lineTo(cx + s * 0.6, cy - s * 0.4);
+          ctx.stroke();
+          ctx.strokeStyle = 'rgba(232,70,58,0.10)';
+          ctx.beginPath();
+          var hstep = L.cell / 4;
+          for (var hh = 1; hh < 4; hh++) {
+            ctx.moveTo(px, py + hh * hstep); ctx.lineTo(px + hh * hstep, py);
+            ctx.moveTo(px + hh * hstep, py + L.cell); ctx.lineTo(px + L.cell, py + hh * hstep);
+          }
+          ctx.stroke();
+        }
       } else {
         ctx.fillStyle = REND.C.blank;
-        ctx.fillRect(L.x + c * L.cell, L.y + r * L.cell, L.cell, L.cell);
+        ctx.fillRect(px, py, L.cell, L.cell);
         // 金币地块：开局埋在废墟里（不可铺轨），清出来后才成为真正的空地：
         // 可铺轨、列车驶入 +5，一圈只算一次，跑完一圈重置。
-        // 底色与普通空白格完全一致（v0.6.7 大王定案：不叠黄色 tint——
-        // 深灰叠暗黄会变成废墟般的棕褐色，看起来像障碍物），只用金币图标区分。
-        // 未收 = 实心金币；本圈已收 = 空心圈（跑完一圈自动变回实心）。
-        var gc = GS.grid[r][c];
+        // 底色与普通空白格完全一致（v0.6.7 大王定案教训：深灰叠暗黄 tint 会变
+        //   棕褐像障碍物）—— v1.6.12 辨识度改由**金色内框**承担。
+        // 未收 = 实心金币 + 亮金框；本圈已收 = 空心圈 + 整格降淡（下圈重置回亮）。
         if (gc.gold) {
-          var gx = CFG.ccx(L, c), gy = CFG.ccy(L, r), gr = L.cell * 0.26;
-          ctx.beginPath();
-          ctx.arc(gx, gy, gr, 0, 7);
-          if (gc.harvested) {
-            ctx.strokeStyle = 'rgba(240,180,41,0.4)';
-            ctx.lineWidth = 1.5;
-            ctx.stroke();
-          } else {
-            ctx.fillStyle = REND.C.gold;
-            ctx.fill();
-            ctx.strokeStyle = 'rgba(255,255,255,0.55)';
-            ctx.lineWidth = 1;
-            ctx.stroke();
-          }
+          var gx = CFG.ccx(L, c), gy = CFG.ccy(L, r), gr = L.cell * 0.30;
+          ctx.strokeStyle = gc.harvested ? 'rgba(240,180,41,0.22)' : 'rgba(240,180,41,0.55)';
+          ctx.lineWidth = 1.5;
+          ctx.strokeRect(px + 1.5, py + 1.5, L.cell - 3, L.cell - 3);
+          REND.coin(ctx, gx, gy, gr, gc.harvested);
           if (gc.flash > 0) {
             ctx.strokeStyle = 'rgba(240,180,41,' + (gc.flash * 3) + ')';
             ctx.lineWidth = 2;
@@ -109,9 +164,82 @@ REND.draw = function (ctx, L, hover, drag) {
     ctx.save();
     ctx.translate(tp.x, tp.y);
     ctx.rotate(ENG.trainAngle());
+    // 车头体（v1.4.3：圆角矩形 + 深色描边，与车厢同风格 —— 整列车一个画风）
     ctx.fillStyle = '#4B3FE3';
-    ctx.fillRect(-11, -7, 22, 14);
+    REND.rr(ctx, -11, -7, 22, 14, 3);
+    ctx.fill();
+    ctx.strokeStyle = '#232347';
+    ctx.lineWidth = 1.5;
+    REND.rr(ctx, -11, -7, 22, 14, 3);
+    ctx.stroke();
     ctx.restore();
+    // 车厢（v1.4.1）：**独立炮位** —— 每座英雄塔（GS.towers 镜像）派生一节
+    //   同元素同星车厢，按 ENG.wagonPos 沿轨排位绝对绘制（元素色车体+星点）。
+    //   ⚠️ 攻击全在车厢（v1.4.2 大王纠偏：塔没有攻击能力），战斗位置 =
+    //   ENG.wagonPos = 车头弧长退 (i+1)×GAP，渲染与战斗严格同源，别改动其中一个。
+    // v1.4.3 贴身短编组（大王拍板 B 方案）：GAP 2→1 —— 车厢真贴近车头，
+    //   战斗连带影响（射程重叠变多、防线前压）已在规格 §14.2 留拍板记录。
+    //   渲染配套：单元间只剩 ~1 格缝，画一层 4px 深色短链杆补缝即成整列；
+    //   旧"长链条 + 中间皮"两段式（为 GAP=2 设计）随之简化为单层。
+    if (typeof ENG.wagonPos === 'function') {
+      // v1.6.3（大王拍板 B）：上限全撤，塔数=车厢数全画 —— 战斗层 wagonCombat
+      //   本就遍历全部塔，旧 6 节上限导致"伤害有、车厢看不见"的视觉割裂。
+      //   小环时多节车厢绕圈重叠属玩家自选布局的结果，不做干预。
+      var wn = GS.towers.length;
+      if (wn > 0) {
+        var headArc = GS.train.index + GS.train.frac;   // 车头弧长（格，浮点）
+        // 弧长（格，可负可超一圈）→ 画布像素：环形取模后沿线段插值。
+        //   与 ENG.wagonPos 同一套取模公式，保证链条和车厢严格同位。
+        //   v1.4.3c 带出 ang（所在轨段的行进方向角）—— 车厢贴片要跟着转。
+        var arcPix = function (arc) {
+          var n2 = path.length;
+          var p = ((arc % n2) + n2) % n2;
+          var k2 = Math.floor(p), fr2 = p - k2;
+          var a2 = GS.railCell(k2), b2 = GS.railCell(k2 + 1);
+          return { x: CFG.ccx(L, a2.c) + (CFG.ccx(L, b2.c) - CFG.ccx(L, a2.c)) * fr2,
+                   y: CFG.ccy(L, a2.r) + (CFG.ccy(L, b2.r) - CFG.ccy(L, a2.r)) * fr2,
+                   ang: Math.atan2(CFG.ccy(L, b2.r) - CFG.ccy(L, a2.r),
+                                   CFG.ccx(L, b2.c) - CFG.ccx(L, a2.c)) };
+        };
+        // ① 短链杆：车头中心 → 各节车厢中心（贴身编组下就是几截短耦合杆）
+        ctx.strokeStyle = '#232347';
+        ctx.lineWidth = 4;
+        ctx.lineCap = 'round';
+        ctx.beginPath();
+        var prev = { x: tp.x, y: tp.y };
+        for (var li = 0; li < wn; li++) {
+          var lp = arcPix(headArc - (li + 1) * ENG.WAGON.GAP);
+          ctx.moveTo(prev.x, prev.y);
+          ctx.lineTo(lp.x, lp.y);
+          prev = lp;
+        }
+        ctx.stroke();
+      }
+      for (var wi = 0; wi < wn; wi++) {
+        var wt = GS.towers[wi];
+        // v1.4.3c 车厢形状跟随轨道方向（大王纠偏"车头会转车厢不会"）：
+        //   与车头同一套 save/translate/rotate —— 旋转角取该节所在轨段的行进方向。
+        //   位置用 arcPix 的弧长插值（比 wagonPos 多带 ang），与链条严格同源。
+        var wa = arcPix(headArc - (wi + 1) * ENG.WAGON.GAP);
+        ctx.save();
+        ctx.translate(wa.x, wa.y);
+        ctx.rotate(wa.ang);
+        // 车厢体：圆角矩形 + 与车头同款深色描边（一个画风）。
+        //   ⚠️ 长边朝行进方向（16×12，车头 22×14 —— 车厢略短，编组有层次）
+        ctx.fillStyle = REND.C.tower[wt.elem] || '#888';
+        REND.rr(ctx, -8, -6, 16, 12, 3);
+        ctx.fill();
+        ctx.strokeStyle = '#232347';
+        ctx.lineWidth = 1.5;
+        REND.rr(ctx, -8, -6, 16, 12, 3);
+        ctx.stroke();
+        // 星点（与塔同款白点，数量=星级），画在车厢体内、贴尾排一行
+        ctx.fillStyle = '#fff';
+        for (var ws = 0; ws < wt.star && ws < 4; ws++)
+          ctx.fillRect(-6 + ws * 3.5, -2, 2, 2);
+        ctx.restore();
+      }
+    }
     // 车斗金币（v0.9.2，规则 6）：水平绘制、不随车头旋转，画在车体上方
     if (GS.train.cargo > 0) {
       ctx.fillStyle = REND.C.gold;
@@ -141,35 +269,31 @@ REND.draw = function (ctx, L, hover, drag) {
 
   // ---- v1.3.3 攻击范围提示（画在地面上、怪之下：范围是"地面信息"，
   //      怪 / 攻击连线 / 拖动幽灵保持在上层）—— 细虚线 + 极淡填充，不抢视觉 ----
-  // ① 塔环（只在建造阶段出现 —— 防守阶段操作锁定，画了也是噪声）：
-  //    · 按住/拖塔 → 源塔环（元素色）= 松手前它**正在**提供的覆盖；
-  //      拖到**可合成**目标上 → 目标格再亮一环 = 合成后你将获得的覆盖。
-  //      （UI.onDown 按住塔即开始拖 → "查看某塔范围"与拖动手势天然合一，零学习成本。）
-  //    · 纯悬停（鼠标）→ 更淡一档的环，白天排盘覆盖用，看一眼就走。
-  var dayNow = (typeof CLOCK === 'undefined') || (CLOCK.isDay() && !GS.gameOver);
+  // ① 塔射程环 **整体退役**（v1.6.5 大王拍板："不不不，塔没有攻击能力啊"）：
+  //    拖塔/悬停塔不再画任何攻击范围环。推理链：该环只在白天触发（拖塔/悬停
+  //    排盘），白天无战斗 → "覆盖"没有静态答案（车厢随车跑）；且 v1.4.2 口径下
+  //    塔=星级容器、没有攻击能力 —— 无论画在塔格（暗示塔能打）还是画在车厢
+  //    实时位置（白天堆在站台后，与源塔零联系=大王报的 bug）都不成立。
+  //    拖塔的**合成反馈**保留：可合成目标塔画金色虚线高亮圈（非范围语义）。
   if (drag && drag.kind === 'tower') {
-    var tw = drag.tower;
-    REND.rangeRing(ctx, L, CFG.ccx(L, tw.c), CFG.ccy(L, tw.r), TOWERS.CFG.RANGE,
-                   REND.C.towerRGB[tw.elem] || '255,255,255', REND.RANGE.drag);
     var tcell = CFG.pickCell(L, drag.px, drag.py);
     var tdst = tcell ? GS.grid[tcell.r][tcell.c].b : null;
-    if (TOWERS.canMerge(tw, tdst)) {
-      REND.rangeRing(ctx, L, CFG.ccx(L, tdst.c), CFG.ccy(L, tdst.r), TOWERS.CFG.RANGE,
-                     REND.C.towerRGB[tdst.elem] || '255,255,255', REND.RANGE.drag);
-    }
-  } else if (dayNow && hover) {
-    var htw = GS.grid[hover.r][hover.c].b;
-    if (htw && htw.type === 'tower') {
-      REND.rangeRing(ctx, L, CFG.ccx(L, htw.c), CFG.ccy(L, htw.r), TOWERS.CFG.RANGE,
-                     REND.C.towerRGB[htw.elem] || '255,255,255', REND.RANGE.hover);
-    }
+    if (tdst && TOWERS.canMerge(drag.tower, tdst)) REND.mergeHint(ctx, L, tdst);
   }
-  // ② 车头攻击环：只在夜里/收尾画（列车在跑、怪在场），浅紫 = 车头攻击连线同色系。
-  //    白天不画（没怪，建造视野保持干净）。撞击圈 1.2 不画 —— 比车头大不了
-  //    多少，画两环反而添乱。
-  if (typeof CLOCK !== 'undefined' && CLOCK.isRunning() && path.length) {
-    var thp = ENG.trainPos();
-    REND.rangeRing(ctx, L, thp.x, thp.y, ENG.TRAIN_COMBAT.RANGE, REND.C.trainRGB, REND.RANGE.train);
+  // ② 车头/车厢攻击环：**常驻显示退役（v1.6.11 大王令），v1.6.13 改为长按显示**——
+  //    按住车头/车厢（UI.trainSel 按住态，ui.onDown 维护、pointerup/cancel 清除）
+  //    时画该节**自己**的射程环：车头 = TRAIN_COMBAT.RANGE、车厢 = WAGON.RANGE；
+  //    松手即消失。撞击圈 1.2 仍不画（添乱）。
+  var tsel = (typeof UI !== 'undefined') ? UI.trainSel : null;
+  if (tsel && GS.railPath.length) {
+    if (tsel.kind === 'head') {
+      var thp = ENG.trainPos();
+      REND.rangeRing(ctx, L, thp.x, thp.y, ENG.TRAIN_COMBAT.RANGE, REND.C.trainRGB, REND.RANGE.train);
+    } else {
+      var twp = ENG.wagonPos(tsel.i);
+      if (twp) REND.rangeRing(ctx, L, CFG.ccx(L, twp.c), CFG.ccy(L, twp.r),
+                              ENG.WAGON.RANGE, REND.C.trainRGB, REND.RANGE.train);
+    }
   }
 
   // ---- v1.3-rc 塔防动态层（v1.3.4 起无遮罩，怪直接画在地图上）----
@@ -239,14 +363,23 @@ REND.draw = function (ctx, L, hover, drag) {
       var okAll = true;
       var hasRubble = false;
       var pts3 = [];
+      var anc3 = ENG.shapeAnchor(hcell, drag.shape.cells);   // v1.4.12：以指针为中心（与结算同口径）
       for (var ci = 0; ci < drag.shape.cells.length; ci++) {
-        var cc3 = hcell.c + drag.shape.cells[ci][0], cr3 = hcell.r + drag.shape.cells[ci][1];
-        if (!CFG.inBounds(cc3, cr3) || GS.grid[cr3][cc3].b) { okAll = false; continue; }
+        var cc3 = anc3.c + drag.shape.cells[ci][0], cr3 = anc3.r + drag.shape.cells[ci][1];
+        // v1.4.12：越界格直接跳过（不画、不算红）—— 与 ENG.applyShape"越界忽略"同口径；
+        //   图内格才有红/绿判定，图内部分整体悬空时由 hasRubble/ct3 落红
+        if (!CFG.inBounds(cc3, cr3)) continue;
+        // v1.6.6：建筑格同口径跳过（不画、不判红）—— 与 applyShape"压塔跳过"一致
+        if (GS.grid[cr3][cc3].b) continue;
         if (GS.grid[cr3][cc3].t === 'rubble') hasRubble = true;
         pts3.push({ c: cc3, r: cr3 });
       }
       if (!hasRubble) okAll = false;
-      var ct3 = ENG.shapeContacts(hcell.c, hcell.r, drag.shape.cells);
+      // ⚠️ v1.4.12b 修复（大王实测 sid=9qo8z6 "(7,11) 预览红实际可放"）：相接检查必须
+      //   同用居中锚点 anc3 —— 上一刀格子坐标换了、这里还留着指针格 hcell，锚点错位
+      //   一格导致相接算错位置（4×2 锚点比指针偏 1 列）。预览三要素（格子/废墟/相接）
+      //   从此全部同锚。
+      var ct3 = ENG.shapeContacts(anc3.c, anc3.r, drag.shape.cells);
       if (ct3.count < ENG.MIN_CONTACT && !ct3.inner) okAll = false;
       for (var ci2 = 0; ci2 < pts3.length; ci2++) {
         var pc = pts3[ci2];
@@ -255,6 +388,41 @@ REND.draw = function (ctx, L, hover, drag) {
         ctx.strokeStyle = okAll ? REND.C.okl : REND.C.bad;
         ctx.lineWidth = 1.5;
         ctx.strokeRect(L.x + pc.c * L.cell + 1, L.y + pc.r * L.cell + 1, L.cell - 2, L.cell - 2);
+      }
+      // v1.4.11 清理预览环：落点合法且 ui.js 已算出预览时，把"清完后的铁轨"画成
+      //   金黄虚线（数据 = UI.updateCleanPreview 真跑 applyShape 抓下的 railPath，
+      //   本层只读不改盘面）。深色衬底一遍 + 金黄一遍，保证任何底色上可辨。
+      if (okAll && typeof UI !== 'undefined' && UI.dragPreview && UI.dragPreview.rail) {
+        var pr2 = UI.dragPreview.rail;
+        ctx.beginPath();
+        for (var ri = 0; ri < pr2.length; ri++) {
+          var x2 = L.x + (pr2[ri].c + 0.5) * L.cell, y2 = L.y + (pr2[ri].r + 0.5) * L.cell;
+          if (ri === 0) ctx.moveTo(x2, y2); else ctx.lineTo(x2, y2);
+        }
+        ctx.closePath();
+        ctx.setLineDash([6, 4]);
+        ctx.lineWidth = 4; ctx.strokeStyle = 'rgba(0,0,0,0.45)'; ctx.stroke();
+        ctx.lineWidth = 2; ctx.strokeStyle = REND.C.preview; ctx.stroke();
+        ctx.setLineDash([]);
+      }
+    }
+  } else if (drag && drag.kind === 'hero' && drag.px >= 0) {
+    // 英雄卡幽灵（v1.4）：全场可建格淡绿高亮 + 悬停格描边（绿=可建/红=不可建）
+    for (var hr2 = 0; hr2 < CFG.MAP_ROWS; hr2++) for (var hc2 = 0; hc2 < CFG.MAP_COLS; hc2++) {
+      if (!TOWERS.isFreeSpot(hc2, hr2)) continue;
+      ctx.fillStyle = REND.C.ok;
+      ctx.fillRect(L.x + hc2 * L.cell, L.y + hr2 * L.cell, L.cell, L.cell);
+    }
+    var hcell2 = CFG.pickCell(LAY, drag.px, drag.py);
+    if (hcell2) {
+      var okHero = TOWERS.isFreeSpot(hcell2.c, hcell2.r);
+      ctx.strokeStyle = okHero ? REND.C.okl : REND.C.bad;
+      ctx.lineWidth = 2;
+      ctx.strokeRect(L.x + hcell2.c * L.cell + 1, L.y + hcell2.r * L.cell + 1, L.cell - 2, L.cell - 2);
+      // v1.6.10 手牌直接合成：悬停同名 1 星塔 → 金圈提示（与拖塔合成同款 mergeHint）
+      var hb2 = GS.grid[hcell2.r][hcell2.c].b;
+      if (hb2 && hb2.type === 'tower' && TOWERS.canMergeCard(drag.elem, hb2)) {
+        REND.mergeHint(ctx, L, hb2);
       }
     }
   }
@@ -278,6 +446,19 @@ REND.rangeRing = function (ctx, L, cx, cy, rCells, rgb, style) {
   ctx.setLineDash([]);
 };
 
+// 拖塔合成目标高亮（v1.6.5）：金色虚线圆圈套住可合成目标塔 —— 传达"拖到这里
+//   会合成"，替代退役的射程环。非范围语义，只是归属提示。
+REND.mergeHint = function (ctx, L, tower) {
+  var x = L.x + tower.c * L.cell + L.cell / 2, y = L.y + tower.r * L.cell + L.cell / 2;
+  ctx.strokeStyle = '#ffd75e';
+  ctx.lineWidth = 2.5;
+  ctx.setLineDash([4, 3]);
+  ctx.beginPath();
+  ctx.arc(x, y, L.cell * 0.44, 0, 7);
+  ctx.stroke();
+  ctx.setLineDash([]);
+};
+
 // ---- 铁轨贴片（v0.7.0 贴片化，v0.8.0 增 T 岔 / 折返端头）----------------------
 // railPath 的几何不变量（证明见 state.js 头注释）：相邻格正交、每格度数为偶数
 // （按**边使用次数**计，网格里即 2 或 4）。据此每个轨格属四类之一：
@@ -296,7 +477,7 @@ REND.rangeRing = function (ctx, L, cx, cy, rCells, rgb, style) {
 // 往返桥边（被双向各走一次的边）：贴片画法与普通双线段完全一致。
 // 方向箭头：**v0.8.3 已整体移除**（大王令"把箭头干掉"）—— 单环天然单向，箭头只是可视化
 //   辅助。pass 向量仍要收集（T 岔喇叭口的角点计算依赖它），只是不再用于画箭头。
-//   想恢复：从 archive/renderer.v0.8.1.js 找回箭头循环 + REND.chevron。
+//   想恢复：箭头循环 + REND.chevron 的历史实现已退役保留在本文件 __chevron_retired。
 REND.railTiles = function (ctx, L, path) {
   var n = path.length, i, k;
   // 1) 扫描：每格的边方向使用集（N E S W）+ 每趟行进方向
@@ -453,7 +634,7 @@ REND.railTiles = function (ctx, L, path) {
       ctx.stroke();
     }
     // 3) 方向箭头已移除（v0.8.3，大王令"把箭头干掉"）—— 单环天然单向，箭头只是可视化
-    //    辅助。想恢复：把 REND.chevron 重新接回这里（按 pass 向量逐趟画，历史实现见 archive）。
+    //    辅助。想恢复：把 REND.chevron 重新接回这里（按 pass 向量逐趟画，退役本体见本文件 __chevron_retired）。
   }
 };
 
@@ -514,14 +695,39 @@ REND.building = function (ctx, L, b) {
       ctx.strokeRect(cx - s / 2 - 1, cy - s / 2 - 1, s + 2, s + 2);
     }
   } else if (b.type === 'tower') {
-    // v1.3-rc 塔：元素色圆台 + 白色星点（每星一枚，最多画 5 枚防挤爆）
+    // v1.4.16 塔（大王令"建筑形象与金币太接近，换个方案"）：圆台 → **六边形双层**。
+    //   病根是双重撞脸：塔(圆 r=0.34) vs 金币地块(圆 r=0.26) 形状同类且大小接近，
+    //   雷元素色 #f7d94c 还与金币色 #f0b429 同为黄系。定稿口径（形状类别互斥）：
+    //   金币=圆 / 塔=六边形 / 列车=圆角矩形 / 废墟=方格裂纹。
+    //   双层 = 深色底座六边形（落地的分量）+ 元素色主体六边形 + 白细描边；
+    //   星点与命中闪光沿用 v1.3-rc 口径。元素色板与 towerRGB 不动（牵连车厢/范围环）。
     var tc = REND.C.tower[b.elem] || '#888';
-    ctx.fillStyle = tc;
+    var hexPts = function (rr) {                    // 尖顶六边形顶点（cell 内居中）
+      var pts = [];
+      for (var hi = 0; hi < 6; hi++) {
+        var ha = Math.PI / 3 * hi - Math.PI / 2;
+        pts.push([cx + rr * Math.cos(ha), cy + rr * Math.sin(ha)]);
+      }
+      return pts;
+    };
+    var fillHex = function (rr, fill) {
+      var pts = hexPts(rr);
+      ctx.beginPath();
+      ctx.moveTo(pts[0][0], pts[0][1]);
+      for (var hi2 = 1; hi2 < 6; hi2++) ctx.lineTo(pts[hi2][0], pts[hi2][1]);
+      ctx.closePath();
+      ctx.fillStyle = fill;
+      ctx.fill();
+    };
+    fillHex(s * 0.42, 'rgba(0,0,0,0.45)');          // 底座：深色垫层，塔"立"在地上
+    fillHex(s * 0.32, tc);                          // 主体：元素色
+    var edge = hexPts(s * 0.32);                    // 白细描边（与金币白圈呼应但形状不同类）
     ctx.beginPath();
-    ctx.arc(cx, cy, s * 0.34, 0, 7);
-    ctx.fill();
-    ctx.strokeStyle = 'rgba(0,0,0,0.35)';
-    ctx.lineWidth = 2;
+    ctx.moveTo(edge[0][0], edge[0][1]);
+    for (var ei = 1; ei < 6; ei++) ctx.lineTo(edge[ei][0], edge[ei][1]);
+    ctx.closePath();
+    ctx.strokeStyle = 'rgba(255,255,255,0.75)';
+    ctx.lineWidth = 1.2;
     ctx.stroke();
     // 攻击闪光：命中瞬间描一圈亮边
     if (b.flash > 0) {

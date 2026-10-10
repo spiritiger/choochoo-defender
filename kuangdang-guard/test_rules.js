@@ -20,7 +20,7 @@ const sandbox = {};
 sandbox.window = sandbox;
 sandbox.console = console;
 vm.createContext(sandbox);
-for (const f of ['js/config/map.js', 'js/state.js', 'js/station.js', 'js/clock.js',
+for (const f of ['js/config/map.js', 'js/state.js', 'js/solver-async.js', 'js/station.js', 'js/clock.js',
                  'js/transport.js', 'js/engine.js']) {
   vm.runInContext(fs.readFileSync(path.join(ROOT, f), 'utf8'), sandbox, { filename: f });
 }
@@ -169,8 +169,12 @@ ENG.advanceTrain(0.5);
 ENG.advanceTrain(0.5);
 check('端到端：圈途中金币不进账（只堆车斗）', GS.gold === gold0);
 
-CLOCK.onCleared();                       // 模拟"倒计时内清空怪物" → 立即收尾
-check('端到端：怪物清空后转入收尾相位', CLOCK.isDusk());
+CLOCK.onCleared();                       // 模拟"倒计时内清空怪物" → v1.6.19 奖励时间
+check('端到端：倒计时内清空 → 进入奖励时间（仍 night 不停靠）',
+  CLOCK.isNight() && CLOCK.reward === true && CLOCK.isRunning(),
+  'phase=' + CLOCK.phase + ' reward=' + CLOCK.reward);
+CLOCK.tick(CLOCK.CFG.NIGHT_SEC + 1);     // 奖励倒计时走完 → 收尾（hasFoes=false）
+check('端到端：奖励倒计时走完转入收尾相位', CLOCK.isDusk());
 
 let steps = 0;
 while (!CLOCK.isDay() && steps < 500) { ENG.advanceTrain(0.5); steps++; }
@@ -185,6 +189,7 @@ check('端到端：圈末所有金币地块已重置',
 // ---- 第二夜：再跑一圈，累计 50（每圈站台额外 +10）----
 check('端到端：第二夜发车成功', ENG.startNight() === true);
 CLOCK.onCleared();
+CLOCK.tick(CLOCK.CFG.NIGHT_SEC + 1);     // 奖励时间走完 → 收尾，下面到站才停
 steps = 0;
 while (!CLOCK.isDay() && steps < 500) { ENG.advanceTrain(0.5); steps++; }
 check('端到端：两圈累计 +50', GS.gold - gold0 === 50, '实际 +' + (GS.gold - gold0));
@@ -208,10 +213,27 @@ CLOCK.tick(CLOCK.CFG.NIGHT_SEC);   // 倒计时走完但还有怪物
 check('昼夜：倒计时走完仍有怪物 → overtime，不换相位',
   CLOCK.isNight() && CLOCK.overtime === true && CLOCK.remain === 0);
 CLOCK.onCleared();
-check('昼夜：怪物清空 → 转入收尾', CLOCK.isDusk() && CLOCK.hasFoes === false);
+check('昼夜：怪物清空（overtime）→ 转入收尾', CLOCK.isDusk() && CLOCK.hasFoes === false);
 check('昼夜：收尾阶段列车仍在跑', CLOCK.isRunning() === true);
 check('昼夜：到站钩子把收尾拉回白天', CLOCK.notifyStation() === true && CLOCK.isDay());
 check('昼夜：白天再收到站钩子无效', CLOCK.notifyStation() === false);
+
+// ---- v1.6.19 奖励时间：倒计时内清空 → 继续跑圈，倒计时走完才收尾 ----
+CLOCK.reset();
+CLOCK.startNight();
+CLOCK.tick(1.0);
+CLOCK.hasFoes = true;
+CLOCK.onCleared();                        // 倒计时内清空（不 overtime）
+check('奖励时间：倒计时内清空 → reward=true 仍在 night',
+  CLOCK.isNight() && CLOCK.reward === true && !CLOCK.overtime);
+check('奖励时间：剩余倒计时 = NIGHT_SEC - 已流逝',
+  Math.abs(CLOCK.remain - (CLOCK.CFG.NIGHT_SEC - 1)) < 1e-9,
+  'remain=' + CLOCK.remain);
+check('奖励时间：isRunning 保持 true（列车不停）', CLOCK.isRunning() === true);
+CLOCK.tick(CLOCK.CFG.NIGHT_SEC - 1);      // 奖励倒计时走完
+check('奖励时间：倒计时走完 → dusk（下一圈到站停）',
+  CLOCK.isDusk() && CLOCK.reward === false);
+check('奖励时间：收尾到站 → 回白天', CLOCK.notifyStation() === true && CLOCK.isDay());
 
 // ---- 初始环形状（新开局地形下的固定小环）----
 // 开局 3×5 内区 = 12 格外圈，无十字 → 步数 = 格数 = 12

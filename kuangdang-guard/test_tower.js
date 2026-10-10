@@ -10,7 +10,7 @@ const ROOT = __dirname;
 const sb = {}; sb.window = sb; sb.console = console;
 vm.createContext(sb);
 for (const f of ['js/config/map.js', 'js/log.js', 'js/state.js', 'js/station.js', 'js/towers.js',
-                 'js/foes.js', 'js/clock.js', 'js/transport.js', 'js/engine.js'])
+                 'js/foes.js', 'js/clock.js', 'js/transport.js', 'js/solver-async.js', 'js/engine.js'])
   vm.runInContext(fs.readFileSync(path.join(ROOT, f), 'utf8'), sb, { filename: f });
 
 const GS = sb.GS, CFG = sb.CFG, TOWERS = sb.TOWERS, FOES = sb.FOES,
@@ -95,38 +95,40 @@ TOWERS.remove(GS.towers[0]);   // t1（召唤塔）
 TOWERS.remove(c1); TOWERS.remove(e1);
 check('[19b] 攻击段场上只剩 b', GS.towers.length === 1 && GS.towers[0] === b);
 
-// [20-24] 塔攻击 ------------------------------------------------------------------
-GS.foes.push({ c: b.c + 1, r: b.r, hp: 100, maxHp: 100, speed: 1, cd: 0, hitFlash: 0 });    // (3,4)：距核心 5
-GS.foes.push({ c: b.c + 0.5, r: b.r, hp: 100, maxHp: 100, speed: 1, cd: 0, hitFlash: 0 });  // (2.5,4)：距核心 6.25
-const f0 = GS.foes[0].hp;
-TOWERS.update(0.01);
-check('[20] 射程内单体掉血', GS.foes.some(f => f.hp < 100));
-check('[21] 攻击冷却进入', b.cd > 0);
-check('[22] 攻击连线已记录', TOWERS.beams.length === 1);
-check('[23] 选离镇中心最近的怪（先打最前面的）', GS.foes[0].hp < 100 && GS.foes[1].hp === f0,
-  'f0=' + GS.foes[0].hp + ' f1=' + GS.foes[1].hp);
-check('[24] 冷却中不二连击', (TOWERS.update(0.1), TOWERS.beams.length === 1));
+// [20-26] v1.4.2：塔无攻击能力（大王纠偏"塔没有攻击能力，车厢才有"）------------
+//   塔 = 星级容器；攻击只在车厢（ENG.wagonCombat）与车头（ENG.trainCombat）。
+GS.foes.push({ c: b.c + 1, r: b.r, hp: 100, maxHp: 100, speed: 1, cd: 0, hitFlash: 0 });    // 射程内
+GS.foes.push({ c: b.c + 5, r: b.r, hp: 50, maxHp: 50, speed: 1, cd: 0, hitFlash: 0 });      // 射程外
+TOWERS.beams.push({ ac: 0, ar: 0, bc: 1, br: 1, t: 0.05 });   // 塞一条残留连线验衰减
+TOWERS.update(0.01); TOWERS.update(0.05);
+check('[20] 塔不攻击：射程内外怪均不掉血', GS.foes[0].hp === 100 && GS.foes[1].hp === 50);
+check('[21] 塔攻击冷却不再进入', b.cd === 0 || b.cd === undefined,
+  'cd=' + b.cd);
+check('[22] 塔不产生攻击连线（旧连线仍衰减）', TOWERS.beams.length === 0);
+check('[23] 塔攻击循环已退役（__towerAtk_retired 留档）',
+  typeof TOWERS.__towerAtk_retired === 'function' && typeof TOWERS.update === 'function');
 GS.foes.length = 0; TOWERS.beams.length = 0;
-
-// [25-27] 射程外不攻击
-GS.foes.push({ c: b.c + 5, r: b.r, hp: 50, maxHp: 50, speed: 1, cd: 0, hitFlash: 0 });
-TOWERS.update(0.01);
-check('[25] 射程外不攻击', GS.foes[0].hp === 50 && TOWERS.beams.length === 0);
-GS.foes.length = 0;
-
-// [26] 星级倍率：2 星伤害 = STATS.dmg × 2
-GS.foes.push({ c: b.c + 1, r: b.r, hp: 999, maxHp: 999, speed: 1, cd: 0, hitFlash: 0 });
-b.cd = 0; b.elem = 'thunder';
-TOWERS.update(0.01);
-check('[26] 2 星雷塔伤害 = 16×2', GS.foes[0].hp === 999 - 32, 'hp=' + GS.foes[0].hp);
-GS.foes.length = 0;
+// [24] 合成闪光仍衰减（v1.4.2 后 TOWERS.update 唯一的塔侧职责）
+b.flash = 0.4;
+TOWERS.update(0.1);
+check('[24] 合成闪光衰减保留', b.flash < 0.4, 'flash=' + b.flash);
+// [25-26] 旧"射程外不攻击/星级倍率"用例随塔攻击退役 —— 由车厢星级用例 [76] 接棒
 
 // [27-31] 波次与怪 -----------------------------------------------------------------
 GS.newGame(); GS.gold = 200;
 check('[27] 新局怪清空、波次归零', GS.foes.length === 0 && FOES.wave === 0 && GS.coreHP === CFG.CORE_HP);
 FOES.startWave();
-check('[28] 第 1 波怪数 = 2+1', GS.foes.length === 3, 'n=' + GS.foes.length);
+check('[28] 第 1 波共 24+12×1=36 只：首批 6 立即进场 + 队列 30',
+  GS.foes.length === 6 && FOES.pending === 30,
+  'n=' + GS.foes.length + ' pending=' + FOES.pending);
+check('[28b] 怪血口径：w1 一刀（≤车头伤害）、w2+ 恒两刀（>车头伤害且 ≤2×车头伤害）',
+  FOES.CFG.hp(1) <= ENG.TRAIN_COMBAT.dmg(1) &&
+  FOES.CFG.hp(2) > ENG.TRAIN_COMBAT.dmg(2) && FOES.CFG.hp(2) <= 2 * ENG.TRAIN_COMBAT.dmg(2) &&
+  FOES.CFG.hp(10) > ENG.TRAIN_COMBAT.dmg(10) && FOES.CFG.hp(10) <= 2 * ENG.TRAIN_COMBAT.dmg(10),
+  'hp(1)=' + FOES.CFG.hp(1) + ' train(1)=' + ENG.TRAIN_COMBAT.dmg(1) +
+  ' hp(2)=' + FOES.CFG.hp(2) + ' train(2)=' + ENG.TRAIN_COMBAT.dmg(2));
 check('[29] 波次号 = 1', FOES.wave === 1);
+FOES.pending = 0; FOES.spawnCd = 0;    // 后续用例手工摆怪，别让节奏刷怪往里塞怪（首版踩过）
 check('[30] 怪出生在地图边缘外', GS.foes.every(f => f.c < 0 || f.r < 0 || f.c > CFG.MAP_COLS - 1 || f.r > CFG.MAP_ROWS - 1));
 const core = GS.core;
 const d0 = Math.hypot(GS.foes[0].c - core.c, GS.foes[0].r - core.r);
@@ -149,7 +151,7 @@ GS.foes = [{ c: core.c + 1, r: core.r, hp: 10, maxHp: 10, speed: 1, cd: 0, hitFl
 GS.coreHP = 8;
 FOES.update(0.02);   // REACH 内：不移动，开始攻击
 check('[33] 贴身怪不移动、镇中心掉血', GS.coreHP === 8 - FOES.CFG.dmg, 'coreHP=' + GS.coreHP);
-GS.coreHP = 2;
+GS.coreHP = FOES.CFG.dmg;   // v1.6.14 dmg=1：置 1 血，一击归零（跟常量走，dmg 再调不再挂）
 GS.foes[0].cd = 0;    // 重置攻击冷却（上一击刚打出 cd=1.0，不重置这轮打不出来 —— 首版踩过）
 FOES.update(0.02);
 check('[34] 镇中心归零 → 挑战失败', GS.gameOver === true && GS.coreHP === 0);
@@ -165,17 +167,28 @@ check('[35] 失败后世界冻结', GS.foes[GS.foes.length - 1].hp === hpB);
 //    只有 restart 走 FOES.reset 归零 —— 首版在这里把波次数对错了。
 ENG.restart(); GS.gold = 200;
 ENG.startNight();                        // 开波（经 engine 接线）
-check('[36] 开波刷怪 + 入夜', FOES.wave === 1 && CLOCK.isNight() && GS.foes.length === 3,
-  'wave=' + FOES.wave + ' n=' + GS.foes.length + ' night=' + CLOCK.isNight());
+check('[36] 开波入夜：首批 6 进场 + 队列 30（第 1 波共 36 只）',
+  FOES.wave === 1 && CLOCK.isNight() && GS.foes.length === 6 && FOES.pending === 30,
+  'wave=' + FOES.wave + ' n=' + GS.foes.length + ' pending=' + FOES.pending + ' night=' + CLOCK.isNight());
 GS.coreHP = 41;                          // 模拟第一波被打掉 19
 GS.foes.forEach(f => { f.hp = 0; });     // 塔杀光
-FOES.update(0.01);                       // 尸体清空 → 波次结束
-check('[37] 怪清空 → hasFoes=false + 转收尾', CLOCK.hasFoes === false && CLOCK.isDusk() && FOES.active === false);
+FOES.update(0.01);                       // 尸体清空 —— 但队列还有 4 只没放
+check('[36b] 待刷队列未清 → 波不结束、不入 dusk',
+  FOES.active === true && CLOCK.isNight() && CLOCK.hasFoes === true,
+  'active=' + FOES.active + ' pending=' + FOES.pending);
+FOES.pending = 0;                        // 模拟后续全部刷完且被杀
+FOES.update(0.01);                       // 波次结束
+check('[37] 怪清空 → hasFoes=false + 进入奖励时间（v1.6.19 仍在 night）',
+  CLOCK.hasFoes === false && CLOCK.isNight() && CLOCK.reward === true && FOES.active === false);
+CLOCK.tick(CLOCK.CFG.NIGHT_SEC + 1);     // 奖励倒计时走完 → 收尾
+check('[37b] 奖励倒计时走完 → 转收尾', CLOCK.isDusk());
 check('[38] coreHP 跨波继承（41 不回满）', GS.coreHP === 41);
 // dusk → 白天：收尾相位要"列车到站"才换日（tick 对 dusk 不生效 —— 死循环教训）
 check('[38b] 到站回白天', CLOCK.notifyStation() === true && CLOCK.isDay());
 ENG.startNight();                        // 第二波
-check('[39] 第二波 = 4 只', GS.foes.length === 4, 'n=' + GS.foes.length);
+check('[39] 第二波共 24+12×2=48 只：首批 8 进场 + 队列 40',
+  GS.foes.length === 8 && FOES.pending === 40,
+  'n=' + GS.foes.length + ' pending=' + FOES.pending);
 check('[40] 第二波 coreHP 仍继承', GS.coreHP === 41);
 
 // [41] 站台额外 +10 -----------------------------------------------------------------
@@ -239,8 +252,8 @@ check('[48] 撞击扣血且挂独立冷却', GS.foes[0].hp === 100 - ENG.TRAIN_C
 ENG.trainCombat(0.01);
 check('[48b] 撞击冷却期内不重复扣血', GS.foes[0].hp === 100 - ENG.TRAIN_COMBAT.dmg(2));
 
-// [49] 射程外 + 撞击范围外 = 不掉血
-GS.foes = [mkFoe(head.c + 4, head.r, 100)];
+// [49] 射程外 + 撞击范围外 = 不掉血（位置跟 RANGE 常量走，射程再调也不挂）
+GS.foes = [mkFoe(head.c + ENG.TRAIN_COMBAT.RANGE + 1, head.r, 100)];
 ENG.trainAtkCd = 0;
 ENG.trainCombat(0.01);
 check('[49] 范围外怪不掉血', GS.foes[0].hp === 100, 'hp=' + GS.foes[0].hp);
@@ -300,9 +313,10 @@ const N56 = 600;
 for (let s56 = 0; s56 < N56; s56++) if (FOES.pickSpawn(leftRail).c < CFG.MAP_COLS / 2) leftN++;
 check('[56] 铁轨贴左缘 → 左半场落点占比 > 55%（实际 ' + (leftN / N56 * 100).toFixed(0) + '%）',
   leftN / N56 > 0.55, 'left=' + leftN + '/' + N56);
-check('[56b] 数量公式未被偏置影响：第 1 波仍 = 2+1',
-  (FOES.reset(), GS.foes.length = 0, FOES.startWave(), GS.foes.length) === 3,
-  'n=' + GS.foes.length);
+check('[56b] 数量公式未被偏置影响：第 1 波共 36 只 = 首批 6 + 队列 30',
+  (FOES.reset(), GS.foes.length = 0, FOES.startWave(),
+    GS.foes.length === 6 && FOES.pending === 30),
+  'n=' + GS.foes.length + ' pending=' + FOES.pending);
 GS.foes.length = 0; FOES.reset();
 
 // ============================================================================
@@ -375,6 +389,298 @@ check('[69] 带 shape 的事件自动补 fam（2×3 家族），无 shape 的不
     const b = LOG.add('summon', { elem: 'fire', star: 1, at: '1,1', cost: 10 });
     return a.fam === '2×3' && b.fam === undefined;
   })());
+
+// ============================================================================
+// [70-81] v1.4 卡牌大改 + v1.4.1 车厢独立作战（规格 §14.2，大王纠偏口径）
+//   车厢 = GS.towers 镜像：每塔一节同元素同星车厢；独立炮位沿轨排位。
+// ============================================================================
+ENG.restart();
+check('[70] 重开：牌库清空', GS.deck.length === 0);
+
+// [71-72] 三选一卡池：构成合法 + 去重
+const offer1 = GS.drawCardOffer();
+check('[71] 三选一发 3 张、kind 合法', offer1.length === 3 &&
+  offer1.every(c => c.kind === 'shape' || c.kind === 'hero'));
+check('[72] 去重：形状尺寸家族/英雄元素不重复', (function () {
+  const sigs = offer1.map(c => c.kind === 'shape' ? 's:' + GS.cardSig(c) : 'h:' + c.elem);
+  return new Set(sigs).size === sigs.length;
+})());
+
+// [73] 形状卡满 3 张 → 发牌全为英雄卡
+GS.deck = [{ kind: 'shape', id: 1, name: '2×2', cells: [[0,0],[1,0],[0,1],[1,1]] },
+           { kind: 'shape', id: 2, name: '2×2', cells: [[0,0],[1,0],[0,1],[1,1]] },
+           { kind: 'shape', id: 3, name: '2×2', cells: [[0,0],[1,0],[0,1],[1,1]] }];
+const offer2 = GS.drawCardOffer();
+check('[73] 形状卡满 3 → 全发英雄卡', offer2.length === 3 && offer2.every(c => c.kind === 'hero'));
+GS.deck = [];
+
+// [74] 建英雄塔 → 车厢自动 +1（v1.4.1：车厢 = towers 镜像，无独立列表）
+const h0 = tHead();
+TOWERS.placeAt(Math.round(h0.c) + 3, Math.round(h0.r), 'fire', 1);
+check('[74] 建造英雄 → 塔数=车厢数=1', GS.towers.length === 1);
+
+// [75] 车厢独立攻击：1 星火车厢命中 = 8+4×wave（v1.4.6：与车头一致；wave=2 → 16 伤）
+FOES.wave = 2;
+GS.foes = []; FOES.active = false;
+const wpos0 = ENG.wagonPos(0);                   // 第 0 节车厢弧长位置
+GS.foes = [mkFoe(wpos0.c, wpos0.r, 100)];
+GS.foes[0].c = wpos0.c; GS.foes[0].r = wpos0.r;  // 精确落位（防 mkFoe 内部处理）
+const hpRef75 = GS.foes[0].hp;
+ENG.trainAtkCd = 5;                              // 屏蔽车头塔式
+ENG.wagonCombat(0.01);
+check('[75] 1星车厢独立打 16 伤（=车头@w2）', Math.abs(GS.foes[0].hp - (hpRef75 - 16)) < 1e-9,
+  'hp=' + GS.foes[0].hp.toFixed(2) + ' 期望 ' + (hpRef75 - 16));
+
+// [76] 星级继承：2 星塔车厢 = 2 倍车头 = 32 伤（v1.4.6 乘法线性）
+GS.towers[0].star = 2;
+GS.towers[0].wcd = 0;                            // [75] 攻击后进了冷却，清零再测
+GS.foes = [mkFoe(ENG.wagonPos(0).c, ENG.wagonPos(0).r, 100)];
+const hpRef76 = GS.foes[0].hp;
+ENG.wagonCombat(0.01);
+check('[76] 2星车厢打 32 伤', Math.abs(GS.foes[0].hp - (hpRef76 - 32)) < 1e-9,
+  'hp=' + GS.foes[0].hp.toFixed(2));
+GS.towers[0].star = 1;
+
+// [77] 特效挂每节自己的攻击：火车厢命中 → burn；冰车厢命中 → slow（火塔不烧冰的怪）
+GS.towers[0].wcd = 0;
+GS.towers[0].elem = 'fire';
+GS.foes = [mkFoe(ENG.wagonPos(0).c, ENG.wagonPos(0).r, 100)];
+ENG.wagonCombat(0.01);
+const burned = GS.foes[0].burn === 2 && !GS.foes[0].slow;
+GS.towers[0].wcd = 0;                            // 火段攻击后进了冷却，冰段前清零
+GS.towers[0].elem = 'ice';
+GS.foes = [mkFoe(ENG.wagonPos(0).c, ENG.wagonPos(0).r, 100)];
+ENG.wagonCombat(0.01);
+check('[77] 特效按节归属', burned && GS.foes[0].slow === 1.5 && !GS.foes[0].burn,
+  'fire.burn=' + burned + ' ice.slow=' + (GS.foes[0].slow === 1.5));
+
+// [78] 雷车厢：该节冷却 1.2 → 0.9
+GS.towers[0].wcd = 0;
+GS.towers[0].elem = 'thunder';
+GS.foes = [mkFoe(ENG.wagonPos(0).c, ENG.wagonPos(0).r, 100)];
+ENG.wagonCombat(0.01);
+check('[78] 雷车厢冷却 0.9s', Math.abs(GS.towers[0].wcd - 0.9) < 1e-9,
+  'wcd=' + GS.towers[0].wcd);
+
+// [79] 冰车厢减速生效（v1.3.2 移速减半后的口径：speed×0.7）
+//   ⚠️ 怪不能放车厢位正中：开局环的车厢位距核心恰 1 格，会进 REACH 攻击分支不动窝
+//   （[79] 首版 Δ=0 的教训）—— 沿"车厢→核心"反向延长 1.5 格放怪：
+//   距车厢 1.5 < 射程 2.5 ✓，距核心 ≈2.5 > REACH 1.01 ✓
+GS.towers[0].wcd = 0;
+GS.towers[0].elem = 'ice';
+{
+  const wp79 = ENG.wagonPos(0);
+  const vx = wp79.c - GS.core.c, vy = wp79.r - GS.core.r;
+  const vl = Math.hypot(vx, vy) || 1;
+  const foeIce = mkFoe(wp79.c + vx / vl * 1.5, wp79.r + vy / vl * 1.5, 100);
+  GS.foes = [foeIce];
+  const dRef = Math.hypot(GS.core.c - foeIce.c, GS.core.r - foeIce.r);
+  ENG.wagonCombat(0.01);
+  FOES.active = true;
+  FOES.update(1.0);
+  const dIce = Math.hypot(GS.core.c - GS.foes[0].c, GS.core.r - GS.foes[0].r);
+  check('[79] 冰车厢命中减速 30%', foeIce.slow > 0 && Math.abs(dRef - dIce - 0.7 * foeIce.speed) < 0.05,
+    'Δ=' + (dRef - dIce).toFixed(3) + ' 期望≈' + (0.7 * foeIce.speed).toFixed(3));
+}
+
+// [80] 车头剥离车厢加成（v1.4.1 核心）：有车厢时撞击伤害仍是纯 8+4×wave
+GS.foes = [mkFoe(head.c + 0.5, head.r, 100)];    // 撞击圈内
+GS.foes[0].bumpCd = 0;
+ENG.trainAtkCd = 5;                              // 屏蔽塔式，单测撞击
+ENG.trainCombat(0.01);
+check('[80] 车头不吃车厢加成', GS.foes[0].hp === 100 - ENG.TRAIN_COMBAT.dmg(2),
+  'hp=' + GS.foes[0].hp + ' 期望 ' + (100 - ENG.TRAIN_COMBAT.dmg(2)));
+
+// [81] 合成 → 车厢镜像跟着变：两节 1 星 → 一节 2 星（数量减一、单节翻倍）
+GS.foes = []; FOES.active = false;
+GS.towers = [];
+const towerA = { type: 'tower', elem: 'poison', star: 1, cd: 0, wcd: 0, c: 0, r: 0, flash: 0 };
+const towerB = { type: 'tower', elem: 'poison', star: 1, cd: 0, wcd: 0, c: 1, r: 0, flash: 0 };
+GS.towers.push(towerA, towerB);
+GS.grid[0][0].b = towerA; GS.grid[0][1].b = towerB;
+TOWERS.merge(towerA, towerB);
+check('[81] 合成后车厢镜像：1节2星', GS.towers.length === 1 && towerB.star === 2 &&
+  towerB.elem === 'poison');
+
+// ============================================================================
+// [82-83] 抽卡价格线性递增（GS.drawCost = 10 + 10×已抽次数，v1.6.15 大王令，新局清零）
+// ============================================================================
+ENG.restart();
+check('[82] 新局 drawCount=0，首抽价 10', GS.drawCount === 0 && GS.drawCost() === 10);
+GS.drawCount = 4;                                  // 模拟已抽 4 次
+check('[83] 第 5 抽价 = 10+10×4 = 50', GS.drawCost() === 50);
+GS.drawCount = 0;                                  // 还原，免得影响后续用例
+
+// ============================================================================
+// [84-86] v1.4.5 撤销清理：applyShape 记 was 快照 → undoShape 还原废墟 + 卡回牌库
+// ============================================================================
+ENG.restart();
+GS.deck = [{ kind: 'shape', name: '1×1', cells: [[0, 0]] }];
+const uCell = GS.grid[4][2];                       // 外圈废墟带，紧贴内区（过相邻闸）
+uCell.t = 'rubble';                                // 强制废墟，消除随机金币落点影响
+check('[84] 清理成功且 was 快照正确', ENG.applyShape(2, 4, [[0, 0]]) === true &&
+  uCell.t === 'blank' && ENG.lastShapeApply.length === 1 &&
+  ENG.lastShapeApply[0].c === 2 && ENG.lastShapeApply[0].r === 4 &&
+  ENG.lastShapeApply[0].was === 'rubble');
+GS.undoClean = { pts: ENG.lastShapeApply, card: { kind: 'shape', name: '1×1', cells: [[0, 0]] },
+                 cardIdx: 0, shape: '1×1' };
+GS.deck = [];                                      // 模拟卡已被消耗
+check('[85] 撤销：废墟还原+卡原位回库+撤销点清空', ENG.undoShape() === true &&
+  uCell.t === 'rubble' && GS.deck.length === 1 && GS.deck[0].name === '1×1' &&
+  GS.undoClean === null);
+
+// [86] 清理格上已建塔 → 拒绝撤销（否则塔被压进废墟，盘面损坏）
+uCell.t = 'rubble';
+ENG.applyShape(2, 4, [[0, 0]]);
+GS.undoClean = { pts: ENG.lastShapeApply, card: { kind: 'shape', name: '1×1' }, cardIdx: 0, shape: '1×1' };
+GS.deck = [];
+uCell.b = { type: 'tower', elem: 'fire', star: 1, c: 2, r: 4, cd: 0, wcd: 0, flash: 0 };
+const blocked86 = ENG.undoShape();
+check('[86] 建塔后拒绝撤销（状态不被动）', typeof blocked86 === 'string' &&
+  uCell.t === 'blank' && GS.deck.length === 0 && GS.undoClean !== null);
+uCell.b = null;                                    // 还原，别污染后续
+
+// ============================================================================
+// [87-88] v1.4.11 清理预览的还原纪律：applyShape 抓环后逐格还原 + 重算
+//   ⇒ 盘面 t 逐格复原、railPath 逐格复原（UI.updateCleanPreview 依赖此不变量）
+// ============================================================================
+ENG.restart();
+GS.debugNoDeadline = true;
+const pCell = GS.grid[4][2];
+pCell.t = 'rubble';
+const railBefore = JSON.stringify(GS.railPath);
+const gridBefore = [];
+for (let gr = 0; gr < CFG.MAP_ROWS; gr++) {
+  gridBefore.push([]);
+  for (let gc = 0; gc < CFG.MAP_COLS; gc++) gridBefore[gr].push(GS.grid[gr][gc].t);
+}
+check('[87] 预览跑通：applyShape 成功且抓到预览环',
+  ENG.applyShape(2, 4, [[0, 0]]) === true && Array.isArray(GS.railPath) && GS.railPath.length > 0);
+const snap87 = ENG.lastShapeApply;
+for (let s87 = 0; s87 < snap87.length; s87++)      // —— 以下为 UI.updateCleanPreview 的还原步 ——
+  GS.grid[snap87[s87].r][snap87[s87].c].t = snap87[s87].was;
+GS.recomputeRails();
+let gridRestored = true;
+for (let gr2 = 0; gr2 < CFG.MAP_ROWS && gridRestored; gr2++)
+  for (let gc2 = 0; gc2 < CFG.MAP_COLS; gc2++)
+    if (GS.grid[gr2][gc2].t !== gridBefore[gr2][gc2]) { gridRestored = false; break; }
+check('[88] 还原纪律：t 与 railPath 逐格复原', gridRestored && JSON.stringify(GS.railPath) === railBefore);
+
+// [89] v1.4.11 快速档（GS.railFast）：只砍预算不改逻辑 —— 常规盘上结果与全量一致
+GS.railFast = true;
+GS.recomputeRails();
+const railFast89 = JSON.stringify(GS.railPath);
+GS.railFast = false;
+GS.recomputeRails();
+check('[89] railFast 快速档：常规盘结果与全量一致', railFast89 === JSON.stringify(GS.railPath));
+
+// ============================================================================
+// [90-91] v1.4.12 允许形状越界（大王拍板）：越界部分忽略，图内部分照常结算
+//   （导出记录实证：底边两次 cleanFail"形状超出地图"= 边缘瞄准摩擦，全部消灭）
+// ============================================================================
+ENG.restart();
+GS.debugNoDeadline = true;
+const hCellA = GS.grid[11][2], hCellB = GS.grid[12][2];
+hCellA.t = 'rubble'; hCellB.t = 'rubble';
+hCellA.gold = false; hCellB.gold = false;
+GS.grid[10][2].t = 'blank'; GS.grid[10][2].gold = false;   // 造一格相邻区域，过相接闸
+const hangRes = ENG.applyShape(2, 11, [[0, 0], [0, 1], [0, 2], [0, 3]]);   // (2,13) 越界
+check('[90] 越界悬挂：返回 true 且只清图内 2 格', hangRes === true &&
+  hCellA.t === 'blank' && hCellB.t === 'blank' && ENG.lastShapeApply.length === 2,
+  'res=' + hangRes);
+check('[91] 快照只含图内格', ENG.lastShapeApply.every(p => p.r <= 12));
+
+// [92] v1.4.12 以指针为中心：包围盒中心对准指针格（偶数边 floor 取中偏左上）
+const cells92 = [[0, 0], [1, 0], [0, 1], [1, 1], [0, 2], [1, 2], [0, 3], [1, 3]];   // 2×4
+const anc92 = ENG.shapeAnchor({ c: 4, r: 6 }, cells92);
+const cov92 = cells92.map(p => (anc92.c + p[0]) + ',' + (anc92.r + p[1]));
+check('[92] shapeAnchor 居中：指针格 (4,6) 在包围盒中心偏左上', anc92.c === 4 && anc92.r === 5 &&
+  cov92.includes('4,6') && cov92.includes('5,6') &&
+  !cov92.includes('4,' + (6 - 2)) && !cov92.includes('5,' + (6 + 3)),
+  'anchor=' + anc92.c + ',' + anc92.r);
+
+// [98-99] v1.6.6 压塔跳过（大王流水 sid=ouxk6f 实证 2×4 擦塔边两次 cleanFail"范围内
+//   已有建筑"）：形状罩到建筑格 → 跳过它、其余废墟照清。塔本体绝对不动；
+//   相接判定不借塔轮廓（shapeContacts 跳建筑格）；撤销快照不含塔格。
+ENG.restart();
+GS.debugNoDeadline = true;
+GS.grid[6][5].b = { type: 'tower', c: 5, r: 6, elem: 'fire', star: 1 };   // 摆一座塔
+for (const [c98, r98] of [[6, 6], [5, 7], [6, 7]]) {
+  GS.grid[r98][c98].t = 'rubble'; GS.grid[r98][c98].gold = false;
+}
+GS.grid[6][7].t = 'blank'; GS.grid[6][7].gold = false;    // (7,6) 造一格区域过相接闸
+const skipRes = ENG.applyShape(5, 6, [[0, 0], [1, 0], [0, 1], [1, 1]]);   // 压 (5,6) 塔
+check('[98] 压塔跳过：返回 true、塔格 b 原样、其余 3 格清成 blank',
+  skipRes === true && !!GS.grid[6][5].b &&
+  GS.grid[6][6].t === 'blank' && GS.grid[7][5].t === 'blank' && GS.grid[7][6].t === 'blank',
+  'res=' + skipRes + ' towerB=' + !!GS.grid[6][5].b +
+  ' cells=' + GS.grid[6][6].t + '/' + GS.grid[7][5].t + '/' + GS.grid[7][6].t);
+check('[99] 快照不含塔格（撤销不碰塔）',
+  ENG.lastShapeApply.length === 3 && ENG.lastShapeApply.every(p => !(p.c === 5 && p.r === 6)),
+  'snapN=' + ENG.lastShapeApply.length);
+
+// [93-94] v1.4.13 节奏刷怪：间隔未到不放 / 到点恰好 +1（数量↑血量↓的波次成长已由 [28][56b] 锁定）
+FOES.reset(); GS.foes.length = 0;
+FOES.startWave();                        // v1.6.16 第 1 波：首批 ceil(36/6)=6 立即 + pending = 30 + cd = BURST_GAP=3.6
+const n93 = GS.foes.length;              // = 6（首批）
+FOES.update(FOES.CFG.BURST_GAP - 0.01);  // 批间隔差 0.01s：不该放
+check('[93] 节奏刷怪：间隔未到不放假怪', GS.foes.length === n93 && FOES.pending === 30,
+  'n=' + GS.foes.length + ' pending=' + FOES.pending);
+FOES.update(0.02);                       // 跨过批间隔：放一批（6 只）
+check('[94] 节奏刷怪：到点恰好 +6、队列 −6、cd 重置',
+  GS.foes.length === n93 + 6 && FOES.pending === 24 &&
+  Math.abs(FOES.spawnCd - (FOES.CFG.BURST_GAP - 0.01)) < 1e-9,
+  'n=' + GS.foes.length + ' pending=' + FOES.pending + ' cd=' + FOES.spawnCd.toFixed(3));
+FOES.reset(); GS.foes.length = 0;
+
+// [95-97] v1.6.2 全局倍速：循环 1→2→3→1；默认值与恢复（Node 沙箱无 sessionStorage，
+//   clock.js 内有守卫 —— 正好验证"无存储环境下不炸、功能照常"）
+check('[95] 倍速默认 ×1', CLOCK.timeScale === 1, 'ts=' + CLOCK.timeScale);
+check('[96] 循环 1→2→3→1',
+  CLOCK.cycleSpeed() === 2 && CLOCK.cycleSpeed() === 3 && CLOCK.cycleSpeed() === 1,
+  'ts=' + CLOCK.timeScale);
+CLOCK.timeScale = 3;
+check('[97] speedInit 无存储不炸且保持当前档（模拟浏览器恢复语义在 UI 层实测）',
+  (CLOCK.speedInit(), CLOCK.timeScale === 3), 'ts=' + CLOCK.timeScale);
+CLOCK.timeScale = 1;
+
+// [120-126] v1.6.10 手牌直接合成（英雄卡拖到场上同名 1 星塔上 = 直接升星）
+//   判据/执行复用 canMerge/merge 单一路径（虚源 c=-1 占位、跳过离场、from:'hand'）；
+//   手牌塔恒 1 星 ⇒ 只与同名 1 星塔直接合成；塔数不变（车厢数不变）。
+{
+  const nH0 = GS.towers.length;
+  const tA = TOWERS.placeAt(2, 2, 'ice', 1);
+  check('[120] canMergeCard：同名 1 星 → true', TOWERS.canMergeCard('ice', tA) === true);
+  check('[121] canMergeCard：异元素 → false', TOWERS.canMergeCard('fire', tA) === false);
+  check('[121b] canMergeCard：2 星同名 → false（手牌塔恒 1 星）', (function () {
+    const t2 = TOWERS.placeAt(3, 2, 'fire', 2);
+    const r = TOWERS.canMergeCard('fire', t2) === false;
+    TOWERS.remove(t2);
+    return r;
+  })());
+  const mH = TOWERS.mergeFromHand('ice', tA);
+  check('[122] 手牌直接合成成功：星 1→2、塔数不变（车厢数不变）',
+    mH === true && tA.star === 2 && GS.towers.length === nH0 + 1,
+    'mH=' + mH + ' star=' + tA.star + ' n=' + GS.towers.length);
+  check('[123] 手牌合成无离场：格镜像仍是它', GS.grid[2][2].b === tA);
+  check('[124] merge 流水 from=\'hand\'、star=2',
+    LOG.buf.some(e => e.ev === 'merge' && e.from === 'hand' && e.star === 2 && e.elem === 'ice'));
+  tA.flash = 0;                                    // 清合成闪光，防残留影响视觉类断言
+  const mF = TOWERS.mergeFromHand('fire', tA);
+  check('[125] 异元素手牌合成被拒：返回提示、星数不变、mergeFail from=\'hand\'',
+    typeof mF === 'string' && tA.star === 2 && LOG.buf.some(e => e.ev === 'mergeFail' && e.from === 'hand'),
+    'mF=' + mF);
+  check('[126] 场上塔 merge 回归：实塔仍走离场路径（from=坐标、星+1）', (function () {
+    const tB = TOWERS.placeAt(4, 2, 'ice', 2);
+    const nC = GS.towers.length;
+    const res = TOWERS.merge(tB, tA);              // 2星+2星 同元素 → 3 星
+    const ev = LOG.buf.filter(e => e.ev === 'merge').pop();
+    const ok = res === true && GS.towers.length === nC - 1 && tA.star === 3 &&
+               ev && ev.from === '4,2' && ev.to === '2,2';
+    TOWERS.remove(tA);                             // 清场，不留高星塔给后面用例
+    return ok;
+  })());
+}
 
 // ---- 汇总 ------------------------------------------------------------------------
 console.log('\n' + '='.repeat(64));

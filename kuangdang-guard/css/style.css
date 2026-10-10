@@ -65,3 +65,33 @@ html,body { margin:0; padding:0; height:100%; background:#0b0c12; overflow:hidde
 #overTitle { font-size:30px; font-weight:800; color:#e8563f; margin-bottom:10px; }
 #overWave { font-size:14px; color:var(--muted); margin-bottom:22px; }
 #overBox .btn { width:160px; }
+/* ---- v1.4 卡牌大改 ---- */
+/* 底部牌库：持有的形状卡 / 英雄卡，拖到场上使用 */
+#deckRow { display:flex; gap:8px; min-height:52px; margin-top:8px; align-items:stretch; }
+.pcard { flex:0 0 auto; width:76px; border:1px solid var(--line); border-radius:8px;
+  background:var(--panel2); display:flex; flex-direction:column; align-items:center;
+  justify-content:center; cursor:grab; touch-action:none; padding:4px 2px; }
+.pcard:active { cursor:grabbing; border-color:var(--brand); }
+.pcard .p-kind { font-size:10px; color:var(--muted); }
+.pcard .p-name { font-size:13px; font-weight:700; margin-top:2px; }
+.pcard .p-shape { display:grid; gap:1px; margin-top:4px; }
+.pcard .p-shape i { width:7px; height:7px; border-radius:1px; background:var(--brand); }
+#deckEmpty { flex:1; display:flex; align-items:center; justify-content:center;
+  font-size:11px; color:var(--muted); }
+
+/* 三选一弹层 */
+#offerOverlay { position:absolute; inset:0; background:rgba(10,10,16,0.85); z-index:11;
+  display:flex; align-items:center; justify-content:center; }
+#offerOverlay.hidden { display:none; }
+#offerBox { text-align:center; }
+#offerTitle { font-size:18px; font-weight:800; margin-bottom:16px; }
+#offerCards { display:flex; gap:12px; justify-content:center; }
+.oc { width:96px; height:120px; border:1px solid var(--line); border-radius:10px;
+  background:var(--panel2); display:flex; flex-direction:column; align-items:center;
+  justify-content:center; cursor:pointer; gap:6px; }
+.oc:active { border-color:var(--brand); box-shadow:0 0 0 2px var(--brand); }
+.oc .o-kind { font-size:11px; color:var(--muted); }
+.oc .o-main { font-size:15px; font-weight:800; }
+.oc .o-sub { font-size:10px; color:var(--muted); }
+.oc .o-shape { display:grid; gap:1px; }
+.oc .o-shape i { width:8px; height:8px; border-radius:1px; background:var(--brand); }

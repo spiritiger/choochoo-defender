@@ -80,10 +80,5 @@ STATION.solve = function (railPath) {
 STATION.slot = function () { return GS.station || null; };
 // 站台在 railPath 上的下标（列车停靠用）；无站台返回 -1
 STATION.index = function () { return GS.station ? GS.station.index : -1; };
-// 该格是不是站台
-STATION.isAt = function (c, r) {
-  var st = GS.station;
-  return !!st && st.c === c && st.r === r;
-};
 // 铁轨环上是否已解出站台（列车可发车的前提）
 STATION.ready = function () { return !!GS.station && GS.railPath && GS.railPath.length >= 4; };

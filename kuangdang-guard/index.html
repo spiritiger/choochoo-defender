@@ -11,9 +11,10 @@
   <div id="app">
     <header id="hud">
       <div class="hud-cell"><span class="hud-key">金币</span><span id="hudGold" class="hud-val">0</span></div>
-      <div class="hud-cell"><span class="hud-key">车斗</span><span id="hudCargo" class="hud-val">0</span></div>
-      <div class="hud-cell"><span class="hud-key">城墙</span><span id="hudCore" class="hud-val">60</span></div>
+      <!-- v1.4.7：HUD「车斗」格子退役（大王定"冗余"）—— 车上浮字 +N 仍实时显示车斗量 -->
+      <div class="hud-cell"><span class="hud-key">城墙</span><span id="hudCore" class="hud-val">100</span></div>
       <div class="hud-cell"><span class="hud-key">波次</span><span id="hudWave" class="hud-val">-</span></div>
+      <button id="btnSpeed" class="hud-btn" title="游戏倍速循环 ×1→×2→×3；本会话内保持，关掉网页重置">×1</button>
       <button id="btnExport" class="hud-btn" title="复制当前地图数据（调试用）">导出地图</button>
       <button id="btnLog" class="hud-btn" title="复制本次行为记录（JSON 流水，供统计与平衡数值）">导出记录</button>
       <button id="btnForce" class="hud-btn" title="放开求解时间预算重算铁轨（界面会暂时卡住）">强制刷新</button>
@@ -25,13 +26,24 @@
 
     <footer id="footer">
       <div class="actionRow">
-        <!-- v1.3-rc：清理（左）/ 开波（中）/ 抽塔（右）—— 三选一卡组退役 -->
-        <button id="btnClean" class="btn">清理(10)</button>
+        <!-- v1.4 卡牌大改：清理按钮退役；抽塔 → 抽卡（三选一）。
+             v1.4.5：撤销清理回归左下角（回撤最近一次形状卡清理，救路径规划失败）。
+             牌库 deckRow 由 ui.js 动态渲染（形状卡/英雄卡，拖到场上使用） -->
+        <button id="btnUndo" class="btn" title="回撤最近一次形状卡清理（废墟还原，卡回牌库）">撤销清理</button>
         <button id="btnDepart" class="btn">开波</button>
-        <button id="btnSummon" class="btn">抽塔(10)</button>
+        <button id="btnSummon" class="btn">抽卡(5)</button>
       </div>
+      <div id="deckRow"></div>
       <div id="status"></div>
     </footer>
+
+    <!-- 三选一弹层（v1.4）：点【抽卡】→ 发三张卡 → 必须选一张进牌库 -->
+    <div id="offerOverlay" class="hidden">
+      <div id="offerBox">
+        <div id="offerTitle">抽卡 · 三选一</div>
+        <div id="offerCards"></div>
+      </div>
+    </div>
 
     <!-- 挑战失败遮罩（v1.3-rc）：镇中心血量归零 → 锁全部操作，只留重开 -->
     <div id="overOverlay" class="hidden">
@@ -55,6 +67,7 @@
 <script src="js/foes.js"></script>
 <script src="js/clock.js"></script>
 <script src="js/transport.js"></script>
+<script src="js/solver-async.js"></script>
 <script src="js/engine.js"></script>
 <script src="js/renderer.js"></script>
 <script src="js/ui.js"></script>

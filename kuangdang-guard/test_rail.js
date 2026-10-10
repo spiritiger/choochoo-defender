@@ -36,7 +36,7 @@ const sandbox = {};
 sandbox.window = sandbox;
 sandbox.console = console;
 vm.createContext(sandbox);
-for (const f of ['js/config/map.js', 'js/state.js', 'js/engine.js']) {
+for (const f of ['js/config/map.js', 'js/state.js', 'js/solver-async.js', 'js/engine.js']) {
   vm.runInContext(fs.readFileSync(path.join(ROOT, f), 'utf8'), sandbox, { filename: f });
 }
 const CFG = sandbox.CFG, GS = sandbox.GS, ENG = sandbox.ENG;   // ENG 供 [11] 的相接口径断言用
@@ -744,6 +744,69 @@ withSize(9, 13, () => {
     '，重走格 ' + (stepsOf(GS.railPath) - cellsOf(GS.railPath)) + ' 个（双 T 岔，无十字无端头）');
 });
 
+// [47] ⑦ 相邻双十字重织（v1.4.9，大王拍板方案 A；2026-10-08 14:56 导出盘逐格复刻）
+//   主解 mm=2 首命中产出 rail(50)：相邻双十字 (3,9)/(3,10) + 割边必需 T 岔 (3,3)/(3,4)，
+//   覆盖已满 40/40。⑦ 必须把双十字织掉（48 步 / 只剩必需 T 岔 / 覆盖不变）。
+// ---------------------------------------------------------------------------
+console.log('\n[47] ⑦ 相邻双十字重织（1408 盘逐格复刻，原生 9×13）');
+withSize(9, 13, () => {
+  const B1408 = [
+    '##.G####g', 'g#..#####', '##G.###g#', '##..#####',
+    '###...###', 'g##...##g', '###.C.###', '#g#...###',
+    '###.....G', 'G........', '..G.G#..#', '###..#.G#', '###G.#..#'];
+  setupFromRows(B1408);
+  GS.recomputeRails();
+  const err47 = ringError(GS.railPath);
+  check('⑦ 重织 → 走线合法', !err47, err47);
+  check('⑦ 重织 → rail(48)（织掉相邻双十字，−2 步）',
+    stepsOf(GS.railPath) === 48, '实际 rail(' + stepsOf(GS.railPath) + '): ' +
+    GS.railPath.map(p => p.c + ',' + p.r).join(' '));
+  check('⑦ 重织 → 重走格只剩必需 T 岔 (3,3)/(3,4)',
+    (() => { const m = visitMap(GS.railPath);
+      const rv = Object.keys(m).filter(k => m[k] >= 2).sort();
+      return rv.length === 2 && rv[0] === '3,3' && rv[1] === '3,4'; })(),
+    '实际 ' + (() => { const m = visitMap(GS.railPath);
+      return Object.keys(m).filter(k => m[k] >= 2).sort().join(' '); })());
+  check('⑦ 重织 → 覆盖不变 40/40（轮廓格一个不少）',
+    (() => { let cov = 0, tot = 0; const seen = {};
+      for (let i = 0; i < GS.contourB.length; i++) if (GS.contourB[i]) tot++;
+      for (const p of GS.railPath) { const k = p.c + ',' + p.r;
+        if (!seen[k]) { seen[k] = 1; if (GS.contourB[p.r * CFG.MAP_COLS + p.c]) cov++; } }
+      return cov === 40 && tot === 40; })(),
+    '实际 ' + (() => { let cov = 0, tot = 0; const seen = {};
+      for (let i = 0; i < GS.contourB.length; i++) if (GS.contourB[i]) tot++;
+      for (const p of GS.railPath) { const k = p.c + ',' + p.r;
+        if (!seen[k]) { seen[k] = 1; if (GS.contourB[p.r * CFG.MAP_COLS + p.c]) cov++; } }
+      return cov + '/' + tot; })());
+  console.log('    步数 = ' + stepsOf(GS.railPath) + ' / 格数 ' + cellsOf(GS.railPath) +
+    '，重走格 ' + (stepsOf(GS.railPath) - cellsOf(GS.railPath)) + ' 个（全部为必需 T 岔）');
+});
+
+// [48] ② 择优早停双闸（v1.5，大王拍板"改"；固定种子盘 seed=1/density=0.35 程序实锤复刻）
+//   旧闸（仅 cross===0 即停）在"先命中 10 格 0 十字"处提前收工 → 覆盖 10；
+//   双闸（cross=0 且满覆盖才停）继续扫起点 → v1.5 时为 16 格 0 十字。
+//   v1.6.9 补格 H 铺两层后该盘 |A| 变大，全扫最优升级为 40 格 4 十字——
+//   字典序"覆盖优先于十字"依旧成立（不满覆盖 ⇒ 不早停 ⇒ 全起点扫完择优）。
+// ---------------------------------------------------------------------------
+console.log('\n[48] ② 早停双闸：十字 0 且满覆盖才停（seed=1 固定种子盘复刻）');
+withSize(9, 13, () => {
+  const B48 = [
+    '..##..##.', '.....#..#', '.##.#.#..', '#.####..#',
+    '..#......', '###...#.#', '.#..C.#..', '..#......',
+    '......#..', '...##....', '.##.....#', '..#..#...', '#.#...###'];
+  setupFromRows(B48);
+  GS.recomputeRails();
+  const err48 = ringError(GS.railPath);
+  check('早停双闸 → 走线合法', !err48, err48);
+  check('早停双闸 → 覆盖 40 格（v1.5 双闸 16；v1.6.9 H 两层后 A 变大解更大）',
+    cellsOf(GS.railPath) === 40, '实际 ' + cellsOf(GS.railPath) + ' 格');
+  check('早停双闸 → rail(44)/十字4（同批次全扫后的最优覆盖解）',
+    stepsOf(GS.railPath) === 44 && crossCount(GS.railPath) === 4,
+    '实际 rail(' + stepsOf(GS.railPath) + ')/十字' + crossCount(GS.railPath));
+  console.log('    步数 = ' + stepsOf(GS.railPath) + ' / 格数 ' + cellsOf(GS.railPath) +
+    '，十字 ' + crossCount(GS.railPath) + ' 个');
+});
+
 // [16] 原生尺寸冒烟：全清空 → 外沿边框环（步数 = 2×列 + 2×(行−2)，随 CFG 自动适配）
 console.log('\n[16] 原生 ' + CFG.MAP_COLS + '×' + CFG.MAP_ROWS + '：全清空 → 外沿边框环');
 {
@@ -759,6 +822,43 @@ console.log('\n[16] 原生 ' + CFG.MAP_COLS + '×' + CFG.MAP_ROWS + '：全清�
   console.log('    步数 = ' + stepsOf(GS.railPath) + ' / 格数 ' + cellsOf(GS.railPath) +
     '，十字 ' + crossCount(GS.railPath) + ' 个');
 }
+
+// [60] H 一层盲区修复锁测试（v1.6.9；大王 2026-10-09 17:04 导出盘复刻，T→E 占位：
+//      求解链只看 cell.b 真假不看建筑类型，与 v1.5 复刻 1846 盘同一手法）
+//   病理：清开左侧走廊后内部 8 格离废墟轮廓 ≥2 格深，helpersOf 旧口径只收一层 ⇒
+//   4 个二层必经格不在搜索空间 A ⇒ 全链"正确"证明无解 rail(0)（游戏内 rail(32)
+//   是反缩水保险沿用的旧环）。v1.6.9 铺两层后解出 rail(40)、轮廓满覆盖 26/26。
+console.log('\n[60] H 两层盲区盘（大王 17:04 盘复刻，T→E 占位）');
+withSize(9, 13, () => {
+  const K60 = [
+    'g###g####',
+    '######g##',
+    '#g######g',
+    '#########',
+    '#g#...#g#',
+    '......###',
+    'G...C.###',
+    '#...E.#g#',
+    '#G....###',
+    '....#...#',
+    'G...#G..#',
+    '#....###g',
+    '#...G####'];
+  setupFromRows(K60);
+  GS.recomputeRails();
+  const err60 = ringError(GS.railPath);
+  check('盲区盘 → 走线合法（旧口径 rail(0)，H 两层后必须出环）', !err60, err60);
+  const on60 = new Set((GS.railPath || []).map(key));
+  const deep60 = ['1,6', '1,9', '1,10', '2,8', '2,9', '2,10', '3,9', '3,10'].filter(k => on60.has(k));
+  check('盲区盘 → 深腹地格进环 ≥6 个（旧口径 0）', deep60.length >= 6,
+    '实际 ' + deep60.length + ' 个: ' + deep60.join(' '));
+  check('盲区盘 → 轮廓满覆盖 26/26（旧 32 环只有 20/26）',
+    contourCovTest(GS.railPath) === 26, '实际 ' + contourCovTest(GS.railPath));
+  check('盲区盘 → rail(40)（关墙钟口径，与重放实验一致）',
+    stepsOf(GS.railPath) === 40, '实际 rail(' + stepsOf(GS.railPath) + ')');
+  console.log('    步数 = ' + stepsOf(GS.railPath) + ' / 格数 ' + cellsOf(GS.railPath) +
+    '，十字 ' + crossCount(GS.railPath) + ' 个，深层格 ' + deep60.length + '/8');
+});
 
 // ---------------------------------------------------------------------------
 console.log('\n' + '='.repeat(64));

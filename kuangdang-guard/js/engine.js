@@ -38,8 +38,10 @@ ENG.shapeContacts = function (oc, or_, cells) {
   var list = [];
   for (var i = 0; i < cells.length; i++) {
     var c = oc + cells[i][0], r = or_ + cells[i][1];
-    self[c + ',' + r] = 1;
-    list.push({ c: c, r: r });
+    if (!CFG.inBounds(c, r)) continue;                 // 越界格不参与（v1.4.12 起）
+    if (GS.grid[r][c].b) continue;                     // ⚠️ v1.6.6：建筑格跳过 —— 压塔
+    self[c + ',' + r] = 1;                             //   的边不许借塔轮廓相接（塔不是
+    list.push({ c: c, r: r });                         //   本次清理产物，也不该当桥板）
   }
   var hit = {}, out = [];
   // 只有"真正属于当前区域"的格子才算：非金币空白格、或"已并入区域"的金币格
@@ -89,15 +91,41 @@ ENG.shapeHitsInner = function (list) {
 
 ENG.MIN_CONTACT = 1;   // 清理形状与当前区域的最少相接格数（v0.7.0 由 2 降为 1，大王拍板；压内区可豁免）
 
+// v1.4.12（大王拍板"以指针为中心"）：形状**包围盒几何中心**对准指针格。
+//   旧口径锚点=指针格=形状左上角 → 形状永远朝指针右下铺开，指针坐在形状角上，
+//   越界只偏右/下一侧，边缘要"偏着瞄准"。居中后四个边缘体验对称，配合 applyShape
+//   的"越界忽略"裁剪，指针指哪形状就罩哪。
+//   偶数边长无法完美居中，floor((min+max)/2) 把指针放在中间偏左上一格（惯例取法）。
+//   对 min/max 包围盒取中（而非 w/2）→ 天然兼容将来可能出现负偏移的异形卡。
+ENG.shapeAnchor = function (cell, cells) {
+  var minC = 0, maxC = 0, minR = 0, maxR = 0;
+  for (var i = 0; i < cells.length; i++) {
+    if (cells[i][0] < minC) minC = cells[i][0];
+    if (cells[i][0] > maxC) maxC = cells[i][0];
+    if (cells[i][1] < minR) minR = cells[i][1];
+    if (cells[i][1] > maxR) maxR = cells[i][1];
+  }
+  return { c: cell.c - Math.floor((minC + maxC) / 2), r: cell.r - Math.floor((minR + maxR) / 2) };
+};
+
 ENG.applyShape = function (oc, or_, cells) {
+  // v1.4.12（大王拍板"允许形状超出地图"）：越界部分**直接忽略**（裁剪到地图内），
+  //   指针指哪清哪，底边/右边缘不再有"往左上偏着瞄准"的摩擦。
+  //   · 形状偏移全为非负（CFG.randomShape 保证），锚点必在图内 ⇒ 至少锚点格参与结算；
+  //   · 越界格没有地形可清，也不产生相接 —— shapeContacts/shapeHitsInner 对越界格
+  //     天然免疫（isRegion 有 inBounds 守卫），无需特判；
+  //   · 全越界不存在，但"图内部分没有废墟"仍会被下面 rubbleCount===0 拦住。
   var rubbleCount = 0;
   var pts = [];
   for (var i = 0; i < cells.length; i++) {
     var c = oc + cells[i][0], r = or_ + cells[i][1];
-    if (!CFG.inBounds(c, r)) return '形状超出地图';
+    if (!CFG.inBounds(c, r)) continue;                    // 越界：忽略，不报错
     var cell = GS.grid[r][c];
-    if (cell.b) return '范围内已有建筑';
-    pts.push({ c: c, r: r });
+    if (cell.b) continue;   // v1.6.6（大王令）：压到建筑格直接跳过 —— 塔不能也不该被清，
+                            // 其余废墟照常清（与"越界忽略"同一哲学：罩到清不了的
+                            // 东西就跳过它）。旧版整体拒绝，实测 2×4 擦到塔边
+                            // 两次 cleanFail（sid=ouxk6f at 1,4/2,4）。
+    pts.push({ c: c, r: r, was: cell.t });               // v1.4.5：记清理前 t 值，供撤销还原
     if (cell.t === 'rubble') rubbleCount++;
   }
   if (rubbleCount === 0) return '形状内没有废墟';
@@ -106,7 +134,36 @@ ENG.applyShape = function (oc, or_, cells) {
     return '需与区域相邻 ' + ENG.MIN_CONTACT + ' 格（或压住内区）';
   }
   for (var j = 0; j < pts.length; j++) GS.grid[pts[j].r][pts[j].c].t = 'blank';
-  GS.recomputeRails();
+  // v1.6 求解后台化：Worker 可用时异步求解（主线程不冻结），否则同步（file:// 降级）
+  GS.recomputeRailsAsync();
+  // v1.4.5 撤销（大王需求"路径规划失败时把拖上场的地块回撤"）：
+  //   成功清理时记下**逐格清理前的 t 值**快照（含形状里本来就是 blank 的格，保证还原精确）。
+  //   UI 层把它连同被消耗的卡打包进 GS.undoClean（新局清零）；ENG.undoShape 消费。
+  ENG.lastShapeApply = pts.map(function (p) {
+    return { c: p.c, r: p.r, was: p.was };
+  });
+  return true;
+};
+
+// v1.4.5 撤销最近一次形状卡清理：废墟逐格还原 → 铁轨重算 → 卡原位退回牌库。
+//   · 单层撤销：只认 GS.undoClean（最近一次成功清理），再清一次就被覆盖。
+//   · 任一清理格上已建塔/建筑 → 拒绝（否则会把建筑压在废墟底下，盘面损坏）。
+//   · 铁轨/站台不用手动拆：还原后 recomputeRails() 会整体重算（白天列车停靠，安全）。
+ENG.undoShape = function () {
+  var u = GS.undoClean;
+  if (!u || !u.pts || !u.pts.length) return '没有可撤销的清理';
+  for (var i = 0; i < u.pts.length; i++) {
+    var cell = GS.grid[u.pts[i].r] && GS.grid[u.pts[i].r][u.pts[i].c];
+    if (!cell) return '撤销范围超出地图（盘面已被改动）';
+    if (cell.b) return '清理格上已建造，不能撤销';
+  }
+  for (var j = 0; j < u.pts.length; j++) {
+    GS.grid[u.pts[j].r][u.pts[j].c].t = u.pts[j].was;
+  }
+  GS.recomputeRailsAsync();              // v1.6：同 applyShape，走后台化降级链
+  var at = Math.min(u.cardIdx || 0, GS.deck.length);   // 原位退回（库已变化就钳到尾部）
+  GS.deck.splice(at, 0, u.card);
+  GS.undoClean = null;
   return true;
 };
 
@@ -155,6 +212,11 @@ ENG.update = function (dt) {
   // 车头战斗（v1.3.1）：在 FOES.update 之后调 —— 本帧打掉的 hp 由下一帧清尸
   //   （与塔的"当帧清尸"差一帧，无碍：尸体 hp≤0 不会再攻击/移动）。
   ENG.trainCombat(dt);
+  // 车厢独立战斗（v1.4.1）：与车头同帧序（FOES 后），尸体下一帧清，无碍
+  ENG.wagonCombat(dt);
+  // v1.6 求解后台化：夜晚挂起的求解结果，回到建造阶段（白天）立即落位。
+  //   落位后下一帧 parkAtStation 把车头对齐新站台 —— 夜晚绝不换环（防 train.index 越界）。
+  if (window.SOLVER_ASYNC) SOLVER_ASYNC.tryFlush();
   ENG.trainFlow(dt);
 };
 
@@ -185,7 +247,7 @@ ENG.update = function (dt) {
 ENG.TRAIN_COMBAT = {
   dmg: function (wave) { return 8 + 4 * wave; },   // wave1=12，与 1 星火塔同档
   RATE: 1.0,           // 塔式攻击间隔秒
-  RANGE: 2.5,          // 塔式射程（格，欧氏距离，同塔口径）
+  RANGE: 4.5,          // 塔式射程（格，欧氏距离）⚠️ v1.4.3d 大王令：2.5×1.5=3.75；v1.6.8 大王令 2026-10-09：3.75→4.5（车厢同步）
   BUMP_RANGE: 1.2,     // 撞击判定半径（格，车头中心到怪中心）
   BUMP_GAP: 0.8        // 同一只怪的撞击冷却秒
 };
@@ -195,6 +257,8 @@ ENG.trainCombat = function (dt) {
   var foes = GS.foes;
   if (!foes || !foes.length) return;            // 没怪没战斗；bumpCd 也无需衰减
   if (typeof FOES === 'undefined') return;
+  // ⚠️ v1.4.1 纠偏（规格 §14.2）：车厢是独立作战单位，**不再**给车头加成 ——
+  //   旧"+2 伤/节 + 全局元素特效"作废，车头伤害回归纯 8+4×wave。
   var dmg = ENG.TRAIN_COMBAT.dmg(FOES.wave);
   var core = GS.core;
 
@@ -234,6 +298,76 @@ ENG.trainCombat = function (dt) {
   if (typeof TOWERS !== 'undefined') {
     TOWERS.beams.push({ ac: fc, ar: fr, bc: best.c, br: best.r, t: 0.12, rgb: '143,134,255' });
   }
+};
+
+// ============================================================================
+// 车厢战斗（v1.4.1，规格 §14.2）—— 大王拍板：车厢是**独立作战单位**。
+//   · 车厢 = GS.towers 的镜像投影：每座英雄塔派生一节同元素同星车厢
+//     （塔合成升星 → 车厢跟着变强；塔移除 → 车厢消失，无需独立维护列表）；
+//   · 第 i 节位置 = 车头弧长位置后退 (i+1)×GAP 格，railPath 环形取模；
+//   · 每节独立炮位：自己射程内挑离镇中心最近的怪，伤害 (8+4×wave)×star（v1.4.6：1星=车头）；
+//   · 特效挂每节自己的攻击：火=burn / 冰=slow / 毒=poison / 雷=该节冷却 0.9s；
+//   · 冷却存塔对象 t.wcd（塔删了冷却自然消失，零同步成本）。
+// ============================================================================
+ENG.WAGON = {
+  GAP: 1,                                  // 相邻车厢弧长间隔（格）⚠️ v1.4.3 大王拍板"贴身短编组"：2→1，战斗位置同步变化
+  RATE: 1.2,                               // 攻击间隔秒（雷 0.9）
+  THUNDER_RATE: 0.9,
+  RANGE: 4.5,                              // 射程（格）⚠️ v1.4.3d 大王令：与车头同步 2.5×1.5=3.75；v1.6.8 大王令 2026-10-09：3.75→4.5（与车头同步）
+  dmg: function (star, wave) { return (8 + 4 * (wave || 0)) * star; }
+  // ⚠️ v1.4.6（大王令 2026-10-08）：1 星车厢伤害与车头一致 = 8+4×wave（旧 6×star），
+  //   星级保持乘法线性（2星=2倍车头、3星=3倍…）。wave 由 wagonCombat 传入 FOES.wave。
+};
+
+// 第 i 节（0 起）的浮点格坐标。headPos = 车头弧长位置（index+frac，单位格），
+//   后退 (i+1)×GAP 后对 railPath 长度取模（环形：退过头绕到车头前方）。
+ENG.wagonPos = function (i) {
+  var n = GS.railPath.length;
+  if (!n) return null;
+  var head = GS.train.index + GS.train.frac;
+  var p = ((head - (i + 1) * ENG.WAGON.GAP) % n + n) % n;
+  var k = Math.floor(p), fr = p - k;
+  var a = GS.railCell(k), b = GS.railCell(k + 1);
+  return { c: a.c + (b.c - a.c) * fr, r: a.r + (b.r - a.r) * fr };
+};
+
+ENG.wagonCombat = function (dt) {
+  if (GS.gameOver || !GS.railPath.length) return;
+  var foes = GS.foes;
+  if (!foes || !foes.length) return;
+  var core = GS.core;
+
+  for (var i = 0; i < GS.towers.length; i++) {
+    var t = GS.towers[i];
+    if (t.wcd > 0) { t.wcd -= dt; continue; }
+    var pos = ENG.wagonPos(i);
+    var best = null, bestD = Infinity;
+    for (var j = 0; j < foes.length; j++) {
+      var fe = foes[j];
+      var dx = fe.c - pos.c, dy = fe.r - pos.r;
+      if (dx * dx + dy * dy > ENG.WAGON.RANGE * ENG.WAGON.RANGE) continue;
+      var dc = fe.c - core.c, dr = fe.r - core.r;
+      var dCore = dc * dc + dr * dr;
+      if (dCore < bestD) { bestD = dCore; best = fe; }
+    }
+    if (!best) continue;
+    best.hp -= ENG.WAGON.dmg(t.star, FOES.wave);
+    best.hitFlash = 0.25;
+    // 特效挂**本节自己的元素**（v1.4.1：不再是"有火节就全局灼烧"）
+    if (t.elem === 'ice') best.slow = 1.5;
+    else if (t.elem === 'fire') best.burn = 2;
+    else if (t.elem === 'poison') best.poison = 4;
+    t.wcd = (t.elem === 'thunder') ? ENG.WAGON.THUNDER_RATE : ENG.WAGON.RATE;
+    if (typeof TOWERS !== 'undefined') {
+      TOWERS.beams.push({ ac: pos.c, ar: pos.r, bc: best.c, br: best.r,
+                          t: 0.12, rgb: ENG.wagonRgb(t.elem) });
+    }
+  }
+};
+// 车厢连线元素色（renderer 拼淡出 alpha 用）
+ENG.wagonRgb = function (elem) {
+  return { fire: '255,120,80', ice: '110,200,255',
+           poison: '150,230,120', thunder: '255,220,90' }[elem] || '200,200,200';
 };
 
 // 调度器：建造阶段停车，防守/收尾行驶
