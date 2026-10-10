@@ -529,20 +529,29 @@ console.log('公平口径（共同轮廓）: v1轮廓上 v2环 vs v1环 better/w
 console.log('半岛纳入率: ' + (penRate >= 0 ? (penRate * 100).toFixed(0) + '%' : 'n/a'));
 
 if (MODE === 'full') {
-  // P2 对照：特殊盘 v1 vs v2 形状差异文本
-  function ringText(ring) {
-    const g = [];
-    for (let r = 0; r < ROWS; r++) g.push(new Array(COLS).fill('#'));
-    for (let r = 0; r < ROWS; r++) for (let c = 0; c < COLS; c++) {
-      const ch = [{ n: 'golden', b: GOLDEN }, { n: 'k60', b: K60 }].length ? null : null; // 占位
+  // ---- P2 形状对照：特殊盘 v1 vs v2 环 ASCII ----
+  function renderRing(boardRows, ring, cols, rowsN) {
+    const on = {};
+    for (const p of ring || []) on[p.c + ',' + p.r] = 1;
+    const out = [];
+    for (let r = 0; r < rowsN; r++) {
+      let s = '';
+      for (let c = 0; c < cols; c++) {
+        if (on[c + ',' + r]) s += 'R';
+        else {
+          const ch = boardRows[r][c];
+          s += ch === 'C' ? 'C' : (ch === '#' || ch === 'g' || ch === 'X' ? '#' : (ch === 'E' ? 'T' : '.'));
+        }
+      }
+      out.push('    ' + s);
     }
-    return g.map(row => row.join(''));
+    return out;
   }
   let rep = [];
   rep.push('# rail-v2 A/B 报告（自动生成 ' + new Date().toISOString() + '）');
   rep.push('');
-  rep.push('> 口径：`node test_rail_v2.js full`，debugNoDeadline=true（质量口径，节点预算为主）。');
-  rep.push('> 覆盖为各自轮廓口径（v1=B、v2=B*），双口径交叉见下表；P5 判定需另行真墙钟时序口径。');
+  rep.push('> 口径：`node test_rail_v2.js full`，质量口径 debugNoDeadline=true（节点预算为主，' + N_REG + '+' + N_HARD + '+4 盘）。');
+  rep.push('> 覆盖为各自轮廓口径（v1=B、v2=B*）；公平判定看「共同轮廓交叉口径」。P5 耗时另见文末生产墙钟通道。');
   rep.push('');
   rep.push('| 盘 | v1 步/格/重走/覆盖 | v2冷 步/格/重走/覆盖 | v2暖 步/格/重走/覆盖 | 交叉口径 v2环覆B1 / v1环覆B2 | ms v1/冷/暖 |');
   rep.push('|---|---|---|---|---|---|');
@@ -557,9 +566,30 @@ if (MODE === 'full') {
   rep.push('- v1：' + fmt(stats.v1));
   rep.push('- v2 冷解：' + fmt(stats.v2cold));
   rep.push('- v2 暖解：' + fmt(stats.v2warm));
-  rep.push('- 冷解 vs v1：覆盖 better/worse ' + stats.cmp.better + '/' + stats.cmp.worse + '（equal ' + stats.cmp.equal + '）；重走格 better/worse ' + stats.cmp.crossBetter + '/' + stats.cmp.crossWorse + '；ms better/worse ' + stats.cmp.msBetter + '/' + stats.cmp.msWorse);
+  rep.push('- 冷解 vs v1（各自口径）：覆盖 better/worse ' + stats.cmp.better + '/' + stats.cmp.worse + '（equal ' + stats.cmp.equal + '）；重走格 better/worse ' + stats.cmp.crossBetter + '/' + stats.cmp.crossWorse + '；ms better/worse ' + stats.cmp.msBetter + '/' + stats.cmp.msWorse);
+  rep.push('- **公平口径（共同轮廓）**：v1 轮廓上 v2环 vs v1环 better/worse **' + stats.cmp.onB1better + '/' + stats.cmp.onB1worse + '**；v2 轮廓上 better/worse **' + stats.cmp.onB2better + '/' + stats.cmp.onB2worse + '**；B* 更大的盘 ' + stats.cmp.biggerB + '/' + stats.v1.n + '（半岛纳入）');
   rep.push('- 半岛纳入率（peninsula 盘）：' + (penRate * 100).toFixed(0) + '%（Q1 验收 = 100%）');
-  rep.push('- rail(0) 发生率：见正确性用例（V5 退化盘外为 0）');
+  rep.push('- rail(0) 发生率：正确性用例外为 0（V5 退化盘例外）');
+  rep.push('');
+  rep.push('## P2 形状对照（大王过目用）');
+  for (const [name, board, c, r_] of specials) {
+    withSize(c, r_, () => {
+      setupFromRows(board);
+      GS.recomputeRails();
+      const r1 = GS.railPath.slice(), b1 = GS.contourB.slice();
+      setupFromRows(board);
+      GS.railV2 = true;
+      GS.recomputeRails();
+      GS.railV2 = false;
+      const r2 = GS.railPath.slice();
+      rep.push('');
+      rep.push('### ' + name + '（v1 ' + r1.length + ' 步 / v2 ' + r2.length + ' 步）');
+      rep.push('v1:');
+      rep.push(...renderRing(board, r1, c, r_));
+      rep.push('v2:');
+      rep.push(...renderRing(board, r2, c, r_));
+    });
+  }
   fs.writeFileSync(path.join(ROOT, 'docs', 'rail-v2-AB报告.md'), rep.join('\n'), 'utf8');
   console.log('\n报告已写：docs/rail-v2-AB报告.md（' + rows.length + ' 盘明细）');
 }
@@ -567,3 +597,35 @@ if (MODE === 'full') {
 console.log('\n================================================================');
 console.log('A/B：v1 ' + stats.v1.n + ' 盘 / v2 ' + stats.v2cold.n + ' 盘；结论详见上方汇总');
 console.log('================================================================');
+
+// ============================================================================
+// 三、生产墙钟计时通道（P5 耗时口径，仅 full）：真墙钟、两臂同盘交错
+// ============================================================================
+if (MODE === 'full') {
+  GS.debugNoDeadline = false;   // 真墙钟 = 生产 caliber
+  const ms1 = [], ms2 = [];
+  let burn2 = 0;
+  const corpus = [];
+  for (let i = 0; i < 40; i++) corpus.push(genBoard(mulberry32(90000 + i * 31), 4 + (i % 12)));
+  for (let i = 0; i < 20; i++) corpus.push(genBoard(mulberry32(700000 + i * 23), 16 + (i % 14)));
+  for (const [name, board, c, r_] of specials) corpus.push(board);
+  for (const board of corpus) {
+    setupFromRows(board);
+    let t0 = Date.now();
+    GS.railV2 = false; GS.recomputeRails();
+    ms1.push(Date.now() - t0);
+    setupFromRows(board);
+    t0 = Date.now();
+    GS.railV2 = true; GS.recomputeRails(); GS.railV2 = false;
+    ms2.push(Date.now() - t0);
+    if (GS.__v2last && GS.__v2last.budgetLeft < 0) burn2++;
+  }
+  const pct = (arr, p) => { const a = arr.slice().sort((x, y) => x - y); return a[Math.min(a.length - 1, Math.floor(a.length * p))]; };
+  const line = (n, a) => n + ': p50=' + pct(a, 0.5) + 'ms  p90=' + pct(a, 0.9) + 'ms  max=' + Math.max(...a) + 'ms  均值=' + (a.reduce((s, x) => s + x, 0) / a.length).toFixed(1) + 'ms';
+  console.log('\n== 生产墙钟计时（' + corpus.length + ' 盘，真 deadline）==');
+  console.log(line('v1', ms1));
+  console.log(line('v2', ms2));
+  console.log('v2 烧穿率（budgetLeft<0）: ' + (burn2 * 100 / corpus.length).toFixed(1) + '%');
+  const rep2 = '\n\n## 生产墙钟计时通道（P5 耗时口径）\n\n- ' + line('v1', ms1) + '\n- ' + line('v2', ms2) + '\n- v2 烧穿率：' + (burn2 * 100 / corpus.length).toFixed(1) + '%（对照现状基线 9.4%，v1 端同口径烧穿率未暴露、见规格 §8.3）\n';
+  fs.appendFileSync(path.join(ROOT, 'docs', 'rail-v2-AB报告.md'), rep2, 'utf8');
+}
