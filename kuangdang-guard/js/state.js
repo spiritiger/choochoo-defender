@@ -2052,8 +2052,23 @@ GS.recomputeRailsV2 = function () {
   }
   var F = KIT.computeF(U2);
   var bd = KIT.boundaryOf(U2, F, usable), B = bd.B, Bl = bd.Bl;
-  var H = KIT.helpersOf(U2, B, usable), A = new Uint8Array(N);
-  var hcount = 0, s1;
+  // ▍v2 补格 = 两层（v1 口径）∪ 洞邻格（2026-10-11 大王 k60 反馈轮补丁）：
+  //   贴着内部废墟墙（洞 F）的清空格直接算补格——铁轨允许贴内墙走。病根：
+  //   只按外轮廓距离铺层时，"贴内墙的紧通道"格距外轮廓可能 3~4 层深（k60 的
+  //   (3,9)：墙 (4,9)(4,10) 是洞不算外面，穷举 220 解被迫全走 2 列蛇形 40 步；
+  //   加洞邻 1 格后 38 步最优解直接在定档步命中）。盲区家族（档案 1.1/1.2）第
+  //   三次发作的根治方向是 A=U（P3），洞邻格是精准小补丁。
+  var H = KIT.helpersOf(U2, B, usable), s1;
+  for (s1 = 0; s1 < N; s1++) {
+    if (!U2[s1] || B[s1] || H[s1] || !usable[s1]) continue;
+    var sc1 = colOf(s1), sr1 = rowOf(s1);
+    for (var d1 = 0; d1 < 4; d1++) {
+      var nc1 = sc1 + RAIL_DC[d1], nr1 = sr1 + RAIL_DR[d1];
+      if (CFG.inBounds(nc1, nr1) && F[id(nc1, nr1)]) { H[s1] = 1; break; }
+    }
+  }
+  var A = new Uint8Array(N);
+  var hcount = 0;
   for (s1 = 0; s1 < N; s1++) { if (B[s1] || H[s1]) A[s1] = 1; if (H[s1]) hcount++; }
   var hCap = hcount < 16 ? hcount : 16;
 
@@ -2081,12 +2096,23 @@ GS.recomputeRailsV2 = function () {
     if (kiFixed !== null && kiFixed !== undefined) { lo = kiFixed; hi = kiFixed; }
     for (var ki = lo; ki <= hi; ki++) {
       if (bud.left < 0) return null;
-      var idx = KIT.closedTrail(B, Bl, H, A, bud, ki, 1, 0, tol, si, 2, false, 1) ||
-                KIT.closedTrail(B, Bl, H, A, bud, ki, 2, 8, tol, si, 2, false, 1);
-      if (idx) {
+      // ▍双试序（2026-10-11 大王 k60 反馈轮补丁）：直行优先（旧序）+ 拐弯优先（flip）
+      //   各跑一遍，取字典序最优。病根：旧序在"该早拐的拐点"上直行先命中即返回，
+      //   拐弯支里的更优解永远搜不到——k60 实锤：现解 40 步/38 格走 2 列蛇形，
+      //   而合法的 38 步/36 格走 3 列直下严格更优（覆盖/路口持平、格数 −2），
+      //   需要 (3,8) 处提前南拐。v0.9 的⑤支线早已为此加过 flip，主解一直没加。
+      var best = null, bestSt = null;
+      var combos = [[1, 0, false], [1, 0, true], [2, 8, false], [2, 8, true]];
+      for (var cb = 0; cb < combos.length; cb++) {
+        if (bud.left < 0) break;
+        var idx = KIT.closedTrail(B, Bl, H, A, bud, ki, combos[cb][0], combos[cb][1], tol, si, 2, combos[cb][2], 1);
+        if (!idx) continue;
         var rg = KIT.ringOf(idx);
-        if (KIT.enclosesCore(rg) && !ringHasBacktrackCell(rg)) return { ring: rg, ki: ki };
+        if (!KIT.enclosesCore(rg) || ringHasBacktrackCell(rg)) continue;
+        var st = KIT.ringStats(rg, B);
+        if (!bestSt || KIT.ringBetter(st, bestSt)) { best = rg; bestSt = st; }
       }
+      if (best) return { ring: best, ki: ki };
     }
     return null;
   }

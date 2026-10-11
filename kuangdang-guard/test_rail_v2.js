@@ -455,6 +455,27 @@ console.log('== rail-v2 正确性用例（' + MODE + '）==');
   });
 }
 
+// [V10] k60 质量超越（大王 2026-10-11 反馈：2 列蛇形应为 3 列直下）：
+//   现解（v1=v2 旧行为）40 步走 (2,8)~(2,11) 内格蛇形；正解 38 步走 (3,9)(3,10)
+//   （贴内墙格，覆盖/路口持平、格数 −2，字典序严格更优）。根因两层：补格两层
+//   口径漏了洞邻格 (3,9)；主解无拐弯试序。两处都已修，本用例锁行为。
+{
+  withSize(9, 13, () => {
+    setupFromRows(K60);
+    GS.railV2 = true;
+    GS.recomputeRails();
+    GS.railV2 = false;
+    const err = ringError(GS.railPath);
+    check('[V10a] k60 v2 合法', !err, err);
+    check('[V10b] k60 v2 ≤38 步（贴内墙直下）', GS.railPath.length <= 38, '步数 ' + GS.railPath.length);
+    const set = new Set(GS.railPath.map(key));
+    check('[V10c] k60 v2 走 3 列 ((3,9)(3,10) 上轨)', set.has('3,9') && set.has('3,10'));
+    check('[V10d] k60 v2 不走 2 列蛇形', !set.has('2,9') && !set.has('2,10'));
+    const v = visitMap(GS.railPath);
+    check('[V10e] k60 v2 重走格 ≤2（与 v1 持平）', crossCount(GS.railPath) <= 2, '重走 ' + crossCount(GS.railPath));
+  });
+}
+
 console.log('正确性：' + pass + ' 通过 / ' + fail + ' 失败');
 if (fail) { console.log(failures.join('\n')); process.exit(1); }
 
