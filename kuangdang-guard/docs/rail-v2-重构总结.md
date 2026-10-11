@@ -86,7 +86,7 @@
 - Worker 并行分片下 v2 合并正确性真浏览器复测
 - 结构清账（gate 遗迹清理等，转正后拿真实数据再做）
 
-## 九、提交索引（rail-v2 分支，tag rail-v1-baseline 之后）
+## 九、提交索引（已全部并入 main，rail-v2 分支合并后删除；tag rail-v1-baseline 为基线）
 
 ```
 a4823d2 修正 dusk 加速用例（49/49）           a9730ca 奖励时间加速（大王令）
@@ -101,6 +101,7 @@ dbf4cf7 怪兽真盘验证闭环（口袋补挂）           aaacf45 P6' 拍板�
 9a23cb0 H5b 往返/掉头禁令                      5796411 P2 对照可视化
 ba3a513 全量 A/B + 报告 + 规格实施状态         b122d13 rail-v2 主体落地
 4496b6a 机械拆解 makeRailSolverKit             f59861c 基线备份（tag rail-v1-baseline）
+77e7680 补删 5 个诊断脚本（79e1b6c 命令链中断致删除未执行，此为更正提交）
 ```
 
 ## 十、文档地图
