@@ -2457,30 +2457,38 @@ GS.recomputeRailsV2 = function () {
           for (var bi2 = 0; bi2 < Bl2.length; bi2++) Bloc[Bl2[bi2]] = 1;
           Aloc[id(M2.c, M2.r)] = 1;      // 挂点本身必须可走（走线从它出发）
           var bud2 = freshV2(150);
-          // ▍干净走线优先（2026-10-11 大王试玩盘反馈：左下口袋 (1,10)(1,11) 被首命中
-          //   走成两个 4 口真十字——路线是「绕南圈后原路倒回连接格再折东」。先试
-          //   禁重访（mv=1）：口袋内存在零重复走线时一步拿到（实测该盘存在：西圈→
-          //   南下 (1,12)→南圈反向→东侧，省 2 步消 2 十字）；没有才放开 mv=2。
-          var idx2 = KIT.closedTrail(Bloc, Bl2, Hloc, Aloc, bud2, 0, 1, 0, 0, 0, 2, false, 1) ||
-                       KIT.closedTrail(Bloc, Bl2, Hloc, Aloc, bud2, 0, 2, 8, 0, 0, 2, false, 1);
-          Aloc[id(M2.c, M2.r)] = 0;      // 试完还原，不影响下一候选的 Aloc 语义
-          if (!idx2) continue;
-          var walk = KIT.ringOf(idx2);          // 从 M2 出发的闭合小走线
-          // 拼接：环上 M2 之后插入 walk[1..]，再回到 M2（M2 变 T 字岔）
-          var out = [], spliced = false;
-          for (var ri = 0; ri < result.length; ri++) {
-            out.push(result[ri]);
-            if (result[ri] === M2) {
-              for (var wi = 1; wi < walk.length; wi++) out.push(walk[wi]);
-              out.push(M2);
-              spliced = true;
+          // ▍干净走线优先 + 容差阶梯（2026-10-11 大王撤销盘反馈）：mv1 干净优先、
+          //   mv2 放开；容差 0/4/8/…/口袋大小 逐档爬（每档切一片节点，防一档无解
+          //   证明独吞）。**命中≠采纳**：每档命中先试拼接，拼接闸（合法+H5b+覆盖
+          //   严格增）不过就继续爬下一档——顶档常命中「覆盖 0 的垃圾走线」，旧版
+          //   break 后整袋丢弃（28 格吊灯口袋里东侧 4 格的 6 步合法套环陪葬）。
+          var tolLadder = [0, 4, 8, 12, 16, 20, 24, 28, 40, 56, 80, 128];
+          var pbNodes = 1500000;   // 口袋通道总节点配额
+          for (var tl = 0; tl < tolLadder.length && pbNodes > 0 && !improved; tl++) {
+            var ptol = tolLadder[tl];
+            if (ptol > stillUncovered) ptol = stillUncovered;
+            var tierBud = { left: Math.min(pbNodes, 250000), deadline: bud2.deadline };
+            var idx2 = KIT.closedTrail(Bloc, Bl2, Hloc, Aloc, tierBud, 0, 1, 0, ptol, 0, 2, false, 1) ||
+                         KIT.closedTrail(Bloc, Bl2, Hloc, Aloc, tierBud, 0, 2, 8, ptol, 0, 2, false, 1);
+            pbNodes -= (Math.min(pbNodes, 250000) - Math.max(0, tierBud.left));
+            if (!idx2) { if (ptol >= stillUncovered) break; continue; }
+            var walk = KIT.ringOf(idx2);      // 从 M2 出发的闭合小走线
+            var out = [], spliced = false;
+            for (var ri = 0; ri < result.length; ri++) {
+              out.push(result[ri]);
+              if (result[ri] === M2) {
+                for (var wi = 1; wi < walk.length; wi++) out.push(walk[wi]);
+                out.push(M2);
+                spliced = true;
+              }
             }
+            if (spliced && KIT.ringOkFull(out) && !ringHasBacktrackCell(out) &&
+                KIT.ringStats(out, B).cov > KIT.ringStats(result, B).cov) {
+              result = out; improved = true;
+            }
+            if (ptol >= stillUncovered) break;
           }
-          if (!spliced) continue;
-          if (KIT.ringOkFull(out) && !ringHasBacktrackCell(out) &&
-              KIT.ringStats(out, B).cov > KIT.ringStats(result, B).cov) {
-            result = out; improved = true;
-          }
+          Aloc[id(M2.c, M2.r)] = 0;      // 试完还原，不影响下一候选的 Aloc 语义
         }
       }
     }
