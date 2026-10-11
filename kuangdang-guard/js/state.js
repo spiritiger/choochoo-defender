@@ -1873,7 +1873,7 @@ GS.railProbeText = function () {
 //     直接沿用现环（跳过全部搜索）。仅全量档判定与写入（快速档的烧穿不具代表性）。
 //   ▍开关（规格 §8.4）：GS.railV2 默认 false = v1 链路行为零变化。
 // ============================================================================
-GS.railV2 = false;
+GS.railV2 = true;    // 转正（2026-10-11 大王令）：rail-v2 为默认求解器。回退开关 = 控制台 GS.railV2 = false（v1 链冻结保留为回退路径，test_rail.js 63 用例持续锁其行为）
 GS.__v2cache = null;      // 烧穿省略闸缓存 {fp, railLen}（仅全量档写入）
 GS.__v2testNodes = 0;     // 测试旋钮：非 0 时主解/裁判节点预算被压到该值（确定性烧穿用例）
 GS.__v2last = null;       // 最近一次 v2 求解的观测数据（A/B 报告与测试用）
@@ -2005,7 +2005,12 @@ GS.recomputeRailsV2 = function () {
   var prev = prevRingValid();
 
   // —— 烧穿省略闸：同指纹 + 上轮已完成全量求解 + 输出字段未被别路覆盖 ⇒ 原样保留 ——
-  if (!GS.railFast && GS.__v2cache && GS.__v2cache.fp === fp && prev &&
+  // ⚠️ 闸门契约补全（2026-10-11 转正轮 test_rules 实锤）：「同指纹已解过 ⇒ 输出
+  //   仍在」必须包含站台已解——newGame 不清 railPath 且开局盘指纹与上局末态相同
+  //   时（都只剩 3×5 内区可铺），旧闸误跳过 ⇒ 站台 null ⇒ 发车/夜晚全灭。
+  //   GS.station 为空即输出不完整，不跳，走全量。
+  var stComplete = (typeof STATION === 'undefined') || !!GS.station;   // 环境感知：没加载站台模块的沙箱不适用此闸
+  if (!GS.railFast && stComplete && GS.__v2cache && GS.__v2cache.fp === fp && prev &&
       GS.__v2cache.railLen === GS.railPath.length) {
     GS.__v2last = { provenance: 'skip', ms: Date.now() - __t0, fp: fp };
     if (GS.railProbeOn) {

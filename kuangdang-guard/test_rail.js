@@ -41,6 +41,7 @@ for (const f of ['js/config/map.js', 'js/state.js', 'js/solver-async.js', 'js/en
 }
 const CFG = sandbox.CFG, GS = sandbox.GS, ENG = sandbox.ENG;   // ENG 供 [11] 的相接口径断言用
 GS.debugNoDeadline = true;   // 测试确定性：跳过 400ms 墙钟（防重负载下偶发掐断求解）
+GS.railV2 = false;   // 转正后默认是 rail-v2；本套件显式锁 v1 回退链（63 用例 = 回退路径的行为保证）
 
 // 地图尺寸与镇中心坐标（按 CFG 派生）。历史钉死盘面（9×13 / 11×15 截图还原）用
 // withSize(9,13) 显式钉住原生尺寸运行——几何与断言不随 CFG 尺寸变化失效

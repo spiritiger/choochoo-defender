@@ -21,7 +21,7 @@
 
   var cv = document.querySelector('canvas');
   if (!cv) { console.warn('[rail-v2] 未找到画布'); return; }
-  GS.railV2 = true;
+  GS.railV2 = true;   // 转正后本行冗余但保留（防止回退开关状态下粘贴本工具）
 
   function stats() {
     var ring = GS.railPath || [], m = {}, i;

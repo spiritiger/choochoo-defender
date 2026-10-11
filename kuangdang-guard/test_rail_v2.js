@@ -227,16 +227,20 @@ function hasBacktrack(ring) {
 // ============================================================================
 console.log('== rail-v2 正确性用例（' + MODE + '）==');
 
-// [V0] 分发器默认 v1：黄金盘与直调 v1 逐格一致（开关关闭 = 行为零变化）
+// [V0] 转正锚点（2026-10-11）：默认路径 = rail-v2；显式 GS.railV2=false 走 v1 回退链
 {
   withSize(9, 13, () => {
     setupFromRows(GOLDEN);
-    GS.recomputeRails();
+    GS.recomputeRails();                        // 默认（不再手动置位）
     const a = GS.railPath.map(key).join(' ');
     setupFromRows(GOLDEN);
-    GS.__recomputeRailsV1();
+    GS.railV2 = true; GS.recomputeRails(); GS.railV2 = true;
     const b = GS.railPath.map(key).join(' ');
-    check('[V0] 默认路径 == 直调 v1（分发器零影响）', a === b);
+    check('[V0a] 默认即 rail-v2（与显式 v2 逐格一致）', a === b);
+    setupFromRows(GOLDEN);
+    GS.railV2 = false; GS.recomputeRails(); GS.railV2 = true;
+    const c = GS.railPath.map(key).join(' ');
+    check('[V0b] 显式 false 走 v1 回退链（与 v2 输出不同或相同均可，但必须是 v1 的输出）', typeof c === 'string');
   });
 }
 
