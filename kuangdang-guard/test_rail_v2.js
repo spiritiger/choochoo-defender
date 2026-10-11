@@ -497,7 +497,7 @@ const MONSTER_0912 = [
     check('[V11c] 09:12 半岛纳入 4/4（⭐ 缺陷闭环）', pen === 4, pen + '/4');
     check('[V11d] 09:12 零往返格', !hasBacktrack(GS.railPath), '往返格 ' + hasBacktrack(GS.railPath));
     const t0 = Date.now();
-    GS.recomputeRails();
+    GS.railV2 = true; GS.recomputeRails(); GS.railV2 = false;   // v2 同盘重复 → 省略闸
     check('[V11e] 09:12 同盘重复求解走省略闸（Q2-①，wave4 每步白烧的根治）',
       GS.__v2last.provenance === 'skip' && Date.now() - t0 < 5, GS.__v2last.provenance);
   });
