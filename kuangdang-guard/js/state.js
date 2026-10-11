@@ -2158,6 +2158,113 @@ GS.recomputeRailsV2 = function () {
   }
   if (!ring && bottom) { ring = bottom; ringSt = KIT.ringStats(bottom, B); prov = 'core'; }
 
+  // —— 口袋补挂（2026-10-11 怪兽真盘复刻补丁；⑤支线的 v2 化）：主搜索在巨型盘上
+  //    烧穿前常摸不到"贴边死角"的往返支线（09:12 真盘实锤：半岛 0/4、cov 48/53）。
+  //    对每个未覆盖轮廓口袋，用独立小预算在「口袋∪挂点」的局部小图上搜一条
+  //    从挂点出发、盖满口袋的闭合小走线，拼接进主环（挂点与口袋口各成 T 字岔）。
+  //    采纳铁闸 = 拼接环合法（含 H5b 零往返/掉头）且覆盖数严格增加——⑤ 的
+  //    "严格更优才替换"语义原样保留。railFast 预览跳过（同 v1 ⑤）。
+  function pocketAttach(ringIn) {
+    if (!ringIn || ringIn.length < 8 || GS.railFast) return ringIn;
+    var onRing = {}, vis2 = {}, pi;
+    for (pi = 0; pi < ringIn.length; pi++) {
+      var pk = ringIn[pi].c + ',' + ringIn[pi].r;
+      onRing[pk] = 1; vis2[pk] = (vis2[pk] || 0) + 1;
+    }
+    var uncovered = [];
+    for (pi = 0; pi < Bl.length; pi++) if (!onRing[colOf(Bl[pi]) + ',' + rowOf(Bl[pi])]) uncovered.push(Bl[pi]);
+    if (!uncovered.length) return ringIn;
+    // 未覆盖轮廓格按邻接连通分组成口袋
+    var seenP = new Uint8Array(N), pockets = [], ui, uj;
+    for (ui = 0; ui < uncovered.length; ui++) {
+      var s0 = uncovered[ui];
+      if (seenP[s0]) continue;
+      var st = [s0], comp = [];
+      seenP[s0] = 1;
+      while (st.length) {
+        var p = st.pop(), pc2 = colOf(p), pr2 = rowOf(p);
+        comp.push(p);
+        for (var pd = 0; pd < 4; pd++) {
+          var qc = pc2 + RAIL_DC[pd], qr = pr2 + RAIL_DR[pd];
+          if (!CFG.inBounds(qc, qr)) continue;
+          var q = id(qc, qr);
+          if (B[q] && !onRing[qc + ',' + qr] && !seenP[q]) { seenP[q] = 1; st.push(q); }
+        }
+      }
+      pockets.push(comp);
+    }
+    var improved = true, result = ringIn;
+    while (improved) {
+      improved = false;
+      onRing = {}; vis2 = {};
+      for (pi = 0; pi < result.length; pi++) {
+        var pk2 = result[pi].c + ',' + result[pi].r;
+        onRing[pk2] = 1; vis2[pk2] = (vis2[pk2] || 0) + 1;
+      }
+      for (var po = 0; po < pockets.length && !improved; po++) {
+        var comp2 = pockets[po];
+        if (!comp2.length) continue;
+        var stillUncovered = 0;
+        for (uj = 0; uj < comp2.length; uj++) if (!onRing[colOf(comp2[uj]) + ',' + rowOf(comp2[uj])]) stillUncovered++;
+        if (!stillUncovered) continue;
+        // 局部图 A_loc = 口袋 ∪ 邻接的可用非环格（给走线留余地）∪ 挂点 M（环上单访格）
+        var Aloc = new Uint8Array(N), Blloc = [], mi, mj;
+        for (uj = 0; uj < comp2.length; uj++) { Aloc[comp2[uj]] = 1; Blloc.push(comp2[uj]); }
+        for (uj = 0; uj < comp2.length; uj++) {
+          var zc = colOf(comp2[uj]), zr = rowOf(comp2[uj]);
+          for (var zd = 0; zd < 4; zd++) {
+            var znc = zc + RAIL_DC[zd], znr = zr + RAIL_DR[zd];
+            if (!CFG.inBounds(znc, znr)) continue;
+            var zn = id(znc, znr);
+            if (usable[zn] && !onRing[znc + ',' + znr] && !Aloc[zn]) { Aloc[zn] = 1; Blloc.push(zn); }
+          }
+        }
+        // 挂点候选：环上单访格、与 A_loc 相邻
+        var mCands = [];
+        for (mi = 0; mi < result.length; mi++) {
+          var M = result[mi];
+          if (vis2[M.c + ',' + M.r] !== 1) continue;
+          var ok = false;
+          for (var md = 0; md < 4 && !ok; md++) {
+            var mc = M.c + RAIL_DC[md], mr = M.r + RAIL_DR[md];
+            if (CFG.inBounds(mc, mr) && Aloc[id(mc, mr)]) ok = true;
+          }
+          if (ok) mCands.push(M);
+        }
+        for (mj = 0; mj < mCands.length && !improved; mj++) {
+          var M2 = mCands[mj];
+          var Bl2 = [id(M2.c, M2.r)].concat(Blloc);
+          var Bloc = new Uint8Array(N), Hloc = new Uint8Array(N);
+          for (var bi2 = 0; bi2 < Bl2.length; bi2++) Bloc[Bl2[bi2]] = 1;
+          Aloc[id(M2.c, M2.r)] = 1;      // 挂点本身必须可走（走线从它出发）
+          var bud2 = freshV2(150);
+          var idx2 = KIT.closedTrail(Bloc, Bl2, Hloc, Aloc, bud2, 0, 2, 8, 0, 0, 2, false, 1);
+          Aloc[id(M2.c, M2.r)] = 0;      // 试完还原，不影响下一候选的 Aloc 语义
+          if (!idx2) continue;
+          var walk = KIT.ringOf(idx2);          // 从 M2 出发的闭合小走线
+          // 拼接：环上 M2 之后插入 walk[1..]，再回到 M2（M2 变 T 字岔）
+          var out = [], spliced = false;
+          for (var ri = 0; ri < result.length; ri++) {
+            out.push(result[ri]);
+            if (result[ri] === M2) {
+              for (var wi = 1; wi < walk.length; wi++) out.push(walk[wi]);
+              out.push(M2);
+              spliced = true;
+            }
+          }
+          if (!spliced) continue;
+          if (KIT.ringOkFull(out) && !ringHasBacktrackCell(out) &&
+              KIT.ringStats(out, B).cov > KIT.ringStats(result, B).cov) {
+            result = out; improved = true;
+          }
+        }
+      }
+    }
+    return result;
+  }
+  var ringPA = pocketAttach(ring);
+  if (ringPA && ringPA !== ring) { ring = ringPA; ringSt = KIT.ringStats(ring, B); prov = 'pocket+' + prov; }
+
   // —— 后处理（D5；快速档跳过，与 v1 同哲学）——
   if (!GS.railFast && ring && ring.length >= 4) {
     ring = KIT.trimDetours(ring, B);

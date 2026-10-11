@@ -476,6 +476,33 @@ console.log('== rail-v2 正确性用例（' + MODE + '）==');
   });
 }
 
+// [V11] 怪兽真盘 09:12（大王 2026-10-10 导出、2026-10-11 转发）：
+//   病史：v1 冷解 rail(0)（烧穿 1s）、半岛 {(7,3),(8,3),(7,4),(8,4)} 永不上轨（⭐ 正确性缺陷）。
+//   v2 必须给出合法大环 + 口袋补挂收编半岛 + 零往返格 + 同盘重复求解走省略闸。
+const MONSTER_0912 = [
+  '...G##.G#', 'G...##..#', '#..#.G.G#', '#..#..#..', '#G....#.G',
+  '..#.T.###', '..#.C.###', 'G.#.T.##g', '###...###', '##..#####',
+  'g#G.G...#', '##.....G#', '##G.#####'];
+{
+  withSize(9, 13, () => {
+    setupFromRows(MONSTER_0912);
+    GS.railV2 = true;
+    GS.recomputeRails();
+    GS.railV2 = false;
+    const err = ringError(GS.railPath);
+    check('[V11a] 09:12 冷解合法（v1 同盘 rail(0)）', !err, err);
+    check('[V11b] 09:12 冷解有大环（≥60 步）', GS.railPath.length >= 60, '步数 ' + GS.railPath.length);
+    const set = new Set(GS.railPath.map(key));
+    const pen = ['7,3', '8,3', '7,4', '8,4'].filter(k => set.has(k)).length;
+    check('[V11c] 09:12 半岛纳入 4/4（⭐ 缺陷闭环）', pen === 4, pen + '/4');
+    check('[V11d] 09:12 零往返格', !hasBacktrack(GS.railPath), '往返格 ' + hasBacktrack(GS.railPath));
+    const t0 = Date.now();
+    GS.recomputeRails();
+    check('[V11e] 09:12 同盘重复求解走省略闸（Q2-①，wave4 每步白烧的根治）',
+      GS.__v2last.provenance === 'skip' && Date.now() - t0 < 5, GS.__v2last.provenance);
+  });
+}
+
 console.log('正确性：' + pass + ' 通过 / ' + fail + ' 失败');
 if (fail) { console.log(failures.join('\n')); process.exit(1); }
 
