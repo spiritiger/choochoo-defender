@@ -2096,13 +2096,12 @@ GS.recomputeRailsV2 = function () {
     if (kiFixed !== null && kiFixed !== undefined) { lo = kiFixed; hi = kiFixed; }
     for (var ki = lo; ki <= hi; ki++) {
       if (bud.left < 0) return null;
-      // ▍双试序（2026-10-11 大王 k60 反馈轮补丁）：直行优先（旧序）+ 拐弯优先（flip）
-      //   各跑一遍，取字典序最优。病根：旧序在"该早拐的拐点"上直行先命中即返回，
-      //   拐弯支里的更优解永远搜不到——k60 实锤：现解 40 步/38 格走 2 列蛇形，
-      //   而合法的 38 步/36 格走 3 列直下严格更优（覆盖/路口持平、格数 −2），
-      //   需要 (3,8) 处提前南拐。v0.9 的⑤支线早已为此加过 flip，主解一直没加。
+      // ▍试序组合（2026-10-11 大王 k60 反馈轮）：mv1 干净解优先 → mv2(×8)。
+      //   k60 的 38 步最优路由「直行试序 + 洞邻补格」即可命中（flip 双试序曾试过，
+      //   对该盘无增量且 84 盘真墙钟烧穿率 9.4%→17.2%——P5 耗时不劣的红线不放），
+      //   故不启用 flip；将来某盘实证需要早拐支时再按证伪清单流程 A/B 加回。
       var best = null, bestSt = null;
-      var combos = [[1, 0, false], [1, 0, true], [2, 8, false], [2, 8, true]];
+      var combos = [[1, 0, false], [2, 8, false]];
       for (var cb = 0; cb < combos.length; cb++) {
         if (bud.left < 0) break;
         var idx = KIT.closedTrail(B, Bl, H, A, bud, ki, combos[cb][0], combos[cb][1], tol, si, 2, combos[cb][2], 1);
