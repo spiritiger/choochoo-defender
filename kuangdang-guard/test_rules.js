@@ -253,6 +253,7 @@ CLOCK.toDusk(); GS.foes = []; ENG.boost = 0;
 for (let s = 0; s < 2; s++) ENG.update(0.5);
 const duskRose = ENG.boost;               // dusk 机制仍在加速（提 Ramp）
 for (let s = 0; s < 40 && CLOCK.isDusk(); s++) ENG.update(0.5);   // 跑完圈 → 停靠回白天
+ENG.update(0.5);                          // 回白天后的第一帧：boost 归零
 check('dusk 加速：机制不变（先加速，停靠回白天后归零）',
   duskRose > 0 && ENG.boost === 0 && !CLOCK.isDusk(),
   'duskRose=' + duskRose + ' end=' + ENG.boost + ' phase=' + CLOCK.phase);
