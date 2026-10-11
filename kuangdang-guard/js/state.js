@@ -1886,6 +1886,53 @@ GS.__v2last = null;       // 最近一次 v2 求解的观测数据（A/B 报告�
 //   ⚠️ 只查①会漏（掉头格可能只走一次）；只查②会漏①——对照页反馈轮实锤：
 //   v2 曾在单格脖子盘上产出 ...(5,5)→(5,6)→(6,6)→(5,6)→(5,7)... 的"戳一下就退"解。
 //   v1 链路不受此禁令约束（legacy 冻结；k60 现行环的双走边两端均为 T 字岔，合规）。
+// ▍十字对重接（2026-10-11 大王试玩盘反馈）：环上相邻两格 A、B 各被走 2 次、
+//   环序呈 A₁…B₁…[B₂ A₂]（B 的第 2 次紧跟 A 的第 2 次）且两格皆 4 口真十字时，
+//   把 A₁→B₁ 之间与 B₁→B₂ 之间的两条通道重接：A₁…P1…B₁ → 反向 P2 → A₂ 的后继，
+//   丢弃 A₂（大王手工指出的左下口袋走法：西圈→南下绕南圈反向→接东侧，
+//   省 2 步、消 2 个真十字、覆盖不变）。三道闸：全量合法性+H5b、覆盖不降、
+//   十字严格减少。找不到该形态或闸不过则原样返回。
+function ringDecrossPair(ringIn, KIT, B) {
+  var seq = ringIn, round, i, n;
+  for (round = 0; round < 8; round++) {
+    n = seq.length; if (n < 8) break;
+    var vis = {};
+    for (i = 0; i < n; i++) { var k = seq[i].c + ',' + seq[i].r; (vis[k] = vis[k] || []).push(i); }
+    var keys = Object.keys(vis).filter(function (k) { return vis[k].length === 2; });
+    var applied = false;
+    for (var ka = 0; ka < keys.length && !applied; ka++) {
+      for (var kb = 0; kb < keys.length && !applied; kb++) {
+        if (ka === kb) continue;
+        var pa = keys[ka].split(','), pb = keys[kb].split(',');
+        if (Math.abs(+pa[0] - +pb[0]) + Math.abs(+pa[1] - +pb[1]) !== 1) continue;   // 两格相邻
+        for (var ai2 = 0; ai2 < 2 && !applied; ai2++) {
+          for (var bj2 = 0; bj2 < 2 && !applied; bj2++) {
+            // A = keys[ka]（其第 2 次访问在后），B = keys[kb]；环序 A₁…B₁…B₂A₂ 无回绕
+            var A = vis[keys[ka]], Bv = vis[keys[kb]];
+            var a2i = A[ai2], a1i = A[1 - ai2];
+            var b2i = Bv[bj2], b1i = Bv[1 - bj2];
+            if ((b2i + 1) % n !== a2i) continue;
+            if (!(a1i < b1i && b1i < b2i && b2i < a2i)) continue;
+            var succ = seq[(a2i + 1) % n];
+            var P1 = seq.slice(a1i + 1, b1i);                    // A₁→B₁ 之间
+            var P2 = seq.slice(b1i + 1, b2i);                    // B₁→B₂ 之间（内部通道）
+            if (!P2.length) continue;
+            var rp2 = P2.slice().reverse();
+            if (Math.abs(rp2[rp2.length - 1].c - succ.c) + Math.abs(rp2[rp2.length - 1].r - succ.r) !== 1) continue;
+            var out = seq.slice(0, a1i + 1).concat(P1, [seq[b1i]], rp2, seq.slice(a2i + 1));
+            if (!KIT.ringOkFull(out) || ringHasBacktrackCell(out)) continue;
+            var so = KIT.ringStats(out, B), ss = KIT.ringStats(seq, B);
+            if (so.cov < ss.cov || so.cross >= ss.cross) continue;
+            seq = out; applied = true;
+          }
+        }
+      }
+    }
+    if (!applied) break;
+  }
+  return seq;
+}
+
 function ringHasBacktrackCell(ring) {
   var L = ring.length, i, visits = {};
   for (i = 0; i < L; i++) {
@@ -2358,17 +2405,38 @@ GS.recomputeRailsV2 = function () {
         var stillUncovered = 0;
         for (uj = 0; uj < comp2.length; uj++) if (!onRing[colOf(comp2[uj]) + ',' + rowOf(comp2[uj])]) stillUncovered++;
         if (!stillUncovered) continue;
-        // 局部图 A_loc = 口袋 ∪ 邻接的可用非环格（给走线留余地）∪ 挂点 M（环上单访格）
+        // 局部图 A_loc = 口袋（必须覆盖）∪ 连接格（可走、非必须）∪ 挂点 M（环上单访格）。
+        //   ▍连接格语义修正（2026-10-11 大王试玩盘反馈轮）：旧版把邻接可用格也塞进
+        //   必须覆盖清单——口袋旁挂一个死端格（如 (1,4)）时，任何走线都被迫进去掉头，
+        //   整袋被 H5b 拒收，4 个本可合法绕环的格子陪葬。修法：连接格只进 A_loc 不进
+        //   覆盖清单，且剔除本地死端连接格（在「口袋∪挂点∪连接格」里邻居 <2 的——
+        //   它不提供任何通路，只会诱导掉头走线）。
         var Aloc = new Uint8Array(N), Blloc = [], mi, mj;
         for (uj = 0; uj < comp2.length; uj++) { Aloc[comp2[uj]] = 1; Blloc.push(comp2[uj]); }
+        var connCand = [];
         for (uj = 0; uj < comp2.length; uj++) {
           var zc = colOf(comp2[uj]), zr = rowOf(comp2[uj]);
           for (var zd = 0; zd < 4; zd++) {
             var znc = zc + RAIL_DC[zd], znr = zr + RAIL_DR[zd];
             if (!CFG.inBounds(znc, znr)) continue;
             var zn = id(znc, znr);
-            if (usable[zn] && !onRing[znc + ',' + znr] && !Aloc[zn]) { Aloc[zn] = 1; Blloc.push(zn); }
+            if (usable[zn] && !onRing[znc + ',' + znr] && !Aloc[zn]) { Aloc[zn] = 1; connCand.push(zn); }
           }
+        }
+        // 剔除本地死端连接格（迭代到稳定：叶子上摘）
+        for (var cpass = 0; cpass < 8; cpass++) {
+          var dropped = 0;
+          for (var ci3 = 0; ci3 < connCand.length; ci3++) {
+            var zn2 = connCand[ci3];
+            if (!Aloc[zn2]) continue;
+            var zc2 = colOf(zn2), zr2 = rowOf(zn2), nbA = 0;
+            for (var zd2 = 0; zd2 < 4; zd2++) {
+              var znc2 = zc2 + RAIL_DC[zd2], znr2 = zr2 + RAIL_DR[zd2];
+              if (CFG.inBounds(znc2, znr2) && Aloc[id(znc2, znr2)] && id(znc2, znr2) !== zn2) nbA++;
+            }
+            if (nbA <= 1) { Aloc[zn2] = 0; dropped++; }   // 悬挂叶/孤立 → 摘掉
+          }
+          if (!dropped) break;
         }
         // 挂点候选：环上单访格、与 A_loc 相邻
         var mCands = [];
@@ -2389,7 +2457,12 @@ GS.recomputeRailsV2 = function () {
           for (var bi2 = 0; bi2 < Bl2.length; bi2++) Bloc[Bl2[bi2]] = 1;
           Aloc[id(M2.c, M2.r)] = 1;      // 挂点本身必须可走（走线从它出发）
           var bud2 = freshV2(150);
-          var idx2 = KIT.closedTrail(Bloc, Bl2, Hloc, Aloc, bud2, 0, 2, 8, 0, 0, 2, false, 1);
+          // ▍干净走线优先（2026-10-11 大王试玩盘反馈：左下口袋 (1,10)(1,11) 被首命中
+          //   走成两个 4 口真十字——路线是「绕南圈后原路倒回连接格再折东」。先试
+          //   禁重访（mv=1）：口袋内存在零重复走线时一步拿到（实测该盘存在：西圈→
+          //   南下 (1,12)→南圈反向→东侧，省 2 步消 2 十字）；没有才放开 mv=2。
+          var idx2 = KIT.closedTrail(Bloc, Bl2, Hloc, Aloc, bud2, 0, 1, 0, 0, 0, 2, false, 1) ||
+                       KIT.closedTrail(Bloc, Bl2, Hloc, Aloc, bud2, 0, 2, 8, 0, 0, 2, false, 1);
           Aloc[id(M2.c, M2.r)] = 0;      // 试完还原，不影响下一候选的 Aloc 语义
           if (!idx2) continue;
           var walk = KIT.ringOf(idx2);          // 从 M2 出发的闭合小走线
@@ -2421,6 +2494,10 @@ GS.recomputeRailsV2 = function () {
     ring = KIT.trimDetours(ring, B);
     ring = GS.straightenRing(ring);
     ring = KIT.reweaveTwins(ring, B);
+    // 十字对重接（2026-10-11 大王试玩盘反馈）：相邻双 4 口真十字的「连接格回溯」
+    //   形态重接（西圈→反向南圈→东侧式），存量环（如逐步演化保留下来的）自愈。
+    //   v1 链不接（冻结）；三道闸：合法性+H5b / 覆盖不降 / 十字严格减。
+    ring = ringDecrossPair(ring, KIT, B);
   }
 
   // —— 输出（与 v1 完全同一套 7 字段 + 站台重选）——
