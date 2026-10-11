@@ -2096,55 +2096,92 @@ GS.recomputeRailsV2 = function () {
   //       预算内任意时刻手里都有合法环；
   //     · 命中后 bisect 精化最小 ki，再跑全起点锦标赛（分片 + 双闸早停，不变）。
   //   快速车道/双车道方案作废（v1 历史形态；大王"算法角度有没有解"之问的正解）。
-  function solveAt(si, tol, kiFixed) {
-    var lo = 0, hi = hCap;
-    if (kiFixed !== null && kiFixed !== undefined) { lo = kiFixed; hi = kiFixed; }
-    for (var ki = lo; ki <= hi; ki++) {
-      if (bud.left < 0) return null;
-      // mv1 干净解优先，命中即短路（v1 同款 || 语义——点内不重复付 mv2 的钱；
-      //   择优交给跨起点/跨档锦标赛，别在探测点里做）
-      var idx = KIT.closedTrail(B, Bl, H, A, bud, ki, 1, 0, tol, si, 2, false, 1) ||
-                KIT.closedTrail(B, Bl, H, A, bud, ki, 2, 8, tol, si, 2, false, 1);
-      if (idx) {
-        var rg = KIT.ringOf(idx);
-        if (KIT.enclosesCore(rg) && !ringHasBacktrackCell(rg)) return { ring: rg, ki: ki };
-      }
+  // ▍探测点三态（2026-10-11 reg127 实锤补丁）：st=0 无解（下界）/ st=1 干净环 /
+  //   st=2 脏环（有解但首命中带掉头/往返，被 H5b 拒——**仍是可行上界**，不能当无解，
+  //   否则单调跳步会在高补格档被脏首命中骗成"整档无解"，烧穿落保底——reg127：
+  //   v1 线性爬 2.1s 满覆盖 vs v2 gallop 6s 颗粒无收）。脏命中先试 flip 换半搜索空间。
+  function probePoint(si, tol, ki, bd) {
+    var bb = bd || bud;
+    var idx = KIT.closedTrail(B, Bl, H, A, bb, ki, 1, 0, tol, si, 2, false, 0);
+    if (idx) {
+      var rg0 = KIT.ringOf(idx);
+      if (KIT.enclosesCore(rg0) && !ringHasBacktrackCell(rg0)) return { st: 1, ring: rg0, ki: ki };
     }
-    return null;
+    if (bb.left < 0) return { st: 0 };
+    var idx2 = KIT.closedTrail(B, Bl, H, A, bb, ki, 2, 8, tol, si, 2, false, 0);
+    if (idx2) {
+      var rg2 = KIT.ringOf(idx2);
+      if (KIT.enclosesCore(rg2) && !ringHasBacktrackCell(rg2)) return { st: 1, ring: rg2, ki: ki };
+      // 脏首命中（掉头/往返）：先 flip 换半搜索空间赌干净；赌不到把脏环带回交
+      // 「洗环通道」——v1 的 ⑥⑦ 后处理本来就是干这个的（reg127 实锤：v1 兜底
+      // 拿到 58 步脏环洗成 48 步干净环；在探测口枪毙脏环 = 把原料当垃圾）
+      var idx3 = bb.left >= 0 ? KIT.closedTrail(B, Bl, H, A, bb, ki, 2, 8, tol, si, 2, true, 0) : null;
+      if (idx3) {
+        var rg3 = KIT.ringOf(idx3);
+        if (KIT.enclosesCore(rg3) && !ringHasBacktrackCell(rg3)) return { st: 1, ring: rg3, ki: ki };
+      }
+      return { st: 2, ring: rg2, ki: ki };
+    }
+    return { st: 0 };
   }
-  function absorb(h) {   // anytime 择优：可行探测的环只进不出（tolStar/hitKi 由调用方管理）
+  var dirtyBest = null, dirtyBestSt = null;
+  function absorb(h) {   // anytime 择优（干净环只进不出；脏环另池记录，供洗环通道）
     if (!h) return false;
+    if (h.st === 2) {
+      var ds = KIT.ringStats(h.ring, B);
+      if (!dirtyBest || KIT.ringBetter(ds, dirtyBestSt)) { dirtyBest = h.ring; dirtyBestSt = ds; }
+      return false;
+    }
+    if (h.st !== 1) return false;
     var st = KIT.ringStats(h.ring, B);
     if (!main || KIT.ringBetter(st, mainSt)) { main = h.ring; mainSt = st; hitKi = h.ki; return true; }
     return false;
   }
 
   // ① 乐观探测：最紧档直接命中（常规盘一步收工，与旧版开销持平）
-  var opt = solveAt(0, 0, 0);
-  if (opt) { absorb(opt); tolStar = 0; hitKi = 0; }
-  // ② 跳步定档：tol 逐档（便宜→贵），档内 ki 按 2 的幂跳步探可行性，命中后 bisect 精化
+  var opt = probePoint(0, 0, 0);
+  if (opt.st === 1) { absorb(opt); tolStar = 0; hitKi = 0; }
+  // ② 跳步定档：tol 逐档，档内 ki 按 2 的幂跳步；三态处理（无解=下界、干净=命中、
+  //    脏=可行上界→向下二分找干净档；全脏也定档，让 ③ 的全起点去找干净环）
+  var dirtyOnly = false;
   if (!main) {
     var steps = [0, 1, 2, 4, 8, 16, 32, 64, 128], tp, kp;
     outer:
     for (tp = 0; tp <= 6; tp++) {
       if (bud.left < 0) break;
-      // 去重：乐观探测已证 (tol=0, ki=0) 不可行，tp=0 时跳步从 1 起、prev=0
       var prevInfeasible = (tp === 0) ? 0 : -1;
       for (kp = 0; kp < steps.length; kp++) {
         var ki2 = steps[kp];
         if (ki2 > hCap) ki2 = hCap;
         if (ki2 <= prevInfeasible) continue;
-        var h1 = solveAt(0, tp, ki2);
-        if (h1) {
-          absorb(h1);
-          // bisect (prevInfeasible, ki2] 精化最小可行 ki
-          var aLo = prevInfeasible + 1, aHi = ki2;
-          while (aLo < aHi && bud.left >= 0) {
-            var aMid = (aLo + aHi) >> 1;
-            var hb = solveAt(0, tp, aMid);
-            if (hb) { absorb(hb); aHi = aMid; } else aLo = aMid + 1;
+        var pp = probePoint(0, tp, ki2);
+        if (pp.st === 1) {
+          absorb(pp);
+          var bLo = prevInfeasible + 1, bHi = ki2, clean = -1;
+          while (bLo < bHi && bud.left >= 0) {
+            var bMid = (bLo + bHi) >> 1;
+            var pb = probePoint(0, tp, bMid);
+            absorb(pb);
+            if (pb.st === 1) { clean = bMid; bHi = bMid; }
+            else if (pb.st === 2) bHi = bMid;
+            else bLo = bMid + 1;
           }
-          tolStar = tp; hitKi = aHi;
+          tolStar = tp; hitKi = (clean >= 0 ? clean : ki2);
+          break outer;
+        }
+        if (pp.st === 2) {
+          absorb(pp);
+          var dLo = prevInfeasible + 1, dHi = ki2, dClean = -1;
+          while (dLo < dHi && bud.left >= 0) {
+            var dMid = (dLo + dHi) >> 1;
+            var pd = probePoint(0, tp, dMid);
+            absorb(pd);
+            if (pd.st === 1) { dClean = dMid; dHi = dMid; }
+            else if (pd.st === 2) dHi = dMid;
+            else dLo = dMid + 1;
+          }
+          tolStar = tp; hitKi = (dClean >= 0 ? dClean : dLo);
+          if (dClean < 0) dirtyOnly = true;   // 该档只有脏解：定档进 ③，让别的起点找干净环
           break outer;
         }
         prevInfeasible = ki2;
@@ -2152,20 +2189,67 @@ GS.recomputeRailsV2 = function () {
       }
     }
   }
-  // ③ 择优：定档位全起点锦标赛（分片跳格 + 双闸早停，结构不变）
-  if (main && tolStar >= 0) {
+  // ③b 兜底降档扫描（主排程烧穿仍无干净环时；reg127 实锤补丁）：
+  //    **升档要付"无解证明"（指数阶），降档只付"命中"（毫秒级）**——从最宽档往下
+  //    找首个干净命中，从不撞证明墙。独立小预算（150ms/150 万节点），只在烧穿盘
+  //    触发（~10%），正常盘零开销。这不是 v1 双车道的复活：它不依赖主排程的任何
+  //    结论，只是同一单调性洞察的另一面（v1 ② 的正确内核，anytime 语义收编）。
+  if (!main && bud.left < 0) {
+    var dbN = GS.__v2testNodes ? GS.__v2testNodes : V2_NODES;
+    var db = { left: dbN, deadline: (GS.debugNoDeadline || GS.forceRefresh) ? 1e15 : Date.now() + 150 };
+    for (var dt = 6; dt >= 0 && db.left >= 0 && !main; dt--) {   // 宽档降序：可行命中便宜先落袋，无解证明贵的垫后
+      for (var dk = hCap; dk >= 0; dk--) {
+        var dp = probePoint(0, dt, dk, db);
+        absorb(dp);
+        if (dp.st === 1) { tolStar = dt; hitKi = dk; dirtyOnly = false; break; }
+        if (dp.st === 0) break;   // 高档都无解（罕见）→ 换 tol
+      }
+    }
+  }
+  // ④ 择优：定档位全起点锦标赛（分片跳格 + 双闸早停；dirtyOnly 时 main 可能为空，
+  //    锦标赛本身就是在全起点里猎干净环）
+  if (tolStar >= 0 && (main || dirtyOnly)) {
     var bestRing = main, bestSt2 = mainSt, si;
     for (si = 1; si < Bl.length; si++) {
       if (bud.left < 0) break;
       if (GS.__shard && si % GS.__shard.n !== GS.__shard.k) continue;
-      if (bestSt2.cross === 0 && bestSt2.cov >= Bl.length) break;   // 双闸早停（v1.5 同款）
-      var h3 = solveAt(si, tolStar, hitKi);
-      if (h3) {
+      if (bestSt2 && bestSt2.cross === 0 && bestSt2.cov >= Bl.length) break;   // 双闸早停（v1.5 同款）
+      var h3 = probePoint(si, tolStar, hitKi);
+      if (h3.st === 1) {
         var st3 = KIT.ringStats(h3.ring, B);
-        if (KIT.ringBetter(st3, bestSt2)) { bestRing = h3.ring; bestSt2 = st3; }
+        if (!bestSt2 || KIT.ringBetter(st3, bestSt2)) { bestRing = h3.ring; bestSt2 = st3; }
       }
     }
     main = bestRing; mainSt = bestSt2;
+  }
+
+  // —— 洗环通道（2026-10-11 reg127 补丁）：全档无干净环但有脏环时，把最优脏环
+  //    过一遍 ⑥trim → straighten → ⑦reweave（v1 的后处理流水线，⑦ 的立项理由
+  //    就是"DFS 首命中脏环"），洗干净（合法 + H5b + 围核心）才收，洗不干净就扔。
+  //    常规盘 main 直接命中，本通道零开销。
+  var laundered = false;
+  if (!main && dirtyBest) {
+    var lau = KIT.trimDetours(dirtyBest, B);
+    lau = GS.straightenRing(lau);
+    lau = KIT.reweaveTwins(lau, B);
+    // 掉头格手术：…p,a,x,a,q… 的戳进段剪除（x=单访同口进出，本就非法；trim 剪不动
+    // ——x 常是轮廓格；剪掉少 2 步、环仍闭合）。reg127 实锤：脏环唯一脏点是 (4,12)
+    // 掉头，前三道工序全洗不掉，手术一刀干净（v1 同盘靠 ④剥层，v2 手术保不缩圈）。
+    var cut = true;
+    while (cut && lau.length >= 6) {
+      cut = false;
+      for (var li = 0; li < lau.length; li++) {
+        var lx = lau[li], la = lau[(li - 1 + lau.length) % lau.length], lb = lau[(li + 1) % lau.length];
+        if (la.c === lb.c && la.r === lb.r && Math.abs(lx.c - la.c) + Math.abs(lx.r - la.r) === 1) {
+          lau.splice(li, 2);
+          cut = true;
+          break;
+        }
+      }
+    }
+    if (KIT.ringOkFull(lau) && !ringHasBacktrackCell(lau)) {
+      main = lau; mainSt = KIT.ringStats(lau, B); tolStar = -1; laundered = true;
+    }
   }
 
   // —— 精确裁判（D6）：主解不完美才跑；快速档跳过 ——
@@ -2177,7 +2261,7 @@ GS.recomputeRailsV2 = function () {
 
   // —— 终选（R4）：prev 覆盖不少于新解 ⇒ 沿用 prev（并列也沿用，规格口径）——
   var ring = null, ringSt = null, prov = 'none';
-  if (main) { ring = main; ringSt = mainSt; prov = 'main'; }
+  if (main) { ring = main; ringSt = mainSt; prov = laundered ? 'laundry' : 'main'; }
   if (exact) {
     var eSt = KIT.ringStats(exact, B);
     if (!ring || KIT.ringBetter(eSt, ringSt)) { ring = exact; ringSt = eSt; prov = 'exact'; }
