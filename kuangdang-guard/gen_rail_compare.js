@@ -66,7 +66,7 @@ const BOARDS = [
     title: '① 标准盘（你当初亲手给答案的那张）',
     say: '新旧算法画出的轨道<b>一模一样</b>（都是 26 格环，逐格相同）。老盘面零变化，放心。' },
   { key: 'k60', rows: K60,
-    note: { c0: 5, r0: 8, c1: 7, r1: 10, label: '问' },   // 右下支线：双走边(5,8)-(5,9) + 金币小圈
+    note: { c0: 5, r0: 8, c1: 7, r1: 10, label: '✓ 已拍板：保留（T 字弧线不算原路往返）' },
     title: '② 病盘复刻（你指出的 2 列蛇形问题）★已修',
     say: '左边旧算法：左下角走了 <b>(2,8)~(2,11) 四个内格</b>的蛇形绕路（40 步）。' +
          '右边新算法：按你说的改走 <b>3 列直下</b>（★两格），38 步、少占 2 格——' +
@@ -143,7 +143,7 @@ function panelSVG(rows, ring, diffSet, tag, note) {   // note = {c0,r0,c1,r1,lab
     const x = PAD + note.c0 * CELL - 4, y = PAD + note.r0 * CELL - 4;
     const w = (note.c1 - note.c0 + 1) * CELL + 8, h = (note.r1 - note.r0 + 1) * CELL + 8;
     s += '<rect x="' + x + '" y="' + y + '" width="' + w + '" height="' + h + '" rx="10" fill="none" stroke="#e07b1f" stroke-width="3" stroke-dasharray="7 5"/>';
-    s += '<text x="' + (x + w / 2) + '" y="' + (y - 6) + '" font-size="12" text-anchor="middle" fill="#e07b1f" font-weight="bold">← 问：这条支线保留吗？</text>';
+    s += '<text x="' + (x + w / 2) + '" y="' + (y - 6) + '" font-size="12" text-anchor="middle" fill="#e07b1f" font-weight="bold">' + (note.label || '') + '</text>';
   }
   s += '<text x="' + (W / 2) + '" y="' + (H - 2) + '" font-size="13" text-anchor="middle" fill="#555" font-weight="bold">' + tag + '</text>';
   s += '</svg>';
@@ -192,11 +192,14 @@ const html = `<!DOCTYPE html>
   <span style="margin-left:12px">★绿框 = 新算法新铺的轨</span>
 </div>
 ${body}
-<div class="decision"><b>本轮修复清单（2026-10-11 你的两条反馈）：</b><br>
-① <b>往返格已禁</b>：格内掉头、一格两趟来回碾压，全部非法——④⑤ 号盘按新规则不铺；唯一合法双走是 T 字岔穿越（③ 号盘）。<br>
-② <b>2 列蛇形已修</b>：贴内部墙的格子纳入搜索（② 号盘 40→38 步）；84 盘测试满覆盖 84/84（旧算法 82/84），零劣化。<br><br>
-<b>剩一个小裁决（看 ② 号盘右下角）：</b>轨道伸下去绕金币小圈再<b>沿原路退回</b>的那条支线（旧算法也有，路口都是 T 字、按新规则合法）——保留还是去掉？<br>
-· <b>保留</b>（现状）＝能收到这种挂边金币地；<b>去掉</b>＝火车永不回头，但这种金币收不到。回「保留」或「去掉」即可。</div>
+<div class="decision"><b>全部事项已决（2026-10-11）：</b><br>
+① <b>往返格/掉头格已禁</b>（格内折返、一格两趟碾压非法）；<b>往返支线保留</b>——T 字路线游戏里是弧线，
+双走边两趟各走各的弧，不算原路往返（② 号盘橙圈处即此形态，新旧算法画法一致）。<br>
+② <b>2 列蛇形已修</b>：贴内部墙的格子纳入搜索，② 号盘 40→38 步；264 盘测试满覆盖 263/264（旧算法 261/264），零劣化。<br><br>
+<b>想试玩新算法</b>：控制台输入 <code>GS.railV2 = true</code> 后清理任意地形即可（默认仍是旧算法，
+随时改回 false）。<br>
+<b>转正前还差</b>：① 你游戏里那两张怪兽盘（09:05/09:12）导出给我复刻验证；② 约 10% 难盘慢 0.16 秒
+（有现成加速手段，要就说「补上兜底」）；③ 你试玩点头后我把默认切到新算法。</div>
 </body></html>`;
 
 fs.writeFileSync(path.join(ROOT, 'docs', '轨道对照-新旧算法.html'), html, 'utf8');
