@@ -197,14 +197,17 @@ ENG.update = function (dt) {
     if (gf.flash > 0) gf.flash -= dt;
   }
   if (typeof CLOCK !== 'undefined') CLOCK.tick(dt);
-  // dusk 加速回站（v1.3.1，规格 §13.4 第 3 条）：收尾相位且场上无怪 → boost 每秒
-  //   +0.9 封顶 2（实际速度系数 1+boost，最高 3×）；否则归零。消灭"怪杀完了干等车"。
-  if (typeof CLOCK !== 'undefined' && CLOCK.isDusk() &&
-      (!GS.foes || GS.foes.length === 0)) {
-    ENG.boost = Math.min(2, ENG.boost + dt * 0.9);
-  } else {
-    ENG.boost = 0;
+  // dusk 加速回站（v1.3.1，规格 §13.4 第 3 条）+ 奖励时间加速（2026-10-11 大王令）：
+  //   dusk 收尾且场上无怪 → boost 每秒 +0.9 封顶 2（速度系数 1+boost，最高 3×）；
+  //   奖励时间 → 同款加速、**上限提升 50%**（封顶 3，最高 4×）——"清得越快跑得越久"
+  //   的奖励窗口再添速度收益（跑圈收金币更快）；其余相位归零。
+  var boostCap = 0;
+  if (typeof CLOCK !== 'undefined') {
+    if (CLOCK.reward) boostCap = 3;
+    else if (CLOCK.isDusk() && (!GS.foes || GS.foes.length === 0)) boostCap = 2;
   }
+  if (boostCap > 0) ENG.boost = Math.min(boostCap, ENG.boost + dt * 0.9);
+  else ENG.boost = 0;
   // 塔防迭代（v1.3-rc）：塔攻击 / 怪移动每帧推进。⚠️ 顺序：先塔后怪 ——
   //   塔这帧打死的怪由 foes.update 当帧清尸，不留"死人再打一下"的窗口。
   if (typeof TOWERS !== 'undefined') TOWERS.update(dt);

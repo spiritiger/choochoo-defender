@@ -240,6 +240,27 @@ check('奖励时间：收尾到站 → 回白天', CLOCK.notifyStation() === tru
 GS.newGame();
 check('开局铁轨 = 3×5 内区的 12 步小环（无十字，故步数=格数）', GS.railPath.length === 12,
   '实际 ' + GS.railPath.length + '：' + GS.railPath.map(p => p.c + ',' + p.r).join(' '));
+// ---- 奖励时间加速（2026-10-11 大王令）：boost 同款 ramp、封顶 3（最高 4×）；dusk 仍 2 ----
+GS.newGame();
+ENG.boost = 0;                            // boost 由 ENG.restart 初始化，沙箱里手动归零
+ENG.startNight();
+CLOCK.onCleared();                        // 进入奖励时间（夜内清场）
+check('奖励加速：进入奖励时间', CLOCK.reward === true && CLOCK.isNight());
+for (let s = 0; s < 7; s++) ENG.update(0.5);   // 3.5 秒：0.9/秒 ramp → 3.15 封顶到 3
+check('奖励加速：boost 封顶 3（速度系数最高 4×，比 dusk 上限高 50%）',
+  ENG.boost === 3, 'boost=' + ENG.boost);
+CLOCK.toDusk(); GS.foes = []; ENG.boost = 0;
+for (let s = 0; s < 2; s++) ENG.update(0.5);
+const duskRose = ENG.boost;               // dusk 机制仍在加速（提 Ramp）
+for (let s = 0; s < 40 && CLOCK.isDusk(); s++) ENG.update(0.5);   // 跑完圈 → 停靠回白天
+check('dusk 加速：机制不变（先加速，停靠回白天后归零）',
+  duskRose > 0 && ENG.boost === 0 && !CLOCK.isDusk(),
+  'duskRose=' + duskRose + ' end=' + ENG.boost + ' phase=' + CLOCK.phase);
+ENG.boost = 0;
+CLOCK.reset(); GS.foes = [];
+ENG.update(0.5);
+check('白天不加速：boost 归零', ENG.boost === 0, 'boost=' + ENG.boost);
+
 check('开局站台 = 中轴列最靠下的轨格 (4,8)', STATION.slot() &&
   STATION.slot().c === 4 && STATION.slot().r === 8,
   JSON.stringify(STATION.slot()));
