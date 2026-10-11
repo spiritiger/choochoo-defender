@@ -66,6 +66,7 @@ const BOARDS = [
     title: '① 标准盘（你当初亲手给答案的那张）',
     say: '新旧算法画出的轨道<b>一模一样</b>（都是 26 格环，逐格相同）。老盘面零变化，放心。' },
   { key: 'k60', rows: K60,
+    note: { c0: 5, r0: 8, c1: 7, r1: 10, label: '问' },   // 右下支线：双走边(5,8)-(5,9) + 金币小圈
     title: '② 病盘复刻（你指出的 2 列蛇形问题）★已修',
     say: '左边旧算法：左下角走了 <b>(2,8)~(2,11) 四个内格</b>的蛇形绕路（40 步）。' +
          '右边新算法：按你说的改走 <b>3 列直下</b>（★两格），38 步、少占 2 格——' +
@@ -103,7 +104,7 @@ function solveBoth(rows) {
 
 // ---- SVG 渲染 ----
 const CELL = 36, PAD = 26;
-function panelSVG(rows, ring, diffSet, tag) {
+function panelSVG(rows, ring, diffSet, tag, note) {   // note = {c0,r0,c1,r1,label} 圈注区域
   const W = COLS * CELL + PAD + 8, H = ROWS * CELL + PAD + 8;
   let s = '<svg width="' + W + '" height="' + H + '" xmlns="http://www.w3.org/2000/svg">';
   // 地形
@@ -137,6 +138,13 @@ function panelSVG(rows, ring, diffSet, tag) {
     s += '<rect x="' + (x - 2) + '" y="' + (y - 2) + '" width="' + CELL + '" height="' + CELL + '" rx="6" fill="none" stroke="#1faa5a" stroke-width="3"/>';
     s += '<text x="' + (x + CELL - 8) + '" y="' + (y + 13) + '" font-size="13" text-anchor="middle" fill="#1faa5a" font-weight="bold">★</text>';
   }
+  // 圈注区域（如：待裁决的往返支线）
+  if (note) {
+    const x = PAD + note.c0 * CELL - 4, y = PAD + note.r0 * CELL - 4;
+    const w = (note.c1 - note.c0 + 1) * CELL + 8, h = (note.r1 - note.r0 + 1) * CELL + 8;
+    s += '<rect x="' + x + '" y="' + y + '" width="' + w + '" height="' + h + '" rx="10" fill="none" stroke="#e07b1f" stroke-width="3" stroke-dasharray="7 5"/>';
+    s += '<text x="' + (x + w / 2) + '" y="' + (y - 6) + '" font-size="12" text-anchor="middle" fill="#e07b1f" font-weight="bold">← 问：这条支线保留吗？</text>';
+  }
   s += '<text x="' + (W / 2) + '" y="' + (H - 2) + '" font-size="13" text-anchor="middle" fill="#555" font-weight="bold">' + tag + '</text>';
   s += '</svg>';
   return s;
@@ -153,8 +161,8 @@ for (const b of BOARDS) {
   const same = r1.length === r2.length && r1.every((p, i) => p.c === r2[i].c && p.r === r2[i].r);
   body += '<div class="board"><h2>' + b.title + '</h2>';
   body += '<p class="say">' + b.say + (same ? ' <span class="tag-same">两图逐格一致</span>' : '') + '</p>';
-  body += '<div class="pair">' + panelSVG(b.rows, r1, {}, '旧算法（' + r1.length + ' 步）') +
-          panelSVG(b.rows, r2, diff, '新算法（' + r2.length + ' 步）') + '</div></div>';
+  body += '<div class="pair">' + panelSVG(b.rows, r1, {}, '旧算法（' + r1.length + ' 步）', b.note) +
+          panelSVG(b.rows, r2, diff, '新算法（' + r2.length + ' 步）', b.note) + '</div></div>';
 }
 
 const html = `<!DOCTYPE html>
