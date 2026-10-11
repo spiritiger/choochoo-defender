@@ -2405,6 +2405,85 @@ GS.recomputeRailsV2 = function () {
         var stillUncovered = 0;
         for (uj = 0; uj < comp2.length; uj++) if (!onRing[colOf(comp2[uj]) + ',' + rowOf(comp2[uj])]) stillUncovered++;
         if (!stillUncovered) continue;
+        // ▍路径拼缝（小口袋专用，2026-10-11 大王「右侧两格」反馈）：口袋是一条链、
+        //   两端各邻接环上**相邻**的两格 A、B 时，把环边 A→B 换成 A→链→B——
+        //   换入整条口袋的覆盖、零重访零 T 字。lasso 通道受 closedTrail 的 Bl≥4
+        //   下限够不到 1~3 格小口袋（右侧 (7,8)(8,8) 两格实锤）。先试拼缝（便宜、
+        //   零重访），不成再走 lasso。单格口袋同适用（两端接同一对相邻环格）。
+        (function () {
+          var degIn = {}, zi2, dk2;
+          for (zi2 = 0; zi2 < comp2.length; zi2++) degIn[comp2[zi2]] = 0;
+          for (zi2 = 0; zi2 < comp2.length; zi2++) {
+            var zc3 = colOf(comp2[zi2]), zr3 = rowOf(comp2[zi2]);
+            for (var zd3 = 0; zd3 < 4; zd3++) {
+              var znc3 = zc3 + RAIL_DC[zd3], znr3 = zr3 + RAIL_DR[zd3];
+              if (!CFG.inBounds(znc3, znr3)) continue;
+              var q3 = id(znc3, znr3);
+              if (degIn.hasOwnProperty(String(q3))) degIn[q3]++;
+            }
+          }
+          var ends2 = [];
+          for (dk2 in degIn) if (degIn[dk2] <= 1) ends2.push(+dk2);
+          if (comp2.length === 1 || ends2.length === 2) {
+            var eA = comp2.length === 1 ? comp2[0] : ends2[0];
+            var eB = comp2.length === 1 ? comp2[0] : ends2[1];
+            var chain = [eA], curC = eA, prevC = -1;
+            while (curC !== eB) {
+              var nxt = -1, cc3 = colOf(curC), cr3 = rowOf(curC);
+              for (var zd4 = 0; zd4 < 4; zd4++) {
+                var znc4 = cc3 + RAIL_DC[zd4], znr4 = cr3 + RAIL_DR[zd4];
+                if (!CFG.inBounds(znc4, znr4)) continue;
+                var q4 = id(znc4, znr4);
+                if (q4 !== prevC && q4 !== curC && degIn.hasOwnProperty(String(q4))) { nxt = q4; break; }
+              }
+              if (nxt < 0) break;
+              chain.push(nxt); prevC = curC; curC = nxt;
+            }
+            if (curC === eB && chain.length === comp2.length) {
+              function ringAdjOf(z) {
+                var c = colOf(z), r = rowOf(z), outR = [];
+                for (var d5 = 0; d5 < 4; d5++) {
+                  var nc5 = c + RAIL_DC[d5], nr5 = r + RAIL_DR[d5];
+                  if (!CFG.inBounds(nc5, nr5)) continue;
+                  var k5 = nc5 + ',' + nr5;
+                  if (onRing[k5] && vis2[k5] === 1) outR.push(k5);
+                }
+                return outR;
+              }
+              var adjA = ringAdjOf(eA), adjB = ringAdjOf(eB);
+              var posMap = {};
+              for (var pi2 = 0; pi2 < result.length; pi2++) {
+                var k6 = result[pi2].c + ',' + result[pi2].r;
+                if (posMap[k6] === undefined) posMap[k6] = pi2;
+              }
+              function cellsOf(arr) {
+                var out = [], ci5;
+                for (ci5 = 0; ci5 < arr.length; ci5++) out.push({ c: colOf(arr[ci5]), r: rowOf(arr[ci5]) });
+                return out;
+              }
+              for (var aa = 0; aa < adjA.length && !improved; aa++) {
+                for (var bb = 0; bb < adjB.length && !improved; bb++) {
+                  if (adjA[aa] === adjB[bb]) continue;
+                  var pA = posMap[adjA[aa]], pB = posMap[adjB[bb]];
+                  if (pA === undefined || pB === undefined) continue;
+                  var L = result.length;
+                  var outS = null;
+                  if (pB === (pA + 1) % L) {
+                    outS = result.slice(0, pA + 1).concat(cellsOf(chain), result.slice(pB));
+                  } else if (pA === (pB + 1) % L) {
+                    outS = result.slice(0, pB + 1).concat(cellsOf(chain.slice().reverse()), result.slice(pA));
+                  }
+                  if (!outS) continue;
+                  if (KIT.ringOkFull(outS) && !ringHasBacktrackCell(outS) &&
+                      KIT.ringStats(outS, B).cov > KIT.ringStats(result, B).cov) {
+                    result = outS; improved = true;
+                  }
+                }
+              }
+            }
+          }
+        })();
+        if (improved) continue;
         // 局部图 A_loc = 口袋（必须覆盖）∪ 连接格（可走、非必须）∪ 挂点 M（环上单访格）。
         //   ▍连接格语义修正（2026-10-11 大王试玩盘反馈轮）：旧版把邻接可用格也塞进
         //   必须覆盖清单——口袋旁挂一个死端格（如 (1,4)）时，任何走线都被迫进去掉头，
