@@ -2073,7 +2073,7 @@ GS.recomputeRailsV2 = function () {
   var hCap = hcount < 16 ? hcount : 16;
 
   // —— 统一锦标赛（D2；si=0 定容差档 → 全起点择优，与 v1 主解同构）——
-  var V2_MAIN_MS = GS.railFast ? 90 : 700, V2_EXACT_MS = 250;
+  var V2_MAIN_MS = GS.railFast ? 90 : 500, V2_EXACT_MS = 250;
   // 主池节点 = 450 万（对齐 v1 全链四级预算总量 ~3×150万；hard6 实测：单池 150 万在
   //   1.67M 节点处的解被截断、烧穿落核心环，×10 则命中同 v1 的 52 步满覆盖）。
   //   生产端 700ms 墙钟仍是硬顶，此值只放宽无墙钟口径（测试/强刷）的搜索上限。
@@ -2252,6 +2252,43 @@ GS.recomputeRailsV2 = function () {
     }
   }
 
+  // —— 剥层终落（v1 ④ 镜像，hard161 实锤补丁）：所有通道颗粒无收时，逐层剥掉
+  //    外轮廓（PROT 保护）换可解性——缩一点远好于贴身环（hard161：v1 靠剥层
+  //    拿 50 步 39/39，v2 无剥层塌到 9/39，且与预算无关）。输出口径不变：
+  //    覆盖仍按原 B* 统计（v1 同款——剥层只动求解区域，不动 contourB）。
+  //    常规盘 main 直接命中，本通道零开销。
+  if (!main && !GS.railFast) {
+    var U3 = new Uint8Array(U2), pl, peeled = null, peeledWon = false;
+    var pbud = { left: V2_NODES, deadline: (GS.debugNoDeadline || GS.forceRefresh) ? 1e15 : Date.now() + 250 };
+    peel:
+    for (pl = 0; pl < 25 && pbud.left >= 0; pl++) {
+      var bdP = KIT.boundaryOf(U3, KIT.computeF(U3), usable), delN = 0, ps;
+      for (ps = 0; ps < N; ps++) if (bdP.B[ps] && !PROT[ps]) { U3[ps] = 0; delN++; }
+      if (!delN) break;
+      KIT.keepCoreComponent(U3); KIT.pruneU(U3);
+      var F3 = KIT.computeF(U3);
+      var bd3 = KIT.boundaryOf(U3, F3, usable);
+      if (bd3.Bl.length < 4) break;
+      var H3 = KIT.helpersOf(U3, bd3.B, usable), A3 = new Uint8Array(N);
+      for (ps = 0; ps < N; ps++) if (bd3.B[ps] || H3[ps]) A3[ps] = 1;
+      // v1 ④ 同款内圈：tol=TOL_MAX 单档 + ki 从 0 线性升（剥过的图小、便宜端优先；
+      //   首版 tol0..6 全扫把预算烧在无解证明上，被迫多剥几层、环缩过头——hard161 实锤）
+      var cap3 = 0, ps2;
+      for (ps2 = 0; ps2 < N; ps2++) if (H3[ps2]) cap3++;
+      if (cap3 > 16) cap3 = 16;
+      for (var pk3 = 0; pk3 <= cap3 && pbud.left >= 0; pk3++) {
+        var pi3 = KIT.closedTrail(bd3.B, bd3.Bl, H3, A3, pbud, pk3, 1, 0, 6, 0, 2, false, 0) ||
+                  KIT.closedTrail(bd3.B, bd3.Bl, H3, A3, pbud, pk3, 2, 8, 6, 0, 2, false, 0);
+        if (pi3) {
+          var rgP = KIT.ringOf(pi3);
+          if (KIT.enclosesCore(rgP) && !ringHasBacktrackCell(rgP)) { peeled = rgP; break peel; }
+          if (pbud.left < 0) break;
+        }
+      }
+    }
+    if (peeled) { main = peeled; mainSt = KIT.ringStats(peeled, B); tolStar = -1; peeledWon = true; }
+  }
+
   // —— 精确裁判（D6）：主解不完美才跑；快速档跳过 ——
   var exact = null;
   if (!GS.railFast) {
@@ -2261,7 +2298,7 @@ GS.recomputeRailsV2 = function () {
 
   // —— 终选（R4）：prev 覆盖不少于新解 ⇒ 沿用 prev（并列也沿用，规格口径）——
   var ring = null, ringSt = null, prov = 'none';
-  if (main) { ring = main; ringSt = mainSt; prov = laundered ? 'laundry' : 'main'; }
+  if (main) { ring = main; ringSt = mainSt; prov = laundered ? 'laundry' : (peeledWon ? 'peel' : 'main'); }
   if (exact) {
     var eSt = KIT.ringStats(exact, B);
     if (!ring || KIT.ringBetter(eSt, ringSt)) { ring = exact; ringSt = eSt; prov = 'exact'; }
