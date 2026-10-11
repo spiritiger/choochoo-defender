@@ -503,6 +503,30 @@ const MONSTER_0912 = [
   });
 }
 
+// [V12] 链缝拼接（大王「右侧两格」盘 2026-10-11T10:47 导出）：
+//   (7,8)(8,8) 两格 U 型缺口挂在环上相邻的 (8,9)-(7,9) 边内侧，lasso 通道受
+//   Bl≥4 下限够不到——链缝把环边换成 A→链→B。锁：暖解后两格上轨、零违规。
+const NOTCH_1047 = [
+  '#G.G...##', '#......G.', 'G.#..g#..', '..#####..', '..#.....#',
+  'G.#....G#', '..#.C.###', '..#...##G', '.G#...#..', '..#####..',
+  '..#..##.G', '#.G......', 'g..#g..g#'];
+const NOTCH_RING = '3,5 4,5 5,5 6,5 7,5 7,4 7,3 7,2 7,1 6,1 5,1 4,1 3,1 2,1 1,1 1,2 1,3 1,4 1,5 1,6 1,7 1,8 1,9 1,10 1,11 1,12 2,12 2,11 3,11 4,11 5,11 6,11 7,11 8,11 8,10 8,9 7,9 7,10 7,11 6,11 6,12 5,12 5,11 4,11 4,10 3,10 3,11 2,11 1,11 1,10 0,10 0,9 0,8 0,7 0,6 0,5 0,4 0,3 0,2 1,2 1,1 1,0 2,0 3,0 4,0 5,0 6,0 6,1 7,1 8,1 8,2 8,3 7,3 7,4 6,4 5,4 5,5 5,6 5,7 4,7 3,7 3,6';
+{
+  withSize(9, 13, () => {
+    setupFromRows(NOTCH_1047);
+    GS.railPath = NOTCH_RING.split(' ').map(s => { const a = s.split(','); return { c: +a[0], r: +a[1] }; });
+    GS.railV2 = true;
+    GS.recomputeRails();
+    GS.railV2 = false;
+    const set = new Set(GS.railPath.map(key));
+    check('[V12a] 链缝拼接：缺口两格上轨', set.has('7,8') && set.has('8,8'),
+      '7,8=' + set.has('7,8') + ' 8,8=' + set.has('8,8'));
+    check('[V12b] 链缝后环合法', !ringError(GS.railPath), ringError(GS.railPath));
+    check('[V12c] 链缝后零往返格', !hasBacktrack(GS.railPath), '往返格 ' + hasBacktrack(GS.railPath));
+    check('[V12d] 步数只增不减', GS.railPath.length >= 84, '步数 ' + GS.railPath.length);
+  });
+}
+
 console.log('正确性：' + pass + ' 通过 / ' + fail + ' 失败');
 if (fail) { console.log(failures.join('\n')); process.exit(1); }
 
