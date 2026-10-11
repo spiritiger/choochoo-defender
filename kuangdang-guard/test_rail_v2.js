@@ -181,16 +181,46 @@ const K60 = [
   'g###g####', '######g##', '#g######g', '#########',
   '#g#...#g#', '......###', 'G...C.###', '#...E.#g#',
   '#G....###', '....#...#', 'G...#G..#', '#....###g', '#...G####'];
-// 半岛盘（P1）：3×3 核心区 + 单格脖子 (6,6) + 2×2 块 (7,5)(8,5)(7,6)(8,6)
+// 半岛盘（单格脖子）：P1 原判据的**反例盘**——脖子格 (6,6) 只有两个邻口，
+//   任何收编走线必然把它走成"往返格"（W→E 去、E→W 回，总口数 2）。
+//   H5b 禁令（大王 2026-10-11 对照页反馈）后：这类死角一律不收。
 const PENINSULA = [
   '#########', '#########', '#########', '#########', '#########',
   '###...#..', '###.C....', '###...###',
+  '#########', '#########', '#########', '#########', '#########'];
+// 贴边死角盘（H5b 合法形态）：2×2 块经**单条桥边** (6,5)-(7,5) 挂主体，
+//   两端格各 3 口 ⇒ 收编走线只产生 T 字岔、零往返格（对照 0912 真盘几何）。
+const PEN2 = [
+  '#########', '#########', '#########', '#########', '#######..',
+  '###......', '###.C..###', '###...###',
   '#########', '#########', '#########', '#########', '#########'];
 // 走廊盘（P1 排除项）：脖子 (6,6) + 一格宽 L 链 (7,6)(8,6)(8,5)（无 2×2）
 const CORRIDOR = [
   '#########', '#########', '#########', '#########', '#########',
   '###...##.', '###.C...#', '###...###',
   '#########', '#########', '#########', '#########', '#########'];
+
+// 往返/掉头检查（H5b，与 state.js ringHasBacktrackCell 同口径）：
+//   ① 同口进出的掉头格；② 走 2 次但合计口数 ≤2 的往返格
+function hasBacktrack(ring) {
+  const L = ring.length, v = {};
+  for (let i = 0; i < L; i++) {
+    const p = ring[i], a = ring[(i - 1 + L) % L], b = ring[(i + 1) % L];
+    const k = key(p);
+    (v[k] = v[k] || []).push([a.c - p.c, a.r - p.r, b.c - p.c, b.r - p.r]);
+  }
+  for (const k in v) {
+    for (const x of v[k]) {
+      if (x[0] === x[2] && x[1] === x[3]) return k;   // ① 掉头
+    }
+    if (v[k].length >= 2) {
+      const ports = new Set();
+      for (const x of v[k]) { ports.add(x[0] + ',' + x[1]); ports.add(x[2] + ',' + x[3]); }
+      if (ports.size <= 2) return k;                  // ② 往返
+    }
+  }
+  return null;
+}
 
 // ============================================================================
 // 一、正确性用例
@@ -210,9 +240,9 @@ console.log('== rail-v2 正确性用例（' + MODE + '）==');
   });
 }
 
-// [V1] v2 合法性扫频：60 张渐进盘全部合法
+// [V1] v2 合法性扫频：60 张渐进盘全部合法 + 零往返格（H5b）
 {
-  let illegal = 0, empty = 0;
+  let illegal = 0, empty = 0, back = 0;
   for (let seed = 1; seed <= 60; seed++) {
     const rng = mulberry32(seed * 7919);
     const board = genBoard(rng, 4 + (seed % 12));
@@ -223,31 +253,47 @@ console.log('== rail-v2 正确性用例（' + MODE + '）==');
     const err = ringError(GS.railPath);
     if (err) { illegal++; console.log('    ✗ seed=' + seed + ': ' + err); }
     if (GS.railPath.length === 0) empty++;
+    const bt = hasBacktrack(GS.railPath);
+    if (bt) { back++; console.log('    ✗ seed=' + seed + ' 往返格 ' + bt); }
   }
   check('[V1] v2 随机 60 盘全部合法', illegal === 0, illegal + ' 非法');
   check('[V1b] v2 随机 60 盘均有环（R3）', empty === 0, empty + ' 空环');
+  check('[V1c] v2 随机 60 盘零往返格（H5b）', back === 0, back + ' 张含往返格');
 }
 
-// [V2] Q1 半岛纳入：块状半岛 4 格 + 脖子必须上轨；v1 对照必须不上（证明差异即修复）
+// [V2] Q1 半岛纳入（P1 + H5b 精化版）：
+//   · 单格脖子盘（PENINSULA）：脖子格只有 2 口，收编必产往返格 ⇒ 新旧都不收
+//   · 贴边死角盘（PEN2）：桥边两端各 3 口 ⇒ 合法收编，块 4/4 上轨且零往返格
 {
   withSize(9, 13, () => {
+    // —— 单格脖子盘：两端算法都不收（H5b）——
     setupFromRows(PENINSULA);
     GS.railV2 = false;
     GS.recomputeRails();
     const v1set = new Set(GS.railPath.map(key));
-    const block = ['7,5', '8,5', '7,6', '8,6'], neck = '6,6';
-    const v1Hit = block.filter(k => v1set.has(k)).length;
-    check('[V2a] v1 对照：半岛不上轨（复现 09:12 病）', v1Hit === 0, v1Hit + ' 格上轨');
+    const block = ['7,5', '8,5', '7,6', '8,6'];
+    check('[V2a] v1 单格脖子半岛不上轨（现状）', block.filter(k => v1set.has(k)).length === 0);
     setupFromRows(PENINSULA);
     GS.railV2 = true;
     GS.recomputeRails();
     GS.railV2 = false;
     const err = ringError(GS.railPath);
-    check('[V2b] v2 半岛盘合法', !err, err);
+    check('[V2b] v2 单格脖子盘合法', !err, err);
     const set2 = new Set(GS.railPath.map(key));
-    const v2Hit = block.filter(k => set2.has(k)).length;
-    check('[V2c] v2 半岛纳入 4/4（Q1 验收）', v2Hit === 4, v2Hit + '/4');
-    check('[V2d] v2 脖子格上轨', set2.has(neck));
+    check('[V2c] v2 也不收单格脖子半岛（H5b 往返格禁令）',
+      block.filter(k => set2.has(k)).length === 0 && !set2.has('6,6'));
+    check('[V2d] v2 输出零往返格', !hasBacktrack(GS.railPath), '往返格 ' + hasBacktrack(GS.railPath));
+    // —— 贴边死角盘：合法收编 ——
+    setupFromRows(PEN2);
+    GS.railV2 = true;
+    GS.recomputeRails();
+    GS.railV2 = false;
+    const err2 = ringError(GS.railPath);
+    check('[V2e] v2 贴边死角盘合法', !err2, err2);
+    const setP2 = new Set(GS.railPath.map(key));
+    const hit = ['7,4', '8,4', '7,5', '8,5'].filter(k => setP2.has(k)).length;
+    check('[V2f] v2 贴边死角 4/4 上轨（Q1 合法形态）', hit === 4, hit + '/4');
+    check('[V2g] v2 贴边死角零往返格', !hasBacktrack(GS.railPath), '往返格 ' + hasBacktrack(GS.railPath));
   });
 }
 
@@ -279,7 +325,9 @@ console.log('== rail-v2 正确性用例（' + MODE + '）==');
     const err = ringError(GS.railPath);
     check('[V4a] 烧穿盘仍有合法环（R3）', !err, err);
     check('[V4b] 烧穿盘环 = 核心贴身环（8 步）', GS.railPath.length === 8, '步数 ' + GS.railPath.length);
-    check('[V4c] provenance = core', GS.__v2last && GS.__v2last.provenance === 'core', GS.__v2last && GS.__v2last.provenance);
+    check('[V4c] provenance ∈ {core, exact}（保底通道）',
+      GS.__v2last && (GS.__v2last.provenance === 'core' || GS.__v2last.provenance === 'exact'),
+      GS.__v2last && GS.__v2last.provenance);
     GS.__v2cache = null;   // 测试旋钮造成的烧穿不进省略闸统计
   });
 }

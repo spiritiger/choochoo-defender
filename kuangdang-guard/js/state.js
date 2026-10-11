@@ -1878,6 +1878,40 @@ GS.__v2cache = null;      // 烧穿省略闸缓存 {fp, railLen}（仅全量档�
 GS.__v2testNodes = 0;     // 测试旋钮：非 0 时主解/裁判节点预算被压到该值（确定性烧穿用例）
 GS.__v2last = null;       // 最近一次 v2 求解的观测数据（A/B 报告与测试用）
 
+// ▍往返/掉头禁令（H5b，大王 2026-10-11 对照页反馈拍板）：
+//   ① 掉头格：任何一次通行**同口进出**（进 W 出 W = 在这格里原地折返）——非法；
+//   ② 往返格：被走 2 次的格，两趟合计口数 ≤2（W→E 去、E→W 回）——非法。
+//   两条合并 ⇒ 任何"伸出去再原路退回"的支线（无论 1 格长还是多格长）全被否决，
+//   唯一合法的双走形态 = T 字岔穿越（贴边死角经桥边进出，两端各 3 口）。
+//   ⚠️ 只查①会漏（掉头格可能只走一次）；只查②会漏①——对照页反馈轮实锤：
+//   v2 曾在单格脖子盘上产出 ...(5,5)→(5,6)→(6,6)→(5,6)→(5,7)... 的"戳一下就退"解。
+//   v1 链路不受此禁令约束（legacy 冻结；k60 现行环的双走边两端均为 T 字岔，合规）。
+function ringHasBacktrackCell(ring) {
+  var L = ring.length, i, visits = {};
+  for (i = 0; i < L; i++) {
+    var p = ring[i], a = ring[(i - 1 + L) % L], b = ring[(i + 1) % L];
+    var k = p.c + ',' + p.r;
+    (visits[k] = visits[k] || []).push([a.c - p.c, a.r - p.r, b.c - p.c, b.r - p.r]);
+  }
+  for (var kk in visits) {
+    var vs = visits[kk];
+    for (i = 0; i < vs.length; i++) {
+      if (vs[i][0] === vs[i][2] && vs[i][1] === vs[i][3]) return true;   // ① 同口进出 = 掉头
+    }
+    if (vs.length >= 2) {
+      var ports = {};
+      for (i = 0; i < vs.length; i++) {
+        ports[vs[i][0] + ',' + vs[i][1]] = 1;
+        ports[vs[i][2] + ',' + vs[i][3]] = 1;
+      }
+      var n = 0;
+      for (var pk in ports) n++;
+      if (n <= 2) return true;                                           // ② 往返格
+    }
+  }
+  return false;
+}
+
 GS.recomputeRailsV2 = function () {
   var COLS = CFG.MAP_COLS, ROWS = CFG.MAP_ROWS, N = COLS * ROWS;
   var CORE_C = GS.core.c, CORE_R = GS.core.r;
@@ -1914,6 +1948,7 @@ GS.recomputeRailsV2 = function () {
   function prevRingValid() {
     var pr = GS.railPath;
     if (!pr || pr.length < 4 || !KIT.enclosesCore(pr)) return null;
+    if (ringHasBacktrackCell(pr)) return null;   // H5b：旧环含往返格（v1 产物）不得沿用
     for (var i = 0; i < pr.length; i++) {
       var a = pr[i], b = pr[(i + 1) % pr.length];
       if (!usable[id(a.c, a.r)] || Math.abs(a.c - b.c) + Math.abs(a.r - b.r) !== 1) return null;
@@ -1984,7 +2019,34 @@ GS.recomputeRailsV2 = function () {
         if (CFG.inBounds(zc + 1, zr) && CFG.inBounds(zc, zr + 1) && CFG.inBounds(zc + 1, zr + 1) &&
             inC[id(zc + 1, zr)] && inC[id(zc, zr + 1)] && inC[id(zc + 1, zr + 1)]) block = true;
       }
-      if (block) { for (m = 0; m < cp2.length; m++) { U2[cp2[m]] = 1; penBlocked[cp2[m]] = 1; } }
+      // ▍挂接合法性（H5b 前移，2026-10-11 对照页反馈轮补丁）：块状分量还要存在
+      //   **挂接边 (M,X) 两端各 ≥3 邻口**才加回——贴边死角（桥边两端 3 口）✓；
+      //   窄脖子块（脖子格只有 2 口，收编必产往返/掉头格）不加回。否则这些格
+      //   进入 B* 后永远覆盖不到，容差阶梯为"证明它们不可行"指数级烧预算，
+      //   连本来毫秒级可解的干净环都被拖死（hard16 实锤：v1 5ms 满覆盖 vs
+      //   v2 烧穿 450 万落保底环）。
+      var attachable = false, ai2, aj2, d2, nn2;
+      if (block) {
+        for (ai2 = 0; ai2 < cp2.length && !attachable; ai2++) {
+          z = cp2[ai2]; zc = colOf(z); zr = rowOf(z);
+          for (d2 = 0; d2 < 4 && !attachable; d2++) {
+            var ac = zc + RAIL_DC[d2], ar = zr + RAIL_DR[d2];
+            if (!CFG.inBounds(ac, ar)) continue;
+            var mid = id(ac, ar);
+            if (inC[mid] || !U2[mid]) continue;          // 邻居须是主体（削脖后仍在 U2）
+            // 挂接边 (M=mid, X=z)：两端各自在「主体∪分量」里的邻居数 ≥3
+            var degM = 0, degX = 0;
+            for (nn2 = 0; nn2 < 4; nn2++) {
+              var w1 = id(ac + RAIL_DC[nn2], ar + RAIL_DR[nn2]);
+              var w2 = id(zc + RAIL_DC[nn2], zr + RAIL_DR[nn2]);
+              if (CFG.inBounds(ac + RAIL_DC[nn2], ar + RAIL_DR[nn2]) && (U2[w1] || inC[w1])) degM++;
+              if (CFG.inBounds(zc + RAIL_DC[nn2], zr + RAIL_DR[nn2]) && (U2[w2] || inC[w2])) degX++;
+            }
+            if (degM >= 3 && degX >= 3) attachable = true;
+          }
+        }
+      }
+      if (attachable) { for (m = 0; m < cp2.length; m++) { U2[cp2[m]] = 1; penBlocked[cp2[m]] = 1; } }
       else { for (m = 0; m < cp2.length; m++) rmCorridor[cp2[m]] = 1; }
     }
   }
@@ -2023,7 +2085,7 @@ GS.recomputeRailsV2 = function () {
                 KIT.closedTrail(B, Bl, H, A, bud, ki, 2, 8, tol, si, 2, false, 1);
       if (idx) {
         var rg = KIT.ringOf(idx);
-        if (KIT.enclosesCore(rg)) return { ring: rg, ki: ki };
+        if (KIT.enclosesCore(rg) && !ringHasBacktrackCell(rg)) return { ring: rg, ki: ki };
       }
     }
     return null;
