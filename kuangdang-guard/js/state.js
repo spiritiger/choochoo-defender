@@ -2085,54 +2085,84 @@ GS.recomputeRailsV2 = function () {
   var bud = freshV2(V2_MAIN_MS);
   var main = null, mainSt = null, tolStar = -1, hitKi = -1;
 
-  // ▍搜索结构 = v1 主解镜像（2026-10-11 深夜 A/B 教训）：补格阶梯 0→cap 定档、
-  //   档内 mv=1 干净解优先 → mv=2(×8) 放开、每档首命中即该起点结果、跨起点按
-  //   ringBetter 择优。首版曾把 hCap 直接给满（⑤spur 的实证结论）+ xcap/flip 阶梯
-  //   —— 84 盘 A/B 实锤 10 盘烧穿颗粒无收（v1 同盘 6~74ms 满覆盖）：无阶梯的大 A
-  //   让 DFS 溺水，正是档案已证伪清单第 1 条（扩搜索空间 → 满覆盖反降）在 v2 重演。
-  //   与 v1 的唯一差异：gate=1（脖子门格放行，P1 半岛通道）+ xmax 上限 8（含 T 岔）。
+  // ▍搜索结构 v2.1：单通道 anytime + 跳步定档（大王 2026-10-11 拍板「上」）：
+  //   旧结构（v1 镜像）= 容差 × 补格双阶梯逐级线性爬，每级无解付一次指数阶
+  //   "不可能证明"，烧穿前可能颗粒无收。新结构三点：
+  //     · **便宜端优先**：乐观探测 (tol=0,ki=0) 一步命中常规盘；未中则 ki 按
+  //       0,1,2,4,8,…cap 跳步（可行性对 ki 单调 ⇒ 跳步不漏解），昂贵的高档
+  //       探测只剩两三次——首版"宽档二分"实测反劣（84 盘均 174→578ms：宽档
+  //       DFS 空间巨大，连可行探测都慢），教训 = 探测点必须放便宜端；
+  //     · **anytime**：每个可行探测的环都进 ringBetter 择优（只进不出），
+  //       预算内任意时刻手里都有合法环；
+  //     · 命中后 bisect 精化最小 ki，再跑全起点锦标赛（分片 + 双闸早停，不变）。
+  //   快速车道/双车道方案作废（v1 历史形态；大王"算法角度有没有解"之问的正解）。
   function solveAt(si, tol, kiFixed) {
     var lo = 0, hi = hCap;
     if (kiFixed !== null && kiFixed !== undefined) { lo = kiFixed; hi = kiFixed; }
     for (var ki = lo; ki <= hi; ki++) {
       if (bud.left < 0) return null;
-      // ▍试序组合（2026-10-11 大王 k60 反馈轮）：mv1 干净解优先 → mv2(×8)。
-      //   k60 的 38 步最优路由「直行试序 + 洞邻补格」即可命中（flip 双试序曾试过，
-      //   对该盘无增量且 84 盘真墙钟烧穿率 9.4%→17.2%——P5 耗时不劣的红线不放），
-      //   故不启用 flip；将来某盘实证需要早拐支时再按证伪清单流程 A/B 加回。
-      var best = null, bestSt = null;
-      var combos = [[1, 0, false], [2, 8, false]];
-      for (var cb = 0; cb < combos.length; cb++) {
-        if (bud.left < 0) break;
-        var idx = KIT.closedTrail(B, Bl, H, A, bud, ki, combos[cb][0], combos[cb][1], tol, si, 2, combos[cb][2], 1);
-        if (!idx) continue;
+      // mv1 干净解优先，命中即短路（v1 同款 || 语义——点内不重复付 mv2 的钱；
+      //   择优交给跨起点/跨档锦标赛，别在探测点里做）
+      var idx = KIT.closedTrail(B, Bl, H, A, bud, ki, 1, 0, tol, si, 2, false, 1) ||
+                KIT.closedTrail(B, Bl, H, A, bud, ki, 2, 8, tol, si, 2, false, 1);
+      if (idx) {
         var rg = KIT.ringOf(idx);
-        if (!KIT.enclosesCore(rg) || ringHasBacktrackCell(rg)) continue;
-        var st = KIT.ringStats(rg, B);
-        if (!bestSt || KIT.ringBetter(st, bestSt)) { best = rg; bestSt = st; }
+        if (KIT.enclosesCore(rg) && !ringHasBacktrackCell(rg)) return { ring: rg, ki: ki };
       }
-      if (best) return { ring: best, ki: ki };
     }
     return null;
   }
-
-  // ① 定档：si=0 跑 tol × ki 双阶梯（各分片都跑 ⇒ 分片合并口径一致）
-  for (var tol = 0; tol <= 6; tol++) {
-    if (bud.left < 0) break;
-    var hit = solveAt(0, tol, null);
-    if (hit) { main = hit.ring; mainSt = KIT.ringStats(hit.ring, B); tolStar = tol; hitKi = hit.ki; break; }
+  function absorb(h) {   // anytime 择优：可行探测的环只进不出（tolStar/hitKi 由调用方管理）
+    if (!h) return false;
+    var st = KIT.ringStats(h.ring, B);
+    if (!main || KIT.ringBetter(st, mainSt)) { main = h.ring; mainSt = st; hitKi = h.ki; return true; }
+    return false;
   }
-  // ② 择优：定档位全起点首命中 + ringBetter 锦标赛（分片跳格 + 双闸早停，v1 同款）
-  if (main) {
+
+  // ① 乐观探测：最紧档直接命中（常规盘一步收工，与旧版开销持平）
+  var opt = solveAt(0, 0, 0);
+  if (opt) { absorb(opt); tolStar = 0; hitKi = 0; }
+  // ② 跳步定档：tol 逐档（便宜→贵），档内 ki 按 2 的幂跳步探可行性，命中后 bisect 精化
+  if (!main) {
+    var steps = [0, 1, 2, 4, 8, 16, 32, 64, 128], tp, kp;
+    outer:
+    for (tp = 0; tp <= 6; tp++) {
+      if (bud.left < 0) break;
+      // 去重：乐观探测已证 (tol=0, ki=0) 不可行，tp=0 时跳步从 1 起、prev=0
+      var prevInfeasible = (tp === 0) ? 0 : -1;
+      for (kp = 0; kp < steps.length; kp++) {
+        var ki2 = steps[kp];
+        if (ki2 > hCap) ki2 = hCap;
+        if (ki2 <= prevInfeasible) continue;
+        var h1 = solveAt(0, tp, ki2);
+        if (h1) {
+          absorb(h1);
+          // bisect (prevInfeasible, ki2] 精化最小可行 ki
+          var aLo = prevInfeasible + 1, aHi = ki2;
+          while (aLo < aHi && bud.left >= 0) {
+            var aMid = (aLo + aHi) >> 1;
+            var hb = solveAt(0, tp, aMid);
+            if (hb) { absorb(hb); aHi = aMid; } else aLo = aMid + 1;
+          }
+          tolStar = tp; hitKi = aHi;
+          break outer;
+        }
+        prevInfeasible = ki2;
+        if (ki2 >= hCap) break;
+      }
+    }
+  }
+  // ③ 择优：定档位全起点锦标赛（分片跳格 + 双闸早停，结构不变）
+  if (main && tolStar >= 0) {
     var bestRing = main, bestSt2 = mainSt, si;
     for (si = 1; si < Bl.length; si++) {
       if (bud.left < 0) break;
       if (GS.__shard && si % GS.__shard.n !== GS.__shard.k) continue;
       if (bestSt2.cross === 0 && bestSt2.cov >= Bl.length) break;   // 双闸早停（v1.5 同款）
-      var h2 = solveAt(si, tolStar, hitKi);
-      if (h2) {
-        var st2 = KIT.ringStats(h2.ring, B);
-        if (KIT.ringBetter(st2, bestSt2)) { bestRing = h2.ring; bestSt2 = st2; }
+      var h3 = solveAt(si, tolStar, hitKi);
+      if (h3) {
+        var st3 = KIT.ringStats(h3.ring, B);
+        if (KIT.ringBetter(st3, bestSt2)) { bestRing = h3.ring; bestSt2 = st3; }
       }
     }
     main = bestRing; mainSt = bestSt2;
