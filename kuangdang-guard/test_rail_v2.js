@@ -531,6 +531,26 @@ const NOTCH_RING = '3,5 4,5 5,5 6,5 7,5 7,4 7,3 7,2 7,1 6,1 5,1 4,1 3,1 2,1 1,1 
   });
 }
 
+// [V13] 怪兽真盘 09:05（大王 2026-10-10 导出；原复刻工具 debug_monster.js 转存后删除）：
+//   病史：v1 冷解 16 步残环（烧穿）。v2 无墙钟 58 步满环、生产墙钟 ~500ms 64 步。
+//   锁：无墙钟口径 ≥56 步且合法、零往返。
+const MONSTER_0905 = [
+  '...G##.G#', 'G...##..#', '#..#.G.G#', '#..#..#..', '#G....#.G',
+  '..#.T.###', '..#.C.###', 'G.#...##g', '###...###', '##..#####',
+  'g#G.g####', '##..###g#', '##G.#####'];
+{
+  withSize(9, 13, () => {
+    setupFromRows(MONSTER_0905);
+    GS.railV2 = true;
+    GS.recomputeRails();
+    GS.railV2 = false;
+    const err = ringError(GS.railPath);
+    check('[V13a] 09:05 冷解合法', !err, err);
+    check('[V13b] 09:05 冷解 ≥56 步（v1 同盘 16 步残环）', GS.railPath.length >= 56, '步数 ' + GS.railPath.length);
+    check('[V13c] 09:05 零往返格', !hasBacktrack(GS.railPath), '往返格 ' + hasBacktrack(GS.railPath));
+  });
+}
+
 console.log('正确性：' + pass + ' 通过 / ' + fail + ' 失败');
 if (fail) { console.log(failures.join('\n')); process.exit(1); }
 
