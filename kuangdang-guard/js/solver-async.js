@@ -169,13 +169,8 @@ window.SOLVER_ASYNC = (function () {
     GS.station = p.station;                 // STATION.solve 已在 worker 内跑过
   }
 
-  // ringBetter 同判据（state.js 闭包内实现主线程拿不到，这里按定义复刻一行版）；
-  //   ⚠️ 三级字典序口径变更时两处必须同步改（见 state.js ringBetter 注释）。
-  function betterSt(a, b) {
-    return a.cov > b.cov ||
-      (a.cov === b.cov && a.cross < b.cross) ||
-      (a.cov === b.cov && a.cross === b.cross && a.cells < b.cells);
-  }
+  // ringBetter 判据：v1.6.92 起直接用 state.js 挂出的 GS.ringBetter（此前在此按定义
+  //   复刻一份 betterSt，⚠️"口径变更两处必须同步改"的漂移隐患已消除——单一口径）。
   function stEq(a, b) {
     return a && b && a.cov === b.cov && a.cross === b.cross && a.cells === b.cells;
   }
@@ -192,7 +187,7 @@ window.SOLVER_ASYNC = (function () {
     for (var i = 0; i < batch.got.length; i++) {
       var r = batch.got[i];
       if (r.err || !r.st || !r.railPath || r.railPath.length < 4) continue;  // 失败片不进池
-      if (!best || betterSt(r.st, best.st) ||
+      if (!best || GS.ringBetter(r.st, best.st) ||
           (stEq(r.st, best.st) && r.k < best.k)) best = r;
     }
     if (!best) return;   // 全体失败 → 保留当前环（与同步"求解失败不动旧环"一致）

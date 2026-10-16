@@ -5,8 +5,10 @@
 //   玩家行为的 JSON 行流水。记录范围（拍板：施工/经济/战斗三类，铁轨重算不记）：
 //   · 施工：cleanPay（抽形状付费）/ cleanApply / cleanFail（清理成败与原因）/
 //     cleanDiscard（形状作废）/ cleanUndo（撤销清理，v1.4.5）/ buildHero（英雄卡建造）/
+//     buildBuilding / buildCancel（v1.6.23：建筑卡落位 / 取消收回）/
 //     heroCancel（英雄卡拖空或非法位收回，v1.4.10）/ summon / summonFail / merge / mergeFail
-//   · 经济：waveStart（带金币快照）/ waveEnd / deliver（车斗+站台分项、结余）
+//   · 经济：waveStart（带金币快照）/ waveEnd / deliver（车斗+站台分项、结余、爱心数）
+//     / heal（v1.6.22：到站交付爱心回血后的血量快照）
 //   · 战斗：coreHit（镇中心每次受伤后的血量）/ gameOver / newGame（含重开）
 //
 // 设计口径：
@@ -19,7 +21,7 @@
 // ============================================================================
 window.LOG = {};
 
-LOG.VER = 'v1.6.21';   // 记录器数据格式版本（随规格版本更新；头部 # ver= 行用它）
+LOG.VER = 'v1.7.8c';   // 记录器数据格式版本（随规格版本更新；头部 # ver= 行用它）
 LOG.CAP = 3000;   // 环形上限：超出丢弃最旧事件
 LOG.buf = [];     // 事件缓冲：{t, ev, ...附加字段}
 LOG._t0 = (typeof performance !== 'undefined' && performance.now)

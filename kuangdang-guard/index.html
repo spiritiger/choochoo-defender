@@ -15,9 +15,8 @@
       <div class="hud-cell"><span class="hud-key">城墙</span><span id="hudCore" class="hud-val">100</span></div>
       <div class="hud-cell"><span class="hud-key">波次</span><span id="hudWave" class="hud-val">-</span></div>
       <button id="btnSpeed" class="hud-btn" title="游戏倍速循环 ×1→×2→×3；本会话内保持，关掉网页重置">×1</button>
-      <button id="btnExport" class="hud-btn" title="复制当前地图数据（调试用）">导出地图</button>
-      <button id="btnLog" class="hud-btn" title="复制本次行为记录（JSON 流水，供统计与平衡数值）">导出记录</button>
-      <button id="btnForce" class="hud-btn" title="放开求解时间预算重算铁轨（界面会暂时卡住）">强制刷新</button>
+      <!-- v1.6.67（大王令）：导出地图/导出记录/强制刷新 收编进【菜单】弹层，右上角只留一个入口 -->
+      <button id="btnMenu" class="hud-btn" title="工具菜单：导入/导出地图、导出记录、强制刷新">菜单</button>
     </header>
 
     <div id="fieldWrap">
@@ -34,7 +33,8 @@
         <button id="btnSummon" class="btn">抽卡(5)</button>
       </div>
       <div id="deckRow"></div>
-      <div id="status"></div>
+      <!-- v1.6.39：#status 提示行已退役（大王令"已入牌库之类的提示文本没有必要"），
+           footer 随之压缩 232 → 148 -->
     </footer>
 
     <!-- 三选一弹层（v1.4）：点【抽卡】→ 发三张卡 → 必须选一张进牌库 -->
@@ -45,12 +45,71 @@
       </div>
     </div>
 
-    <!-- 挑战失败遮罩（v1.3-rc）：镇中心血量归零 → 锁全部操作，只留重开 -->
+    <!-- 工具菜单弹层（v1.6.67 大王令）：导入/导出地图、导出记录、强制刷新统一收纳；
+         点击暂停游戏，关闭恢复。之后新增工具类功能也放这里 -->
+    <div id="menuOverlay" class="hidden">
+      <div id="menuBox">
+        <div id="menuTitle">工具菜单</div>
+        <div class="menuRow">
+          <button id="btnExport" class="btn" title="复制当前地图数据（调试用）">导出地图</button>
+          <button id="btnLog" class="btn" title="复制本次行为记录（JSON 流水，供统计与平衡数值）">导出记录</button>
+        </div>
+        <div class="menuRow">
+          <button id="btnForce" class="btn" title="放开求解时间预算重算铁轨（界面会暂时卡住）">强制刷新</button>
+        </div>
+        <!-- v1.6.70：粘贴区常驻（大王拍板 A 案）——砍掉【导入地图】按钮与展开状态机，零点击直达 -->
+        <div id="importArea">
+          <textarea id="importText" spellcheck="false"
+            placeholder="要复刻盘面就粘导出数据，不用可无视"></textarea>
+          <button id="btnImportGo" class="btn">确认导入</button>
+        </div>
+        <!-- v1.7.0 关卡模式（§14.62 大王令）：随机（默认）/ 固定线性关卡 5 关，
+             两步确认防误触丢局，生效即重开新局 -->
+        <div id="modeArea">
+          <div id="modeTitle">关卡模式</div>
+          <div class="menuRow">
+            <button id="btnModeRandom" class="btn" title="随机生成地图，无限波次（默认）">随机模式</button>
+          </div>
+          <div class="menuRow" id="levelBtnRow">
+            <button class="btn lvBtn" data-lv="0" title="第 1 关 · 均衡">第1关</button>
+            <button class="btn lvBtn" data-lv="1" title="第 2 关 · 四角">第2关</button>
+            <button class="btn lvBtn" data-lv="2" title="第 3 关 · 双翼">第3关</button>
+            <button class="btn lvBtn" data-lv="3" title="第 4 关 · 环心">第4关</button>
+            <button class="btn lvBtn" data-lv="4" title="第 5 关 · 边陲">第5关</button>
+          </div>
+          <div id="modeHint"></div>
+        </div>
+        <!-- v1.7.3 终局预览（§14.63）：建造期在真地图上叠"资源连通清空区"外轮廓虚线，
+             标出哪些空地清到底会变轨道 —— 开关在工具弹层、效果在画布（v1.6.67 铁律） -->
+        <div class="menuRow">
+          <button id="btnFinalPreview" class="btn" title="在地图上画出连通全部资源后的铁轨外轮廓（虚线格 = 清到底会变轨道）">终局预览：关</button>
+        </div>
+        <div id="menuHint"></div>
+        <button id="btnMenuClose" class="btn">关闭</button>
+      </div>
+    </div>
+
+    <!-- 关卡通关弹层（v1.7.0）：清完第 10 波收车 → 通关（§14.62） -->
+    <div id="winOverlay" class="hidden">
+      <div id="winBox">
+        <div id="winTitle">关卡完成</div>
+        <div id="winInfo">-</div>
+        <div class="winRow">
+          <button id="btnNextLevel" class="btn">下一关</button>
+          <button id="btnReplayLevel" class="btn">重打本关</button>
+        </div>
+        <button id="btnWinRandom" class="btn">回随机模式</button>
+      </div>
+    </div>
+
+    <!-- 挑战失败遮罩（v1.3-rc）：镇中心血量归零 → 锁全部操作，只留重开；
+         v1.7.0 关卡模式加「回随机模式」，按钮文案改「重打本关」 -->
     <div id="overOverlay" class="hidden">
       <div id="overBox">
         <div id="overTitle">镇中心陷落</div>
         <div id="overWave">坚守波次：-</div>
         <button id="btnRestart" class="btn">重新开始</button>
+        <button id="btnOverRandom" class="btn">回随机模式</button>
       </div>
     </div>
   </div>
@@ -62,8 +121,13 @@
 <script src="js/config/map.js"></script>
 <script src="js/log.js"></script>
 <script src="js/state.js"></script>
+<script src="js/levels.js"></script>
+<script src="js/resources.js"></script>
+<script src="js/cards.js"></script>
 <script src="js/station.js"></script>
 <script src="js/towers.js"></script>
+<script src="js/affixes.js"></script>
+<script src="js/exp.js"></script>
 <script src="js/foes.js"></script>
 <script src="js/clock.js"></script>
 <script src="js/transport.js"></script>

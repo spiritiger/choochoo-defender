@@ -1,0 +1,14 @@
+[
+    "dom.js",
+    "config.js",
+    "state.js",
+    "pathfinding.js",
+    "mapgen.js",
+    "towers.js",
+    "monsters.js",
+    "combat.js",
+    "ui.js",
+    "input.js",
+    "renderer.js",
+    "main.js"
+]

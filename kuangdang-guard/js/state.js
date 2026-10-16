@@ -5,15 +5,17 @@ GS.newGame = function () {
   GS.gold = 30;   // v1.3.1：初始金币 120 → 30（大王拍板；开局空地仅 2 格，清废墟成为前期核心决策）
 
   GS.buildings = [];
+  GS.__fpRail = null;   // v1.7.5：终局预览真链环缓存随新局失效（restart/startLevel 均经 newGame）
 
-  // grid[r][c] = { t: 'blank'|'rubble', gold: 是否金币地块, harvested: 本圈是否已收过, b: building|null }
+  // grid[r][c] = { t: 'blank'|'rubble', gold: 是否金币地块, heart: 是否爱心地块,
+  //                harvested: 本圈是否已收过（金币/爱心共用一个标记，二者互斥）, b: building|null }
   GS.grid = [];
   for (var r = 0; r < CFG.MAP_ROWS; r++) {
     var row = [];
     for (var c = 0; c < CFG.MAP_COLS; c++) {
       // 开局除内区外全部废墟（大王定案 2026-09-21 第二批）：空白只来自
-      // 3×5 内区、金币地块（placeGoldInit 会清成 blank）和玩家清理。
-      row.push({ t: 'rubble', gold: false, harvested: false, b: null });
+      // 3×5 内区、金币/爱心地块（place*Init 只置标记、不动 t）和玩家清理。
+      row.push({ t: 'rubble', gold: false, heart: false, harvested: false, b: null });
     }
     GS.grid.push(row);
   }
@@ -37,11 +39,27 @@ GS.newGame = function () {
   GS.buildings.push(core);
   GS.core = core;
 
-  GS.placeGoldInit(CFG.GOLD_TILES);
+  // 开局资源格撒点（v1.6.22b 统一规则，大王令"爱心和金币都使用一套规则"）：
+  //   先爱心（落点带受限，先放掉）、后金币（全区，后放铺开）；两者共用
+  //   `GS._placeResource`（最远点采样 + 最小间距 CFG.RES_GAP），互相拉开不贴身。
+  //   放不满会整体重试（见 GS.placeResourceInit）。
+  GS.goldTiles = [];
+  GS.heartTiles = [];
+  GS.placeResourceInit();
 
   // 列车（v0.9.2）：cargo = 车上堆的金币（规则 6，到站才交付）。
+  //   v1.6.22：hearts = 车上堆的爱心数（同款"到站才交付"，交付时回血）。
+  //   v1.6.25：picked = **拾取流水**（每次拾取 push 一枚 'gold'|'heart'）——只服务
+  //     车头屁股货堆的渲染（renderer.js），**不参与任何数值计算**；cargo / hearts
+  //     才是数值权威。到站交付时随 deliver 一并清空（一"圈"一堆）。
   //   站台由 recomputeRails 末尾的 STATION.solve 解出，这里先清空。
-  GS.train = { index: 0, frac: 0, cargo: 0 };
+  GS.train = { index: 0, frac: 0, cargo: 0, hearts: 0, picked: [] };
+  // 交付飘字队列（v1.6.32 大王令"交付时飘字，包括生命和金币"）：**纯表现**，
+  //   每条 = { kind:'gold'|'heal', text, x, y, t, ttl }。ENG 生成/衰减、REND 绘制。
+  GS.floats = [];
+  // 粒子层（v1.6.43 大王令 B/E：怪死亡特效 + 爆炸视觉共用地基）。**纯表现**：
+  //   每枚 = { kind:'ring'|'puff'|'spark', x, y, ... }（画布像素）。ENG 生成/衰减、REND 绘制。
+  GS.fx = [];
   GS.station = null;
   if (typeof CLOCK !== 'undefined') CLOCK.reset();   // 新局回到白天
 
@@ -50,9 +68,15 @@ GS.newGame = function () {
   //   TOWERS/FOES 的数组重置由 ENG.restart 统一调 reset（本函数保持模块无关）。
   GS.towers = [];
   GS.foes = [];
+  // 固定刷怪点（v1.6.50 大王令）：GS.nextSpawns = 下一波点位（白天预警画它），
+  //   FOES.prepareNext 生成（newGame/波末/FOES.reset 三处触发，此处守卫兜底）。
+  GS.nextSpawns = null;
+  if (typeof FOES !== 'undefined' && FOES.prepareNext) FOES.prepareNext();
   GS.coreMaxHP = CFG.CORE_HP;
   GS.coreHP = CFG.CORE_HP;
   GS.gameOver = false;
+  // 关卡模式通关旗（v1.7.0 §14.62）：新局一律未通关；GS.mode/levelIdx 是元状态不在此清
+  GS.levelDone = false;
   // v1.4 卡牌大改：牌库（[{kind:'shape',shape}|{kind:'hero',elem}]）
   // ⚠️ GS.wagons 独立车厢列表已退役（v1.4.1 大王纠偏"车厢是独立作战单位"）：
   //   车厢 = GS.towers 的镜像投影（每座英雄塔一节同元素同星车厢，见 engine.js ENG.WAGON）
@@ -61,69 +85,29 @@ GS.newGame = function () {
   //   公式唯一入口 = GS.drawCost()；GS.drawCount = 本局已付钱抽卡的次数（新局清零，
   //   三选一弹层里放弃/选卡都不退钱也不计数，只在实际扣费时 +1）。
   GS.drawCount = 0;
+  // v1.6.34 词条系统（exp.js / affixes.js）：经验三态 + 地面物三类。
+  //   exp = 当前经验；expTaken = 已获得词条数（决定阈值 10+10n）；expPending = 待发牌数。
+  //   ⚠️ 状态放 GS（加载序在前）⇒ 新局直接重置，不依赖 exp.js 是否已加载。
+  GS.exp = 0; GS.expTaken = 0; GS.expPending = 0;
+  GS.mines = []; GS.fireZones = []; GS.frostZones = [];   // 地雷 c1 / 烈焰 c4 / 霜痕 i3
+  // v1.6.36 大王令"词条选中即全场生效，不需要装备"：**全局词条集合**（id → 1）。
+  //   选中即 gainAffix 进这里，对场上所有对应塔型的车厢生效；不进牌库、不落塔。
+  GS.playerAffixes = {};
+  // v1.6.37 大王令"抽词条卡牌的时候，游戏需要暂停"：**全局暂停旗** ——
+  //   词条三选一弹出时置 true（main.js 跳过 ENG.update：昼夜/刷怪/列车/战斗全停，
+  //   渲染照常画静止画面），选卡关层即恢复。普通抽卡不暂停（白天本就停车）。
+  GS.paused = false;
   // v1.4.5：撤销点（最近一次形状卡清理的 was 快照 + 被消耗的卡），新局清零。
   //   由 UI.settleClean 成功时打包，ENG.undoShape 消费后置 null。
   GS.undoClean = null;
 
-  GS.selToken = null;      // 当前使用的工具：{kind:'shape',si,cells} | {kind:'econ'}
   GS.offer = [];
 
   GS.recomputeRails();
   // v1.6 求解后台化：新局作废飞行中的异步结果（指纹守卫之外的双保险）。
   //   newGame 的开局环保持同步算（12 格小环毫秒级，且列车/渲染立即可用）。
   if (typeof SOLVER_ASYNC !== 'undefined') SOLVER_ASYNC.invalidate();
-  // v1.3-rc：三选一退役（拍板分叉 ①），不再自动发牌。nextOffer 保留不调用（回退保险）。
-  // GS.nextOffer(false);
-};
-
-// v1.6.15（大王令 2026-10-10）：下一抽的价格 = 10 + 10 × 已抽次数
-//   （首抽 10 → 20 → 30 → …，无上限封顶；沿革：v1.4.4 首抽 10 / v1.4.8 改 5 / 本次改回 10 起步步进 10）。
-//   UI 层（按钮文案 / 禁用判断 / 扣费）一律走这里。
-GS.drawCost = function () {
-  return 10 + 10 * (GS.drawCount || 0);
-};
-
-// 开局撒金币地块（大王定案 2026-09-21，v0.6.12 修订）：不再预置经济建筑，改为 10 个金币地块。
-//   · **金币地块视为初始有障碍物**（v0.6.12 大王定案）：格子上就是废墟 + 一枚金币
-//     （t 保持 'rubble'，只置 gold 标记）。所以开局**不可铺轨、列车不能通过**，
-//     要先用清理形状把它清成空地（金币保留）之后，才照旧可铺轨 / 驶入 +5。
-//     外观仍是 v0.6.7 定案的样子（空白底 + 金币图标），见 renderer.js。
-//   · 落点限制：只避开 5×7 初始障碍圈（含内区）—— 那一圈必须"全部是障碍物"，
-//     且金币太贴镇中心也没有"长出去收钱"的动力。
-//   · 分布（v0.6.6）：**最远点采样** —— 每放一个新金币，先随机抽 K 个合法候选点，
-//     挑"离已有金币的最小距离"最大的那个落子。纯随机容易扎堆，这样 10 个金币
-//     会均匀摊满全场。第一枚没有参照物，纯随机。
-//   · 每圈结算见 transport.js：驶入 +CFG.GOLD_RATE，一圈只算一次，跑完一圈重置。
-GS.placeGoldInit = function (n) {
-  var cC = Math.floor(CFG.MAP_COLS / 2), cR = Math.floor(CFG.MAP_ROWS / 2);
-  GS.goldTiles = [];
-  var K = 30;                       // 每枚金币的候选点抽样数
-  var placed = 0, guard = 0;
-  while (placed < n && guard++ < 100) {
-    var best = null, bestScore = -1;
-    for (var k = 0; k < K; k++) {
-      var c = Math.floor(Math.random() * CFG.MAP_COLS);
-      var r = Math.floor(Math.random() * CFG.MAP_ROWS);
-      if (Math.abs(c - cC) <= 2 && Math.abs(r - cR) <= 3) continue;   // 5×7 初始圈内不放
-      var cell = GS.grid[r][c];
-      if (cell.gold || cell.b) continue;
-      // 候选打分：到所有已放金币的最近距离（平方即可，免开方）
-      var dmin = Infinity;
-      for (var g = 0; g < GS.goldTiles.length; g++) {
-        var dc = c - GS.goldTiles[g].c, dr = r - GS.goldTiles[g].r;
-        var d2 = dc * dc + dr * dr;
-        if (d2 < dmin) dmin = d2;
-      }
-      if (dmin > bestScore) { bestScore = dmin; best = { c: c, r: r }; }
-    }
-    if (!best) continue;            // 这一轮没抽到合法点，换一批重来（guard 兜底）
-    var bc = GS.grid[best.r][best.c];
-    bc.gold = true;                 // 注意：**不动 t** —— 金币埋在废墟里，需清理才能用
-    bc.harvested = false;
-    bc.flash = 0;
-    GS.goldTiles.push(best);
-    placed++;
-  }
+  // v1.3-rc：三选一退役，nextOffer 已随 v1.6.57 代码精简移除（原文见归档 js-before-cleanup-20261015/cards.js）。
 };
 
 // ============================================================================
@@ -983,6 +967,10 @@ function makeRailSolverKit(COLS, ROWS, coreC, coreR) {
       (a.cov === b.cov && a.cross < b.cross) ||
       (a.cov === b.cov && a.cross === b.cross && a.cells < b.cells);
   }
+  // v1.6.92 精简：挂到 GS 供 solver-async 分片合并复用 —— 此前 solver-async 按定义
+  //   复刻了一份 betterSt（⚠️"口径变更两处必须同步改"的漂移隐患），现统一走这里
+  //   （worker 内跑同份 state 源码，同样自动带上，双端单一定义）。
+  GS.ringBetter = ringBetter;
 
   // 合法性复核（与 test_rail.js ringError 同口径）：正交 / 每格 ≤2 / 无向边 ≤2（第 2 次反向）/
   //   无同向重边 / 围住镇中心。⑥ trimDetours 与 ⑦ reweaveTwins 共用（v1.4.9 提升口径）。
@@ -1982,6 +1970,19 @@ GS.recomputeRailsV2 = function () {
   }
   KIT.setPROT(PROT);
 
+  // 并行分片合并契约（v1.6 solver-async）：worker 解完读 GS.ringStatsOf 算终环三量回传，
+  //   主线程按 ringBetter 合并取最优。
+  //   ⚠️⚠️ 必须挂在**本函数**里（v1.6.28 修复）：v1.6.9 rail-v2 转正后本函数成了默认路径，
+  //     而此前只有 v1 函数挂了这个钩子 ⇒ v2 下 GS.ringStatsOf 恒 undefined ⇒ worker 胶水
+  //     `GS.ringStatsOf ? … : null` 恒得 null ⇒ onResult 的「失败片过滤」`!r.st` 把**每一片
+  //     都丢掉** ⇒ best=null ⇒ 主线程静默保留旧环 —— 真浏览器里表现为「清了格子/撤销后
+  //     铁轨一动不动」（诊断盘 2026-10-13：车尾下方清出 2×2，rail 仍是开局 12 格环）。
+  //     同步路径（newGame / file:// 降级 / 强制刷新）不经 worker，故一直正常 —— 这是
+  //     该 bug 藏了这么久的原因：**只有 http + Worker 这条链会触发**。
+  //   ⚠️ 位置不能动：必须在**任何 early return 之前**（skip 闸 / 退化盘分支都会提前 return），
+  //     否则 worker 第一发就可能读到 undefined。
+  GS.ringStatsOf = function (ring) { return KIT.ringStats(ring, GS.contourB); };
+
   // 盘面指纹（只看可铺轨位图；金币/装饰不影响解）
   var fp = [];
   for (var rr0 = 0; rr0 < ROWS; rr0++) {
@@ -2002,15 +2003,23 @@ GS.recomputeRailsV2 = function () {
     }
     return pr;
   }
-  var prev = prevRingValid();
+  // v1.6.69：强刷丢 prev 走冷解——暖解增量通道费时（实报盘暖解 3s 封顶仅 66 步，
+  //   冷解 2s 即达最优 62），且"刷新"语义本就是推倒重来；旧环仍留在 GS.railPath，
+  //   若本次真一无所得（理论不会，R3 保底）也不至于比之前更糟。
+  var prev = GS.forceRefresh ? null : prevRingValid();
 
   // —— 烧穿省略闸：同指纹 + 上轮已完成全量求解 + 输出字段未被别路覆盖 ⇒ 原样保留 ——
   // ⚠️ 闸门契约补全（2026-10-11 转正轮 test_rules 实锤）：「同指纹已解过 ⇒ 输出
   //   仍在」必须包含站台已解——newGame 不清 railPath 且开局盘指纹与上局末态相同
   //   时（都只剩 3×5 内区可铺），旧闸误跳过 ⇒ 站台 null ⇒ 发车/夜晚全灭。
   //   GS.station 为空即输出不完整，不跳，走全量。
+  // ⚠️ v1.6.65 病灶修复（大王实报"强制刷新也不能解决"）：**forceRefresh 必须旁路本闸**——
+  //   实机链路：某次清理后 worker 400ms 墙钟掐断 → anytime 保底劣环写入 __v2cache
+  //   （fp/railLen 齐备）→ 大王按强制刷新：指纹未变 + 旧环仍 valid + railLen 相同
+  //   ⇒ 闸直接 return，0ms 原样保留 ⇒ 刷新形同虚设（重放脚本实锤：skip 0ms / 环未动）。
+  //   修复后：forceRefresh 无视省略闸真重算（墙钟本就由 noDeadline 放开）。
   var stComplete = (typeof STATION === 'undefined') || !!GS.station;   // 环境感知：没加载站台模块的沙箱不适用此闸
-  if (!GS.railFast && stComplete && GS.__v2cache && GS.__v2cache.fp === fp && prev &&
+  if (!GS.railFast && !GS.forceRefresh && stComplete && GS.__v2cache && GS.__v2cache.fp === fp && prev &&
       GS.__v2cache.railLen === GS.railPath.length) {
     GS.__v2last = { provenance: 'skip', ms: Date.now() - __t0, fp: fp };
     if (GS.railProbeOn) {
@@ -2125,14 +2134,26 @@ GS.recomputeRailsV2 = function () {
   var hCap = hcount < 16 ? hcount : 16;
 
   // —— 统一锦标赛（D2；si=0 定容差档 → 全起点择优，与 v1 主解同构）——
-  var V2_MAIN_MS = GS.railFast ? 90 : 500, V2_EXACT_MS = 250;
+  // v1.6.68 大王拍板 A 案：主池墙钟 500→1000ms（劣环侦察 2026-10-15：语料 84 盘
+  //   99% 在 500ms 已达无墙钟质量、提预算零收益；尾部难盘（9×13 实报盘）
+  //   500ms=74 步劣环 → 1000ms=64 步（-10）→ 2000ms=62 步最优。1000ms 档实测
+  //   最差 ~1s ≈ 改前 500ms 档实际最差（墙钟只在探测间检查，本来就超）⇒
+  //   冻结增量≈0 而尾部盘大半收益。C 案（检测劣环后台自动换环）已立待办。
+  var V2_MAIN_MS = GS.__v2msOverride || (GS.railFast ? 90 : 1000), V2_EXACT_MS = 250;   // __v2msOverride=预算侦察旋钮（默认不设 ⇒ 走本档）
+  // v1.6.69 统一墙钟口径（强刷封顶）：debugNoDeadline=测试/质量口径真无墙钟；
+  //   forceRefresh=强刷封顶 3000ms——侦查实锤 2000ms 已达实报盘最优（§14.45），
+  //   原 1e15 无墙钟在病盘可冻 30s 级；常规路径按各自配额。
+  function v2Deadline(ms) {
+    if (GS.debugNoDeadline) return 1e15;
+    if (GS.forceRefresh) return Date.now() + 3000;
+    return Date.now() + ms;
+  }
   // 主池节点 = 450 万（对齐 v1 全链四级预算总量 ~3×150万；hard6 实测：单池 150 万在
   //   1.67M 节点处的解被截断、烧穿落核心环，×10 则命中同 v1 的 52 步满覆盖）。
   //   生产端 700ms 墙钟仍是硬顶，此值只放宽无墙钟口径（测试/强刷）的搜索上限。
   var V2_NODES = GS.__v2nodesOverride || GS.__v2testNodes || 4500000;   // override=调参旋钮 / test=确定性烧穿用例
   function freshV2(ms) {
-    var noDeadline = GS.debugNoDeadline || GS.forceRefresh;
-    return { left: V2_NODES, deadline: noDeadline ? 1e15 : Date.now() + ms };
+    return { left: V2_NODES, deadline: v2Deadline(ms) };
   }
   var bud = freshV2(V2_MAIN_MS);
   var main = null, mainSt = null, tolStar = -1, hitKi = -1;
@@ -2193,8 +2214,16 @@ GS.recomputeRailsV2 = function () {
   // ① 乐观探测：最紧档直接命中（常规盘一步收工，与旧版开销持平）
   var opt = probePoint(0, 0, 0);
   if (opt.st === 1) { absorb(opt); tolStar = 0; hitKi = 0; }
-  // ② 跳步定档：tol 逐档，档内 ki 按 2 的幂跳步；三态处理（无解=下界、干净=命中、
-  //    脏=可行上界→向下二分找干净档；全脏也定档，让 ③ 的全起点去找干净环）
+  // ② 跳步定档：tol 逐档，档内 ki 按 2 的幂跳步（0,1,2,4,8,16,…）；三态处理（无解=下界、
+  //    干净=命中、脏=可行上界→向下二分找干净档；全脏也定档，让 ③ 的全起点去找干净环）。
+  //    ⚠️ 2026-10-12「能满没满」修复轮定稿：**保留本跳步原样**——它是常规盘的快车道，且
+  //    跳步点命中都便宜。它有一个已知弱点：会**跨过中间窄可解窗口**（hard78 满覆盖解在
+  //    k14，跳步只探 0,1,2,4,8,16；而 k16 是搜索空间膨胀点，硬烧 450 万预算）——该弱点
+  //    **交由 ③b 兜底（已改为「便宜端快跳 + 二分」）找回**，不在主跳步里动（曾试过把本跳步
+  //    改成「快跳+二分」，结果 hard67 反而退化：其窗口在顶档 k13..k16 且命中 0 节点，而
+  //    中间 k12 是 1135 万节点的昂贵无解坑，二分首个探测恰踩坑 → 全链落 peel 只剩 19/45）。
+  //    ⇒ 分工：主跳步管「顶档便宜」的盘（hard67 直接命中 k16），③b 管「顶档昂贵、窗口
+  //    在中间」的盘（hard78）。代价剖面见 ③b 处注释。
   var dirtyOnly = false;
   if (!main) {
     var steps = [0, 1, 2, 4, 8, 16, 32, 64, 128], tp, kp;
@@ -2241,21 +2270,83 @@ GS.recomputeRailsV2 = function () {
       }
     }
   }
-  // ③b 兜底降档扫描（主排程烧穿仍无干净环时；reg127 实锤补丁）：
-  //    **升档要付"无解证明"（指数阶），降档只付"命中"（毫秒级）**——从最宽档往下
-  //    找首个干净命中，从不撞证明墙。独立小预算（150ms/150 万节点），只在烧穿盘
-  //    触发（~10%），正常盘零开销。这不是 v1 双车道的复活：它不依赖主排程的任何
-  //    结论，只是同一单调性洞察的另一面（v1 ② 的正确内核，anytime 语义收编）。
+  // ③b 兜底定档（主排程烧穿仍无干净环时触发；reg127 补丁 + 2026-10-12「能满没满」修复）：
+  //    独立小预算（150ms / 450 万节点），只在烧穿盘触发（~10%），常规盘零开销。
+  //    ▍为什么必须存在（2026-10-12 定稿）：主跳步 ② 会跨过中间窄可解窗口，本通道就是
+  //    把那个窗口找回来的地方。tol0 逐 k 代价剖面（每档独立预算，单位万节点）：
+  //      hard78 : 无解带 k0..k13【k12=237,k13=653】 可行 k14=168（k15=488,k16=1372）
+  //      hard250: 无解带 k0..k10【k10=80】          可行 k11=46
+  //      hard260: 无解带 k0..k9 【k9=52】           可行 k10=18
+  //      hard356: 无解带 k0..k8 【k8=8】            可行 k9=9
+  //    ⇒「无解证明」代价随 k 指数上升、「可行档命中」普遍便宜。故：
+  //      ① 便宜端快跳 0,1,2,4,8（单调 ⇒ 都无解则 ≤8 全无解，代价极低）；
+  //      ② 主池二分 (8,hCap] 求最小可行档——天然跳过昂贵中间无解档（hard78 只探
+  //         k12(237万)+k14(168万)≈405万，不见 k13）；护栏=预算耗尽即停、保留已得最小档，
+  //         故 k60 那类便宜盘的"最小档精化"照常跑到（38 步 3 列环依赖它）。
+  //    ⚠️ 与旧码差别（旧=最宽 tol 降序 + hCap 降序 + 遇 null 即 break）：tol 改**从窄到宽**
+  //       （先要高质量）、ki 改**便宜端快跳+二分**（不再先烧昂贵顶档）、且**不因单个 null
+  //       直接 break**（null 可能是预算耗尽的**假无解**、非真下界；单调性只对"真无解"成立）。
+  //    ⚠️ hard67 顶档便宜（窗口 k13..k16、命中 0 节点）**不走本通道**——它中间 k12 是 1135 万
+  //       节点坑，二分首个探测会踩；这类盘由主跳步 ② 直接命中顶档解决（分工明确）。
   if (!main && bud.left < 0) {
     var dbN = GS.__v2testNodes ? GS.__v2testNodes : V2_NODES;
-    var db = { left: dbN, deadline: (GS.debugNoDeadline || GS.forceRefresh) ? 1e15 : Date.now() + 150 };
-    for (var dt = 6; dt >= 0 && db.left >= 0 && !main; dt--) {   // 宽档降序：可行命中便宜先落袋，无解证明贵的垫后
-      for (var dk = hCap; dk >= 0; dk--) {
-        var dp = probePoint(0, dt, dk, db);
-        absorb(dp);
-        if (dp.st === 1) { tolStar = dt; hitKi = dk; dirtyOnly = false; break; }
-        if (dp.st === 0) break;   // 高档都无解（罕见）→ 换 tol
+    var db = { left: dbN, deadline: v2Deadline(150) };
+    outerFallback:
+    for (var dt = 0; dt <= 6 && db.left >= 0 && !main; dt++) {
+      var dlo = 0, dhi = hCap, dfound = -1, dfDirty = false, dfi, dfk;
+      var dfast = [0, 1, 2, 4, 8];
+      for (dfi = 0; dfi < dfast.length; dfi++) {
+        dfk = dfast[dfi];
+        if (dfk > dhi) break;
+        if (dfk < dlo) continue;
+        var dpf = probePoint(0, dt, dfk, db);
+        absorb(dpf);
+        if (dpf.st !== 0) { dfound = dfk; dfDirty = (dpf.st === 2); dhi = dfk - 1; break; }
+        dlo = dfk + 1;
+        if (db.left < 0) break;
       }
+      while (db.left >= 0 && dlo <= dhi) {
+        var dmid = (dlo + dhi) >> 1;
+        var dpm = probePoint(0, dt, dmid, db);
+        absorb(dpm);
+        if (dpm.st !== 0) { dfound = dmid; dfDirty = (dpm.st === 2); dhi = dmid - 1; }
+        else dlo = dmid + 1;
+      }
+      if (dfound >= 0) { tolStar = dt; hitKi = dfound; dirtyOnly = dfDirty; break outerFallback; }
+    }
+  }
+  // ③c 高限补搜（2026-10-12 hard59 实锤；HMAX_CAP=16 会挡死"满覆盖解需要 >16 个辅助格"的盘）：
+  //    仅当现有最优**仍不满覆盖**时触发 —— 常规盘 cov 已满、hard78 快搜已满 ⇒ **零开销**。
+  //    用独立预算，在 (hCap, hCapHi] 上**从顶档 hCapHi 往下**探（tol 从 0 升，tol=0 返回的环
+  //    必然满覆盖）。为什么从顶往下：tol=0 逐 k 代价剖面（si=0，每档独立 6M）——
+  //      hard59 : k14/15/16 无解(1.39/2.45/4.06M)、**k17/k18 各烧穿 6M**、**k19..k32 全 cov30 且命中 0.00~0.03M**
+  //      hard78 : k14/15 cov41(1.68/4.88M)、**k16..k27 全烧穿 6M**、**k28..k32 又 cov41(0.01~1.94M)**
+  //    ⇒ 高段的中间是"昂贵坑"，但**真正的顶档自由度最大、命中几乎免费**（两盘皆然）。
+  //      故**从顶往下探**；⚠️ 不可从低往高（一头扎进 k17/k18 或 k16..k27 的坑，hard59 实锤）。
+  //    ⚠️ 也不可在 ② 里用二分并把上界抬到 hCapHi（首个 mid 会落进那个坑，致 hard78 退化）。
+  //    命中即收（并定档交 ④）；预算耗尽即停。实测 hard59：本通道在 (tol0,k32) 一步命中、重新满覆盖。
+  if (!GS.railFast && (!main || !mainSt || mainSt.cov < Bl.length)) {
+    var hCapHi = hcount < 32 ? hcount : 32;
+    if (hCapHi > hCap && Bl.length >= 4) {
+      var hb = freshV2(250);
+      // 从顶档 hCapHi 逐档下探**并逐个 absorb 择优**（降档命中几乎免费 ⇒ 顺带把更省的环挑出来）；
+      // 止步条件用单调性：一旦某档"真无解"（st=0 且预算没耗尽）⇒ 更低档全无解，止步该 tol；
+      // 预算耗尽也止步。命中过的 tol 即定档（hitKi 取让 main 变好的那一档）。
+      var hBestK = -1, hBestTol = -1;
+      outerHi:
+      for (var ht = 0; ht <= 6; ht++) {
+        for (var hk = hCapHi; hk > hCap; hk--) {
+          if (hb.left < 0) break outerHi;
+          var ph = probePoint(0, ht, hk, hb);
+          if (ph.st !== 0) {
+            if (absorb(ph)) { hBestK = hk; hBestTol = ht; }
+            continue;
+          }
+          break;   // st=0：真无解（单调 ⇒ 更低档全无解）或预算耗尽 → 止步该 k 降档
+        }
+        if (hBestK >= 0) break outerHi;
+      }
+      if (hBestK >= 0) { tolStar = hBestTol; hitKi = hBestK; dirtyOnly = false; }
     }
   }
   // ④ 择优：定档位全起点锦标赛（分片跳格 + 双闸早停；dirtyOnly 时 main 可能为空，
@@ -2311,7 +2402,7 @@ GS.recomputeRailsV2 = function () {
   //    常规盘 main 直接命中，本通道零开销。
   if (!main && !GS.railFast) {
     var U3 = new Uint8Array(U2), pl, peeled = null, peeledWon = false;
-    var pbud = { left: V2_NODES, deadline: (GS.debugNoDeadline || GS.forceRefresh) ? 1e15 : Date.now() + 250 };
+    var pbud = { left: V2_NODES, deadline: v2Deadline(250) };
     peel:
     for (pl = 0; pl < 25 && pbud.left >= 0; pl++) {
       var bdP = KIT.boundaryOf(U3, KIT.computeF(U3), usable), delN = 0, ps;
@@ -2433,7 +2524,11 @@ GS.recomputeRailsV2 = function () {
             var eA = comp2.length === 1 ? comp2[0] : ends2[0];
             var eB = comp2.length === 1 ? comp2[0] : ends2[1];
             var chain = [eA], curC = eA, prevC = -1;
-            while (curC !== eB) {
+            // ⚠️ 上限护栏（2026-10-12 崩盘修复）：首命中 walk 只看 prevC、无 visited——
+            //   口袋分量若含环/分叉，walk 会无限回溯把 chain 撑到爆（hard160 真墙钟盘
+            //   实锤：RangeError: Invalid array length）。合法链长恰 = comp2.length，
+            //   一旦超过即非法，直接止步（下方 `chain.length === comp2.length` 校验兜住）。
+            while (curC !== eB && chain.length <= comp2.length) {
               var nxt = -1, cc3 = colOf(curC), cr3 = rowOf(curC);
               for (var zd4 = 0; zd4 < 4; zd4++) {
                 var znc4 = cc3 + RAIL_DC[zd4], znr4 = cr3 + RAIL_DR[zd4];
@@ -2642,122 +2737,645 @@ GS.recomputeRails = function () {
   return GS.__recomputeRailsV1();
 };
 
-// ---- 三选一：清理形状 + 经济建筑 ----
-// v0.6.6：形状随机生成（CFG.randomShape），每张卡自带独立 id，
-// 供 UI 高亮/刷新签名用（旧版用 CFG.SHAPES 下标 si，已废）。
-GS._cardSeq = 0;
-GS.pickShapeCard = function (size) {
-  var sh = CFG.randomShape(size);
-  return { kind: 'shape', id: ++GS._cardSeq, name: sh.name, cells: sh.cells };
-};
-
-// 卡牌去重签名（v0.6.11）：判断"两张卡是不是同一个选项"，也是去重规则的可执行定义。
-//   · 形状按**尺寸家族**去重：只看外框两维（小的在前），所以 2×3 和 3×2
-//     视为同一形状 —— 大王反馈"偶尔出现三个一样的形状选项"，把旋转也算重。
-//   · 经济建筑只有一种，签名固定 'econ' → 最多出现一张。
-GS.cardSig = function (card) {
-  if (card.kind !== 'shape') return 'econ';
-  var w = 0, h = 0;
-  for (var i = 0; i < card.cells.length; i++) {
-    if (card.cells[i][0] + 1 > w) w = card.cells[i][0] + 1;
-    if (card.cells[i][1] + 1 > h) h = card.cells[i][1] + 1;
-  }
-  return Math.min(w, h) + 'x' + Math.max(w, h);
-};
-
-// ⚠️【v1.3-rc 退役】三选一牌组随塔防迭代整体退役（拍板分叉 ①：建造全走
-//   【抽塔】/【清理】两个按钮）。以下函数**冻结保留不调用** —— 无 git 环境
-//   的回退保险（完整快照在 archive/snapshot-v1.2-full-20260928/），
-//   test_rules.js 的既有用例也依赖它们。转正后如确认永不回退，可整体删除。
+// ---- 终局预览推演（v1.7.3，规格 §14.63；v1.7.7 回归真生成规则）----
+//   【一句话】建造期规划尺：推演"清出一片连通全部资源的空白地块后，真求解链会
+//   解出什么环"。骨架环只负责圈范围，轨道由真求解链产出（finalPreviewRail）。
 //
-// 生成三选一牌组（**保证三个选项互不重复**，v0.6.11 大王定案）：
-//   ① 牌型沿用旧概率——每张 30% 概率是经济建筑，但经济建筑**最多一张**（去重）；
-//   ② 形状按面积档位洗牌后依次发放，所以**每张卡的尺寸家族都不一样**
-//      （2×3 与 3×2 算同族，同一次抽牌不会同时出现）；
-//   ③ 位置打散，但首位保持形状卡（与旧版体感一致）。
-// 因为不存在"抽到重的就重抽"，经济卡的出现率与旧版一致（约 51% 的组合含经济卡），
-// 也不会有任何重试循环。
-GS.buildOffer = function () {
-  var econN = (Math.random() < 0.3 ? 1 : 0) + (Math.random() < 0.3 ? 1 : 0);
-  if (econN > 1) econN = 1;                       // 去重：经济建筑最多一张
-  var shapeN = 3 - econN;                         // 至少 2 张形状卡
-  // 面积档位洗牌（Fisher-Yates），按洗好的顺序发形状
-  var fams = CFG.SHAPE_SIZES.slice();
-  for (var i = fams.length - 1; i > 0; i--) {
-    var j = Math.floor(Math.random() * (i + 1));
-    var t = fams[i]; fams[i] = fams[j]; fams[j] = t;
+//   ▍v1.7.7 大王四条铁口径（验收三轮后立）：
+//     ① 铁轨沿空白地块外边缘 ② 连通所有资源点 ③ 正确线条（无孤立轨/怪弯）
+//     ④ 空白地块包含铁轨（= 现行定义 t==='blank'，铺轨不占 t）。
+//   v1.7.6 骨架环直接当轨道画是自造几何：不贴边（单侧膨胀带内缘）、core 小弧
+//   怪弯、同射线两资源先内后外必折返（单格往返，五关全有）——全部违背真规则。
+//   ⇒ 定稿（A 案"环内全清"）：骨架环降级为**推演范围发生器**——
+//     ① 节点 = 镇中心 + 全部资源格，绕 core 极角排序（atan2；同角按距升序）；
+//     ② core 替换为两个切点（主轴正交邻）；环路 = 入切点→资源…→出切点；
+//     ③ L 形展开（先横后竖）+ core 绕行小弧 —— 产 path（闭合折线，资源必经）；
+//     ④ **U = 环围域**（"环内全清、环外仍废墟"）= path 格 ∪ 内部格。
+//        内部格 = 外洪水补集：从图边界非 path 格 4 邻 BFS，不可达者即内部
+//        （无几何边界情形；同射线折返的针尖段两侧连通外部，不出假内部）。
+//        v1.7.6 的单侧膨胀 mark 退役（膨胀正是"轨道不贴边"的元凶）。
+//     ⑤ ∂U = U 中至少一个正交邻不在 U（fallback 画线用，语义沿用）。
+//   轨道本体 = finalPreviewRail 灌真求解链产物（贴边/真弯道/无孤立轨全由求解器
+//   保证）；骨架 path 只喂推演盘与 fallback，其折返病灶不再进观感。
+//
+//   纯函数零副作用（不碰 GS.grid/railPath/求解缓存，"求解器别动"铁律安全）。
+//   返回 {cells, set, u, path}（path = 骨架环格序列，可含重复格；
+//   u 含 core 格——BFS 连通/车台上轨语义）。
+GS.finalPreviewCells = function () {
+  var pts = [{ c: GS.core.c, r: GS.core.r }];
+  var gi, hi;
+  for (gi = 0; gi < GS.goldTiles.length; gi++) pts.push(GS.goldTiles[gi]);
+  for (hi = 0; hi < GS.heartTiles.length; hi++) pts.push(GS.heartTiles[hi]);
+  if (pts.length < 2) return { cells: [], set: {}, u: {}, path: [] };
+  var CORE_C = pts[0].c, CORE_R = pts[0].r;
+  // ① 极角排序（绕 core；同角按距 core **降序**，v1.7.7d）：
+  //    同射线两资源（如 (2,6)(0,6)）若内层先访问，外层的出边（去 outCut/下一
+  //    资源）必穿回内层区 → 单格往返死角（L4 西北角实锤，uTurn 两侧行全被上游
+  //    占死无解）。外层先访问则出边向外顺滑。L4 全环手推零撞。
+  var rest = pts.slice(1).map(function (p) {
+    return { p: p, ang: Math.atan2(p.r - CORE_R, p.c - CORE_C),
+             d: Math.abs(p.c - CORE_C) + Math.abs(p.r - CORE_R) };
+  });
+  rest.sort(function (a, b) {
+    if (Math.abs(a.ang - b.ang) > 1e-9) return a.ang - b.ang;
+    return b.d - a.d;
+  });
+  // ② 切点替代 core（主轴正交邻：|dc|≥|dr| 取东/西邻，否则南/北邻）
+  var mainCut = function (t) {
+    var dc = t.c - CORE_C, dr = t.r - CORE_R;
+    if (Math.abs(dc) >= Math.abs(dr)) return { c: CORE_C + (dc > 0 ? 1 : -1), r: CORE_R };
+    return { c: CORE_C, r: CORE_R + (dr > 0 ? 1 : -1) };
+  };
+  var inCut = mainCut(rest[0].p), outCut = mainCut(rest[rest.length - 1].p);
+  var ring = [inCut];
+  for (var si = 0; si < rest.length; si++) ring.push(rest[si].p);
+  ring.push(outCut);
+  // v1.7.7e 未来环点登记：ring 成员（资源 + 切点）迟早要作为端点被访问，
+  //   后续 leg 的途经格若踩上**尚未访问**的环点，等环序轮到它时必重踩
+  //   （L4 首条 leg 南下踩 (4,3)(4,1)，环序到时竖列往返实锤）→ 途经罚 3。
+  var ringSet = {};
+  for (si = 0; si < ring.length; si++) ringSet[ring[si].c + ',' + ring[si].r] = true;
+  // ③ L 形展开（先横后竖）+ 穿 core 绕外圈短弧
+  var u = {}, path = [];
+  var DIRS4 = [[0, -1], [1, 0], [0, 1], [-1, 0]];   // N E S W
+  var dirIdx = function (dx, dy) {
+    for (var i = 0; i < 4; i++) if (DIRS4[i][0] === dx && DIRS4[i][1] === dy) return i;
+    return -1;
+  };
+  // v1.7.7b 绕 core 弧改走 3×3 外圈（8 向顺时针）：4 正交邻**互不相邻**（对角关系），
+  //   旧 4 邻弧 E→S 直接跳变 = 断链/首尾距离 2（"莫名弯道"来源之一）
+  var OCT = [[0, -1], [1, -1], [1, 0], [1, 1], [0, 1], [-1, 1], [-1, 0], [-1, -1]];
+  var octIdx = function (dx, dy) {
+    for (var i = 0; i < 8; i++) if (OCT[i][0] === dx && OCT[i][1] === dy) return i;
+    return -1;
+  };
+  var mark = function (c, r) {                       // v1.7.7：只记格本身（path 格是围域
+    if (!CFG.inBounds(c, r)) return;                 // 边界；内部格由外洪水补齐，见 ④'）
+    u[c + ',' + r] = true;
+  };
+  var lastStep = null;                               // 上一 push 步方向 [dx,dy]（折返检测用）
+  var onP = {};                                      // path 已占格（U 形选侧防撞检查）
+  var push = function (c, r) {                       // 相邻重复格跳过 + 方向记录 + 占用登记
+    var n = path.length;
+    if (n && path[n - 1].c === c && path[n - 1].r === r) return;
+    if (n) lastStep = [c - path[n - 1].c, r - path[n - 1].r];
+    onP[c + ',' + r] = true;
+    path.push({ c: c, r: r });
+  };
+  var cc = 0, rr = 0;
+  // v1.7.7b step = 带方向锁的单步推进（axis 'h'/'v'）—— 旧 walk 内部"横向优先"
+  //   会覆盖 expandLeg 的段序意图（先竖后横时仍先横 ⇒ 换序判据形同虚设）
+  var step = function (b, axis) {
+    var dx = 0, dy = 0;
+    if (axis === 'h') dx = cc < b.c ? 1 : -1; else dy = rr < b.r ? 1 : -1;
+    var tc = cc + dx, tr = rr + dy;
+    if (!(tc === CORE_C && tr === CORE_R)) { cc = tc; rr = tr; mark(cc, rr); push(cc, rr); return; }
+    var i0 = octIdx(-dx, -dy), i1 = octIdx(dx, dy);  // 进入方位 → 外圈顺时针弧 → 离开方位
+    for (var st = 1; st <= 8; st++) {
+      var k = (i0 + st) % 8;
+      cc = CORE_C + OCT[k][0]; rr = CORE_R + OCT[k][1];
+      mark(cc, rr); push(cc, rr);
+      if (k === i1) break;
+    }
+  };
+  // ③' v1.7.7 同射线折返修复（大王四条之③"单格往返"病根）：同一条射线上两枚
+  //   资源（如 core 正北 (4,3) 与 (4,1)），极角同按距升序 → 先访问内层，但 L 展开
+  //   从外侧过来会"路过外层不停"走到内层，下一条 leg 目标恰是外层 → 原路折返，
+  //   中间格走两遍（五关全有，L4×3）。几何必然，排序升降序都治不了。
+  //   修法 = 该 leg 改 **U 形侧偏**：去程走本列、回程走"远离 core"的邻列，端头
+  //   两枚真弯道相连 —— 重复边消失、资源仍必经、形态 = 双列并行轨（合理路网）。
+  var uTurn = function (a, b) {                      // a→b 纯轴向共线折返时的 U 形展开
+    var horiz = (a.r === b.r);
+    var sgn = horiz ? (b.c > a.c ? 1 : -1) : (b.r > a.r ? 1 : -1);
+    var sides = horiz ? [[0, -1], [0, 1]] : [[1, 0], [-1, 0]];
+    sides.sort(function (s1, s2) {                   // 远离 core 的侧优先（贴外缘语义）
+      var d1 = Math.abs(a.c + s1[0] - CORE_C) + Math.abs(a.r + s1[1] - CORE_R);
+      var d2 = Math.abs(a.c + s2[0] - CORE_C) + Math.abs(a.r + s2[1] - CORE_R);
+      return d2 - d1;
+    });
+    for (var si = 0; si < 2; si++) {
+      var sd = sides[si];
+      var ac = a.c + sd[0], ar = a.r + sd[1];
+      var bc2 = b.c + sd[0], br2 = b.r + sd[1];
+      if (!CFG.inBounds(ac, ar) || !CFG.inBounds(bc2, br2)) continue;
+      if ((ac === CORE_C && ar === CORE_R) || (bc2 === CORE_C && br2 === CORE_R)) continue;
+      // v1.7.7b 侧偏列全程不得与 path 已占格重叠（撞则换侧）—— 否则 U 形列与
+      //   相邻 leg 的路径形成重复边（L4 实测 ×6 的病根）
+      var hit = false, sc = ac, sr = ar;
+      var uBud = Math.abs(bc2 - ac) + Math.abs(br2 - ar) + 4;  // v1.7.7d 预检预算兜底
+      while (uBud-- > 0) {
+        if (onP[sc + ',' + sr]) { hit = true; break; }
+        if (sc === bc2 && sr === br2) break;
+        if (horiz) sc += sgn; else sr += sgn;
+        if (sc === CORE_C && sr === CORE_R) { hit = true; break; }   // 途中撞 core 也换侧
+      }
+      if (uBud <= 0) hit = true;                     // 预算耗尽 = 形态不可达，换侧
+      if (hit) continue;
+      mark(ac, ar); push(ac, ar);                    // a 已在 path 尾（重复跳过）
+      sc = ac; sr = ar;
+      while (sc !== bc2 || sr !== br2) {
+        if (horiz) sc += sgn; else sr += sgn;
+        mark(sc, sr); push(sc, sr);
+      }
+      mark(b.c, b.r); push(b.c, b.r);
+      return true;
+    }
+    return false;                                    // 两侧都不可用 → 退回原直走（罕见）
+  };
+  // ③'' v1.7.7b 自适应段序（折返根治判据，双约束 + 竖段外移第三选项）：
+  //   L 展开的折返/重复边只有两个来源：
+  //     · 出口折返 —— 到达 b 的方向与下一 leg 首步反向（单格往返）；
+  //     · 入口重叠 —— 本 leg 首段与前 leg 末段共线反向（同一条边走两遍）。
+  //   三候选：① 先横后竖 ② 先竖后横 ③ 先横后竖但竖段外移 1 列（远离 core 一侧，
+  //   多出两个端头弯）—— 前两个各坏一头时（同列资源对）用 ③。逐候选查双约束，
+  //   取第一个无违例者；全违例 → ①认命（纯轴向外移不可用时由 uTurn 兜底）。
+  var segDir = function (p, q) {
+    if (p.c === q.c && p.r === q.r) return null;
+    // v1.7.7e 主导轴语义：竖向主导 leg（pickPlan 实际先竖展开）必须预测竖向——
+    //   旧"列优先"在 dc=1/dr=3 类 leg 上把 fd 预测成横向，出口折返罚分全落空，
+    //   角点资源被"向上到达"占位后下条 leg 全候选撞车 → 认命重踩 = 单格往返
+    //   （L2 (8,0)↔(8,1)、(0,11)↔(0,12) 实锤）。纯轴向 leg 两种语义同值。
+    if (Math.abs(q.c - p.c) >= Math.abs(q.r - p.r)) return [q.c > p.c ? 1 : -1, 0];
+    return [0, q.r > p.r ? 1 : -1];
+  };
+  var go = function (t, axis) {                      // 沿锁定的轴走到 t
+    // v1.7.7c 步数预算：detour 弧会横移 cc/rr，极端时序下可越过目标来回横跳，
+    //   预算耗尽强制收敛（形态妥协也不挂死）
+    var budget = Math.abs(cc - t.c) + Math.abs(rr - t.r) + 12;
+    if (axis === 'h') { while (cc !== t.c && budget-- > 0) step(t, 'h'); }
+    else { while (rr !== t.r && budget-- > 0) step(t, 'v'); }
+  };
+  var expandLeg = function (a, b, plan) {
+    if (a.c === b.c && a.r === b.r) return;
+    cc = a.c; rr = a.r;
+    mark(cc, rr); push(cc, rr);                      // a 已在 path 尾（重复跳过）
+    // v1.7.7e Z 形台阶：先走到中间行/列，横（竖）移一次，再走到 b
+    if (plan.z != null) {
+      if (plan.vert) {
+        go({ c: a.c, r: plan.z }, 'v');
+        go({ c: b.c, r: plan.z }, 'h');
+        go(b, 'v');
+      } else {
+        go({ c: plan.z, r: a.r }, 'h');
+        go({ c: plan.z, r: b.r }, 'v');
+        go(b, 'h');
+      }
+      return;
+    }
+    var sh = plan.shift || 0;
+    if (plan.hf) {
+      if (!sh) { go({ c: b.c, r: a.r }, 'h'); go(b, 'v'); }
+      else {
+        go({ c: b.c + sh, r: a.r }, 'h');
+        go({ c: b.c + sh, r: b.r }, 'v');
+        go(b, 'h');
+      }
+    } else {
+      go({ c: a.c, r: b.r }, 'v');
+      go(b, 'h');
+    }
+  };
+  var pickPlan = function (a, b, prevArr, fd) {
+    var vA = a.r === b.r ? 0 : (b.r > a.r ? 1 : -1); // 先横后竖的竖段方向
+    var hA = a.c === b.c ? 0 : (b.c > a.c ? 1 : -1); // 先竖后横的横段方向
+    // v1.7.7c 全候选打分取最小（违例不可避免时选观感损失最小的）：
+    //   入口反向重叠 / 出口折返 = 掉头贴片（观感最差，各罚 3）；中途压已占格
+    //   = 共线重复边（罚 1/格）；候选沿途越界格 = 罚 4（不可接受）。
+    var viaBad = function (cells) {
+      for (var vi = 0; vi < cells.length; vi++) {
+        var q = cells[vi];
+        if ((q.c === a.c && q.r === a.r) || (q.c === b.c && q.r === b.r)) continue;
+        if (onP[q.c + ',' + q.r]) return true;
+      }
+      return false;
+    };
+    var viaHits = function (cells) {
+      var n = 0;
+      for (var vi = 0; vi < cells.length; vi++) {
+        var q = cells[vi];
+        if (!CFG.inBounds(q.c, q.r)) return 99;       // 途经越界 = 一票否决
+        if ((q.c === a.c && q.r === a.r) || (q.c === b.c && q.r === b.r)) continue;
+        var vk = q.c + ',' + q.r;
+        if (onP[vk]) n += 1;
+        else if (ringSet[vk]) n += 3;                  // v1.7.7e 未访问环点：踩上必产重复边
+      }
+      return n;
+    };
+    var penalty = function (dIn, dOut, cells) {
+      var s = viaHits(cells);
+      if (prevArr && dIn[0] === -prevArr[0] && dIn[1] === -prevArr[1]) s += 3;
+      if (fd && dOut[0] === -fd[0] && dOut[1] === -fd[1]) s += 3;
+      return s;
+    };
+    var spanC = function (c0, c1, r) {               // 横段途经格（不含两端点；零长返空）
+      if (c0 === c1) return [];
+      var out = [], st = c0 < c1 ? 1 : -1;
+      for (var x = c0 + st; x !== c1; x += st) out.push({ c: x, r: r });
+      return out;
+    };
+    var spanR = function (r0, r1, c) {
+      if (r0 === r1) return [];
+      var out = [], st = r0 < r1 ? 1 : -1;
+      for (var y = r0 + st; y !== r1; y += st) out.push({ c: c, r: y });
+      return out;
+    };
+    // v1.7.7e 贴边平局裁决（四条铁口径之①"沿空白地块外边缘"）：penalty 并列时
+    //   优先靠地图边缘的走线——边缘距 = min(到四边距离)，经格逐格 0.01 计入。
+    //   只作平局裁决，永不翻转撞格(1/格)/折返(3)/越界(99) 罚分。
+    var edgeTerm = function (cells) {
+      var s = 0;
+      for (var vi = 0; vi < cells.length; vi++) {
+        var q = cells[vi];
+        s += Math.min(q.c, q.r, CFG.MAP_COLS - 1 - q.c, CFG.MAP_ROWS - 1 - q.r);
+      }
+      return s * 0.01;
+    };
+    // 候选 ① 先横后竖：首段 = 横向（零长则竖向），到达 = 竖向（零长则横向）
+    // v1.7.7d 转折点补查：span 不含端点，但 L 形**转折点**（如先横后竖的
+    //   (b.c,a.r)）既非 leg 端点又必被 expandLeg 踩——漏查会让已占转折点
+    //   零罚通过 → 重复边（L1 (8,2)↔(8,3) 单格往返实锤）
+    var d1in = hA ? [hA, 0] : [0, vA], d1out = vA ? [0, vA] : [hA, 0];
+    var via1 = hA ? spanC(a.c, b.c, a.r).concat([{ c: b.c, r: a.r }],
+                    spanR(a.r, b.r, b.c)) : spanR(a.r, b.r, a.c);
+    // 候选 ② 先竖后横：首段 = 竖向（零长则横向），到达 = 横向（零长则竖向）
+    var d2in = vA ? [0, vA] : [hA, 0], d2out = hA ? [hA, 0] : [0, vA];
+    var via2 = vA ? spanR(a.r, b.r, a.c).concat([{ c: a.c, r: b.r }],
+                    spanC(a.c, b.c, b.r)) : spanC(a.c, b.c, a.r);
+    // 候选 ③④ 竖段外移（需横竖两段都非零长）：到达 = 横向 -sh 方向
+    var best = { hf: true, shift: 0, arr: d1out, score: penalty(d1in, d1out, via1) + edgeTerm(via1) };
+    var s2 = penalty(d2in, d2out, via2) + edgeTerm(via2);
+    if (s2 < best.score) best = { hf: false, shift: 0, arr: d2out, score: s2 };
+    if (hA && vA) {
+      var sides = b.c > CORE_C ? [1, -1] : [-1, 1];  // 远离 core 一侧优先
+      for (var sp = 0; sp < 2; sp++) {
+        var sh = sides[sp];
+        var midC = b.c + sh;
+        if (midC < 0 || midC >= CFG.MAP_COLS) continue;   // v1.7.7c 外移列不得出界
+        var via3 = spanC(a.c, midC, a.r).concat([{ c: midC, r: a.r }],
+                    spanR(a.r, b.r, midC).concat([{ c: midC, r: b.r }],
+                    spanC(midC, b.c, b.r)));
+        var d3in = [hA, 0], d3out = [-sh, 0];
+        var s3 = penalty(d3in, d3out, via3) + edgeTerm(via3);
+        if (s3 < best.score) best = { hf: true, shift: sh, arr: d3out, score: s3 };
+      }
+      // v1.7.7e Z 形台阶候选 ×2 族（L1 左侧 U 型弯 / L4 对角 tie 实锤修复）：
+      //   行族 = 中间行 kz 横移一次（贴边直行 + 小幅进出资源）；列族 = 中间列
+      //   jz 竖移一次。对角 tie 的 leg（|dr|=|dc|，如 L4 (2,3)→(4,1)）只有列族
+      //   能"右进右出"避开 (4,2) 占位连锁 → 两族全开都参评。
+      for (var kz = a.r + vA; kz !== b.r; kz += vA) {
+        var viaZ = spanR(a.r, kz, a.c).concat([{ c: a.c, r: kz }],
+                    spanC(a.c, b.c, kz).concat([{ c: b.c, r: kz }],
+                    spanR(kz, b.r, b.c)));
+        var dZ = [0, vA];                              // 入口/到达同竖向
+        var sZ = penalty(dZ, dZ, viaZ) + edgeTerm(viaZ);
+        if (sZ < best.score) best = { z: kz, vert: true, arr: dZ, score: sZ };
+      }
+      for (var jz = a.c + hA; jz !== b.c; jz += hA) {
+        var viaZ2 = spanC(a.c, jz, a.r).concat([{ c: jz, r: a.r }],
+                     spanR(a.r, b.r, jz).concat([{ c: jz, r: b.r }],
+                     spanC(jz, b.c, b.r)));
+        var dZ2 = [hA, 0];                             // 入口/到达同横向
+        var sZ2 = penalty(dZ2, dZ2, viaZ2) + edgeTerm(viaZ2);
+        if (sZ2 < best.score) best = { z: jz, vert: false, arr: dZ2, score: sZ2 };
+      }
+    }
+    return best;
+  };
+  var lastArr = null;                                // 前 leg 到达方向（入口约束用）
+  for (var ei = 0; ei < ring.length - 1; ei++) {
+    var a = ring[ei], b = ring[ei + 1];
+    var plan = pickPlan(a, b, lastArr, ring[ei + 2] ? segDir(b, ring[ei + 2]) : null);
+    // uTurn 兜底：纯轴向且首步与来路共线反向（候选 ③④ 不可用的死角资源）
+    // v1.7.7d 死循环根修：fd2 对对角 leg 也非 null（segDir 返回粗方向），但 uTurn
+    //   只支持纯轴向——对角 leg 时预检 while 的终止条件永不成立且无出界检查，
+    //   sc 无限递增挂死（L4 实锤，不经过 push 故熔断不响）→ 触发必须限纯轴向。
+    var fd2 = segDir(a, b);
+    if (fd2 && (a.c === b.c || a.r === b.r) && lastArr &&
+        fd2[0] === -lastArr[0] && fd2[1] === -lastArr[1] && uTurn(a, b)) {
+      lastArr = segDir(b, a);                        // U 形末段回程方向（近似）
+      continue;
+    }
+    expandLeg(a, b, plan);
+    lastArr = plan.arr;
   }
-  var cards = [];
-  for (var k = 0; k < shapeN; k++) cards.push(GS.pickShapeCard(fams[k % fams.length]));
-  if (econN) cards.push({ kind: 'econ', id: ++GS._cardSeq });
-  // 位置打散
-  for (var s = cards.length - 1; s > 0; s--) {
-    var q = Math.floor(Math.random() * (s + 1));
-    var tmp = cards[s]; cards[s] = cards[q]; cards[q] = tmp;
+  // ③''' v1.7.7c 主环收尾：inCut===outCut（首尾切点同格）时主环自然闭合到首格，
+  //   弹出尾部重复的首格；此后若尾格已与首格相邻则无需闭包弧。
+  while (path.length > 4 &&
+         path[path.length - 1].c === path[0].c && path[path.length - 1].r === path[0].r) {
+    path.pop();
   }
-  if (cards[0].kind !== 'shape') {                // 首位换回形状卡
-    for (var m = 1; m < cards.length; m++) {
-      if (cards[m].kind === 'shape') {
-        var tmp2 = cards[0]; cards[0] = cards[m]; cards[m] = tmp2;
-        break;
+  var tailAdjacent = Math.abs(path[path.length - 1].c - path[0].c) +
+                     Math.abs(path[path.length - 1].r - path[0].r) === 1;
+  // ④ 闭合弧：出切点 → 入切点沿 3×3 外圈（双向选边：短弧若折返/撞主环已占格 → 长弧）
+  var iOut = octIdx(outCut.c - CORE_C, outCut.r - CORE_R);
+  var iIn = octIdx(inCut.c - CORE_C, inCut.r - CORE_R);
+  if (!tailAdjacent && iOut >= 0 && iIn >= 0) {
+    // 进入 inCut 的方向 = 弧最后一步方向；须 ≠ -(主环首 leg 首步)（闭环接缝防折返）
+    // v1.7.7d 首步用 path 实测值：segDir(ring[0],ring[1]) 是粗方向（横优先），
+    //   而展开是先横后竖——同角降序后首 leg 常反向走横段，预测与实测相反，
+    //   会误杀本可通过的长弧（L4 实锤：实测首步向西，粗方向判向东）。
+    var fdFirst = path.length > 1
+      ? [path[1].c - path[0].c, path[1].r - path[0].r]
+      : segDir(ring[0], ring[1]);
+    var arcDirs = [1, -1];                           // 顺时针短弧优先
+    var arcDone = false;
+    for (var ai = 0; ai < arcDirs.length && !arcDone; ai++) {
+      var dirSign = arcDirs[ai];
+      var arc = [], okArc = true, prevG = outCut;
+      for (var st2 = 1; st2 <= 8; st2++) {
+        var k2 = ((iOut + dirSign * st2) % 8 + 8) % 8;
+        var gc = CORE_C + OCT[k2][0], gr = CORE_R + OCT[k2][1];
+        if (gc === inCut.c && gr === inCut.r) {
+          // 到达方向检查：inCut - prevG
+          var arr = [gc - prevG.c, gr - prevG.r];
+          if (fdFirst && arr[0] === -fdFirst[0] && arr[1] === -fdFirst[1]) okArc = false;
+          break;
+        }
+        // v1.7.7c 弧格撞主环已占格 → 换向（主环 leg 途经切点邻格时短弧必重复）
+        if (onP[gc + ',' + gr]) { okArc = false; break; }
+        arc.push({ c: gc, r: gr });
+        prevG = { c: gc, r: gr };
+      }
+      // v1.7.7d 残弧 bug 修：两个方向失败都不得 push 半截弧——
+      //   旧判 `!okArc && ai===0` 会让长弧失败也 push 残弧且 arcDone=true，
+      //   认命弧被跳过 → path 尾悬空断链（L4 尾 (5,7)→(4,5) dist=3 实锤）
+      if (!okArc) continue;
+      for (var ap = 0; ap < arc.length; ap++) { mark(arc[ap].c, arc[ap].r); push(arc[ap].c, arc[ap].r); }
+      arcDone = true;
+    }
+    if (!arcDone) {                                  // 双弧皆违例 → 认命走短弧
+      for (var st3 = 1; st3 <= 8; st3++) {
+        var k3 = ((iOut + st3) % 8 + 8) % 8;
+        var gc3 = CORE_C + OCT[k3][0], gr3 = CORE_R + OCT[k3][1];
+        if (gc3 === inCut.c && gr3 === inCut.r) break;
+        mark(gc3, gr3); push(gc3, gr3);
       }
     }
   }
-  return cards;
-};
-
-GS.offerCost = 15;   // 三选一「出现时」扣除的抽费
-// pay=true 时在生成界面之际扣除金币；不足则返回 false 不换牌
-GS.nextOffer = function (pay) {
-  if (pay) {
-    if (GS.gold < GS.offerCost) return false;
-    GS.gold -= GS.offerCost;
-  }
-  GS.offer = GS.buildOffer();
-  GS.selToken = null;
-  return true;
-};
-
-// ============================================================================
-// v1.4 卡牌大改（规格 §14）：新三选一 + 牌库 + 车厢
-//   · 形状卡 50% / 英雄卡 50% 独立抽三张，去重（形状按尺寸家族、英雄按元素）；
-//   · 形状卡进牌库 ≤ GS.DECK_SHAPE_MAX 张（满了该位重抽为英雄卡）；
-//   · 英雄卡卡面写明元素；辅助卡（kind:'aux'）留接口不进池；
-//   · 抽卡收费在 UI 层（价格 = GS.drawCost()，v1.6.15 起线性递增 10/20/30…），这里只管发牌。
-// ============================================================================
-GS.DECK_SHAPE_MAX = 3;    // 牌库形状卡上限（大王拍板 ③：一次性消耗、攒≤3）
-
-GS.pickHeroCard = function (elem) {
-  return { kind: 'hero', id: ++GS._cardSeq, elem: elem || TOWERS.ELEMS[Math.floor(Math.random() * 4)] };
-};
-
-// 牌库里形状卡张数
-GS.deckShapeCount = function () {
-  var n = 0;
-  for (var i = 0; i < GS.deck.length; i++) if (GS.deck[i].kind === 'shape') n++;
-  return n;
-};
-
-// 三选一发牌（v1.4）：三张独立随机、互不重复
-GS.drawCardOffer = function () {
-  var cards = [], sigs = {};
-  var guard = 0;
-  while (cards.length < 3 && guard++ < 50) {
-    var full = GS.deckShapeCount() >= GS.DECK_SHAPE_MAX;   // 满了不出形状卡
-    var card;
-    if (full || Math.random() < 0.5) {
-      card = GS.pickHeroCard();
-      if (sigs['hero:' + card.elem]) continue;             // 同元素英雄卡去重
-      sigs['hero:' + card.elem] = 1;
-    } else {
-      card = GS.pickShapeCard();                           // 尺寸/横竖随机
-      if (sigs['shape:' + GS.cardSig(card)]) continue;     // 尺寸家族去重
-      sigs['shape:' + GS.cardSig(card)] = 1;
+  // ④' v1.7.7 U = 环围域（"环内全清"，大王拍板 A 案）= path 格 ∪ 环内部格。
+  //   内部格 = 外洪水补集：从图边界非 path 格 4 邻 BFS，图内不可达者即内部。
+  //   无几何边界情形；折返已由 U 形侧偏根治，围域是简单闭合曲线的内部。
+  //   core 在环内部 → 自然进 u（车台上轨语义沿用）。
+  //   ▍为什么轨道 = 骨架环直出、不再灌真链（两轮实测数据在案）：
+  //     真求解器目标函数（覆盖→十字→格数）**没有"资源必经"约束**，且求解器铁律
+  //     不许动 ⇒ 盘形引导两头堵：实心大盘真环抄直路漏凹处资源（12~14/15 在环），
+  //     2 宽瘦带真环只走外列漏内列（7~14/15）。而骨架环本身 = 围域外边缘 + 资源
+  //     必经（构造保证）+ 折返修复后无重复边无十字，大王四条形态全满足。
+  {
+    var onP = {};
+    for (var pi = 0; pi < path.length; pi++) onP[path[pi].c + ',' + path[pi].r] = true;
+    var ext = {}, fq = [];
+    var seedEdge = function (c, r) {
+      var k = c + ',' + r;
+      if (onP[k] || ext[k]) return;
+      ext[k] = true; fq.push([c, r]);
+    };
+    for (var bc = 0; bc < CFG.MAP_COLS; bc++) {
+      seedEdge(bc, 0); seedEdge(bc, CFG.MAP_ROWS - 1);
     }
-    cards.push(card);
+    for (var br = 0; br < CFG.MAP_ROWS; br++) {
+      seedEdge(0, br); seedEdge(CFG.MAP_COLS - 1, br);
+    }
+    while (fq.length) {
+      var cur = fq.pop();
+      for (var d4 = 0; d4 < 4; d4++) {
+        var nc2 = cur[0] + DIRS4[d4][0], nr2 = cur[1] + DIRS4[d4][1];
+        if (!CFG.inBounds(nc2, nr2)) continue;
+        // v1.7.7d core 视为洪水障碍：镇中心必须 ∈ U（车台语义）。否则四角+南北
+        //   轴类资源分布会摆出"双室夹缝"环，core 行西侧开敞，洪水把 core 判成
+        //   外部 → core ∉ U（test_rules [FP] 4 连通 113 vs 112 实锤）
+        if (nc2 === CORE_C && nr2 === CORE_R) continue;
+        var nk = nc2 + ',' + nr2;
+        if (ext[nk] || onP[nk]) continue;
+        ext[nk] = true; fq.push([nc2, nr2]);
+      }
+    }
+    for (var fr = 0; fr < CFG.MAP_ROWS; fr++) for (var fc = 0; fc < CFG.MAP_COLS; fc++) {
+      if (!ext[fc + ',' + fr]) u[fc + ',' + fr] = true;   // 非 path 且非外部 = 内部
+    }
+    u[CORE_C + ',' + CORE_R] = true;                      // core 显式兜底 ∈ U
   }
-  return cards;
+  // ⑤ ∂U：U 中至少一个正交邻不在 U
+  var cells = [], set = {};
+  for (var k2 in u) {
+    var qc = +k2.split(',')[0], qr = +k2.split(',')[1];
+    var edge = !CFG.inBounds(qc - 1, qr) || !u[(qc - 1) + ',' + qr] ||
+               !CFG.inBounds(qc + 1, qr) || !u[(qc + 1) + ',' + qr] ||
+               !CFG.inBounds(qc, qr - 1) || !u[qc + ',' + (qr - 1)] ||
+               !CFG.inBounds(qc, qr + 1) || !u[qc + ',' + (qr + 1)];
+    if (edge) { cells.push({ c: qc, r: qr }); set[k2] = true; }
+  }
+  return { cells: cells, set: set, u: u, path: path };
 };
+
+// 终局预览·规划环（v1.7.5 立懒缓存+灌真链；v1.7.6 骨架直出；v1.7.7 骨架直出+围域盘）：
+//   v1.7.7 两轮灌链实测（数据在案）：真求解器无"资源必经"约束，实心大盘抄直路
+//   漏凹处资源、2 宽瘦带只走外列——盘形引导两头堵，且求解器铁律不许加约束。
+//   定稿：轨道 = 修好折返的骨架环**直出**（微秒级纯函数），U = 环围域（环内全清）：
+//   ① 骨架环 = 围域外边缘（贴边）② 资源必经（极角环路构造保证）③ 折返 U 形
+//   侧偏修复后无重复边、无十字、纯直/弯贴片（正确线条）④ 围域含轨道格。
+//   懒缓存（newGame 置 GS.__fpRail=null 失效——restart/startLevel 均经 newGame）。
+//   返回 { ok, path, u }；ok=false 时渲染层 fallback 邻接双线。
+GS.finalPreviewRail = function () {
+  if (GS.__fpRail) return GS.__fpRail;
+  var pv = GS.finalPreviewCells();
+  var p = pv.path || [];
+  // v1.7.8 真链通道（大王令"直接用真求解器，bug 单一归因到灰格生成规则"；先行
+  //   关卡 1 验收，通过后再放开 2-5 与随机盘）：轨道 = 真求解器在推演盘上的输出。
+  //   灰区生成规则（§14.63 尾注 j 组实验结论）：
+  //     · 底盘 = A 案实心盘（骨架环围域全清，V0）；
+  //     · 每资源补含它的 2×2 全灰块（四象限择优补缺）——资源若只挂 1 个灰邻会被
+  //       剪死胡同/削脖子删掉（L1 角资源 (0,0)(8,0) 实锤）；
+  //     · 灌验后仍 miss 的资源，贪心开 **2 格宽废墟沟**（方向 4 候选 × 两侧偏移，
+  //       试灌取 miss 最少者）：资源 ∈ 外轮廓 B ⇔ 四邻有"连通图边的废墟"，1 宽
+  //       凹口在闭合迹下数学不可覆盖（进去必原路出来），2 宽才能"进沟绕资源出来"；
+  //       沟保护其他资源的 2×2 块格（自己的块可借道）。
+  //     · 全程墙钟预算，超时取当前最优；最终仍 miss/不闭合/有往返 → 回退骨架 Y 案。
+  if (GS.levelIdx === 0 && typeof GS.__fpTrueLink === 'function') {
+    var tl = GS.__fpTrueLink(pv);
+    if (tl) { GS.__fpRail = tl; return GS.__fpRail; }
+  }
+  GS.__fpRail = { ok: !!(p.length > 3), path: p, u: pv.u };
+  return GS.__fpRail;
+};
+
+// v1.7.8 真链通道本体：构造灰区 board → 七件套备份 → 灌 grid → recomputeRails
+//   → 抓真轨 → 还原 → 冷解复原。失败返回 null（调用方回退骨架）。
+//   ⚠️ recomputeRails 是同步全量求解（每次 20~500ms），本函数含试灌循环，
+//      只在预览懒缓存 miss 时跑一次，禁入每帧路径。
+GS.__fpTrueLink = function (pv) {
+  if (!pv.path || pv.path.length <= 3) return null;
+  var COLS = CFG.MAP_COLS, ROWS = CFG.MAP_ROWS;
+  var K = function (c, r) { return c + ',' + r; };
+  var res = GS.goldTiles.concat(GS.heartTiles);
+  var cc0 = GS.core.c, rr0 = GS.core.r;
+
+  // —— 灰区底盘 = V0 实心盘（骨架环格 ∪ 环内部格）——
+  var board = {};
+  var i, k;
+  for (i = 0; i < pv.path.length; i++) board[K(pv.path[i].c, pv.path[i].r)] = true;
+  for (k in pv.u) if (pv.u[k]) board[k] = true;
+
+  // —— pourCheck：灌 grid → 同步全量求解 → 抓轨 → 还原盘 → 质检 ——
+  //   返回 {rail, miss, closed, rev, ms}；不碰车站/列车（还原后冷解复原局内环）。
+  var pourCheck = function () {
+    var backup = [], r0, c0;
+    for (r0 = 0; r0 < ROWS; r0++) for (c0 = 0; c0 < COLS; c0++)
+      backup.push(GS.grid[r0][c0].t, GS.grid[r0][c0].b);
+    for (k in board) {
+      var xy = k.split(',');
+      var c = +xy[0], r = +xy[1];
+      if (c === cc0 && r === rr0) continue;                 // core 建筑保留
+      GS.grid[r][c].t = 'blank';
+      if (GS.grid[r][c].b) GS.grid[r][c].b = null;          // 推演盘不压玩家建筑（规划尺语义）
+    }
+    var t0 = Date.now();
+    GS.recomputeRails();
+    var ms = Date.now() - t0;
+    var rail = [], j;
+    for (j = 0; j < (GS.railPath || []).length; j++) rail.push({ c: GS.railPath[j].c, r: GS.railPath[j].r });
+    // 还原盘面 + 冷解复原（railPath 置空防"旧环复验"沿用推演轨）
+    var bi = 0;
+    for (r0 = 0; r0 < ROWS; r0++) for (c0 = 0; c0 < COLS; c0++) {
+      GS.grid[r0][c0].t = backup[bi++];
+      var b = backup[bi++];
+      if (GS.grid[r0][c0].b !== b) GS.grid[r0][c0].b = b;
+    }
+    GS.railPath = null;
+    GS.recomputeRails();
+    // 质检：资源全上环 / 闭合 / 零往返
+    var onRail = {};
+    for (j = 0; j < rail.length; j++) onRail[K(rail[j].c, rail[j].r)] = true;
+    var miss = [];
+    for (j = 0; j < res.length; j++) if (!onRail[K(res[j].c, res[j].r)]) miss.push(res[j]);
+    var closed = rail.length > 3;
+    for (j = 0; j < rail.length && closed; j++) {
+      var a = rail[j], b2 = rail[(j + 1) % rail.length];
+      if (Math.abs(a.c - b2.c) + Math.abs(a.r - b2.r) !== 1) closed = false;
+    }
+    var de = {};
+    for (j = 0; j < rail.length; j++) {
+      var a2 = rail[j], b3 = rail[(j + 1) % rail.length];
+      de[K(a2.c, a2.r) + '>' + K(b3.c, b3.r)] = (de[K(a2.c, a2.r) + '>' + K(b3.c, b3.r)] || 0) + 1;
+    }
+    var rev = 0;
+    for (k in de) {
+      var m = k.match(/^(\d+),(\d+)>(\d+),(\d+)$/);
+      if (de[m[3] + ',' + m[4] + '>' + m[1] + ',' + m[2]] && k < (m[3] + ',' + m[4] + '>' + m[1] + ',' + m[2])) rev++;
+    }
+    // 观感病灶计（v1.7.8b）：灰区里没上轨、却被轨道从相对两侧夹住的格
+    //   （轨道发卡弯绕着一条灰/废墟窄条走 = 大王报的"多余的障碍"观感）。
+    var dodged = 0;
+    for (k in board) {
+      var hk = k.split(',');
+      var hc = +hk[0], hr = +hk[1];
+      if ((hc === cc0 && hr === rr0) || onRail[k]) continue;
+      if ((onRail[hc + ',' + (hr - 1)] && onRail[hc + ',' + (hr + 1)]) ||
+          (onRail[(hc - 1) + ',' + hr] && onRail[(hc + 1) + ',' + hr])) dodged++;
+    }
+    return { rail: rail, miss: miss, closed: closed, rev: rev, ms: ms, dodged: dodged };
+  };
+
+  // —— 每资源 2×2 块：四象限选缺灰格最少者，补缺格并登记保护 ——
+  var cellOwner = {};
+  for (i = 0; i < res.length; i++) {
+    var q = res[i], best = null;
+    for (var sc = -1; sc <= 1; sc += 2) for (var sr = -1; sr <= 1; sr += 2) {
+      var cells = [[q.c, q.r], [q.c + sc, q.r], [q.c, q.r + sr], [q.c + sc, q.r + sr]];
+      var missing = [], bad = false;
+      for (var ci = 0; ci < cells.length; ci++) {
+        var c1 = cells[ci][0], r1 = cells[ci][1];
+        if (!CFG.inBounds(c1, r1)) { bad = true; break; }
+        if (c1 === cc0 && r1 === rr0) { bad = true; break; }
+        var other = false;
+        for (var ri = 0; ri < res.length; ri++) {
+          var w = res[ri];
+          if (w.c === c1 && w.r === r1 && !(w.c === q.c && w.r === q.r)) { other = true; break; }
+        }
+        if (other) { bad = true; break; }
+        if (!board[K(c1, r1)]) missing.push(cells[ci]);
+      }
+      if (!bad && (!best || missing.length < best.missing.length)) best = { cells: cells, missing: missing };
+    }
+    if (!best) continue;
+    for (ci = 0; ci < best.missing.length; ci++) {
+      board[K(best.missing[ci][0], best.missing[ci][1])] = true;
+      cellOwner[K(best.missing[ci][0], best.missing[ci][1])] = K(q.c, q.r);
+    }
+  }
+
+  var st = pourCheck();
+  var T0 = Date.now(), BUDGET = 2500;                       // 墙钟预算（含所有试灌）
+  var trenched = [];
+  var lastMissN = st.miss.length + 1;
+  for (var round = 0; round < 8 && st.miss.length; round++) {
+    if (st.miss.length >= lastMissN) break;                 // 沟开下去 miss 不降 → 停
+    lastMissN = st.miss.length;
+    var q0 = st.miss[0], qk = K(q0.c, q0.r);
+    var dc = q0.c - cc0, dr = q0.r - rr0;
+    // 沟候选：远离 core 的两轴方向 × 三种宽度。v1.7.8b：沟的最小职责只是"给资源
+    //   一个连通图边的废墟邻居"，1 宽脊线（mode 0）优先参评——2 宽沟会从图边咬掉
+    //   一大块（L1 右缘 (8,2)(8,3) 实锤 = 大王报的"多余的障碍"）；2 宽 ± 偏移
+    //   （mode 1/2）保留作 fallback。v1.7.8c：评分 (miss, 刻格数, dodged, 步数)——
+    //   大王两轮验收同一条美学"刻掉的废墟越少越好"（左上爱心 2 宽沟的半边 (3,0)~(3,2)
+    //   可以还灰，实锤 dodged 计分会把 1 宽脊线错压下去），刻格数升到 dodged 之前。
+    var bestT = null;
+    var dirs = [];
+    if (dc !== 0) dirs.push({ horiz: true, s: dc > 0 ? 1 : -1 });
+    if (dr !== 0) dirs.push({ horiz: false, s: dr > 0 ? 1 : -1 });
+    for (var di = 0; di < dirs.length && Date.now() - T0 < BUDGET; di++) {
+      for (var mode = 0; mode < 3; mode++) {
+        var ps = mode === 0 ? 0 : (mode === 1 ? -1 : 1);
+        var cells = [];
+        for (var step = 1; step < 20; step++) {
+          var cA = dirs[di].horiz ? q0.c + dirs[di].s * step : q0.c;
+          var rA = dirs[di].horiz ? q0.r : q0.r + dirs[di].s * step;
+          if (!CFG.inBounds(cA, rA)) break;
+          cells.push([cA, rA]);
+          if (mode > 0) {
+            var cB = dirs[di].horiz ? cA : q0.c + ps;
+            var rB = dirs[di].horiz ? q0.r + ps : rA;
+            if (CFG.inBounds(cB, rB)) cells.push([cB, rB]);
+          }
+          if (cA === 0 || cA === COLS - 1 || rA === 0 || rA === ROWS - 1) break;
+        }
+        if (!cells.length) continue;
+        var bad2 = false;
+        for (ci = 0; ci < cells.length; ci++) {
+          var kk = K(cells[ci][0], cells[ci][1]);
+          if ((cells[ci][0] === cc0 && cells[ci][1] === rr0) ||
+              res.some(function (x) { return x.c === cells[ci][0] && x.r === cells[ci][1]; }) ||
+              (cellOwner[kk] && cellOwner[kk] !== qk)) { bad2 = true; break; }
+        }
+        if (bad2) continue;
+        for (ci = 0; ci < cells.length; ci++) delete board[K(cells[ci][0], cells[ci][1])];
+        var t = pourCheck();
+        for (ci = 0; ci < cells.length; ci++) board[K(cells[ci][0], cells[ci][1])] = true;
+        if (!bestT ||
+            t.miss.length < bestT.st.miss.length ||
+            (t.miss.length === bestT.st.miss.length && cells.length < bestT.cells.length) ||
+            (t.miss.length === bestT.st.miss.length && cells.length === bestT.cells.length &&
+             t.dodged < bestT.st.dodged) ||
+            (t.miss.length === bestT.st.miss.length && cells.length === bestT.cells.length &&
+             t.dodged === bestT.st.dodged && t.rail.length < bestT.st.rail.length)) {
+          bestT = { cells: cells, st: t };
+        }
+      }
+    }
+    if (!bestT) break;
+    for (ci = 0; ci < bestT.cells.length; ci++) delete board[K(bestT.cells[ci][0], bestT.cells[ci][1])];
+    trenched.push(qk);
+    st = bestT.st;
+  }
+
+  if (!st.closed || st.miss.length || st.rev) return null;  // 不达标 → 回退骨架 Y 案
+  // u = board ∪ core（渲染灰区语义：u 含 core 格）
+  var u = {};
+  for (k in board) u[k] = true;
+  u[K(cc0, rr0)] = true;
+  return { ok: true, path: st.rail, u: u, trenched: trenched };
+};
+
 
 // ---- 查询工具 ----
 GS.neighbors = function (c, r) {
@@ -2784,3 +3402,172 @@ GS.railNeighbor = function (c, r) {
   return false;
 };
 GS.railCell = function (i) { return GS.railPath[i % GS.railPath.length]; };
+
+// ============================================================================
+// 导入地图（v1.6.67 大王令）：把 UI.exportMap 的导出文本还原成盘面 —— 复刻
+// 查看路径问题的逆向通道。**只还原导出文本里有的字段**（含 check 校验行），
+// deck/词条/经验等导出未覆盖的保持当前会话不变；昼夜晚钟相位不在导出里，
+// 导入沿用当前相位。
+// 成功返回 null，失败返回错误文案（弹层提示用）。失败时**盘面原地不动**。
+// ============================================================================
+GS.importMap = function (text) {
+  var L = String(text || '').split(/\r?\n/);
+  var i, m;
+  // —— 头部：KDG-MAP v1 ——
+  if (!L.length || L[0].indexOf('KDG-MAP v1') !== 0) return '不是地图数据（缺 KDG-MAP v1 头）';
+  // —— 定位图例行与 13 行 ASCII 地图 ——
+  var iLegend = -1;
+  for (i = 0; i < L.length; i++) if (L[i].indexOf('图例:') === 0) { iLegend = i; break; }
+  if (iLegend < 0 || iLegend + CFG.MAP_ROWS >= L.length) return '缺图例行或地图行数不足';
+  // —— rail 行（声明数 vs 实列数 + check 行首尾格，丢格当场报） ——
+  var rail = null;
+  for (i = 0; i < L.length; i++) {
+    m = L[i].match(/^rail\((\d+)\): ?(.*)$/);
+    if (m) {
+      var decl = +m[1];
+      var parts = m[2] ? m[2].trim().split(' ') : [];
+      if (parts.length && parts[parts.length - 1] === '') parts.pop();
+      if (parts.length !== decl) return 'rail 序列不完整（声明 ' + decl + ' 项，实列 ' +
+        parts.length + ' 项）——复制时丢了内容，请重新导出';
+      rail = [];
+      for (var q = 0; q < parts.length; q++) {
+        var pr = parts[q].split(',');
+        rail.push({ c: +pr[0], r: +pr[1] });
+      }
+      break;
+    }
+  }
+  if (!rail) return '缺 rail 行';
+  // check 行（v1.6.66+ 才有，旧导出没有则跳过）：首尾格 + 步数三重校验
+  for (i = 0; i < L.length; i++) {
+    m = L[i].match(/^check: rail=(\d+) head=(\S+) tail=(\S+)$/);
+    if (m) {
+      if (+m[1] !== rail.length) return 'check 校验不符（rail=' + m[1] + ' vs 实列 ' + rail.length + '）';
+      var hd = m[2].split(','), tl = m[3].split(',');
+      if (+hd[0] !== rail[0].c || +hd[1] !== rail[0].r ||
+          +tl[0] !== rail[rail.length - 1].c || +tl[1] !== rail[rail.length - 1].r) {
+        return 'check 首尾格不符——rail 序列被截断或改动，请重新导出';
+      }
+      break;
+    }
+  }
+  // 正交性 + 闭合（含末→首回绕）：坏环直接拒收
+  for (i = 0; i < rail.length; i++) {
+    var a = rail[i], b2 = rail[(i + 1) % rail.length];
+    if (Math.abs(a.c - b2.c) + Math.abs(a.r - b2.r) !== 1) {
+      return 'rail 序列第 ' + i + '→' + ((i + 1) % rail.length) + ' 步非正交，数据损坏';
+    }
+  }
+  // —— towers / foes 等键值行 ——
+  var kv = {};
+  for (i = 0; i < L.length; i++) {
+    m = L[i].match(/^(towers|foes|train|station|cargo|hearts|gold|nextSpawns): (.*)$/);
+    if (m) kv[m[1]] = m[2];
+  }
+  // —— 重建网格：'#'废墟 '.'空地 C/E/T/M/F/A 建筑 G/g 金币 H/h 爱心 ——
+  var grid = [], buildings = [], towers = [], core = null, tset = {};
+  if (kv.towers && kv.towers !== '') {
+    var tarr = kv.towers.split(' ');
+    for (i = 0; i < tarr.length; i++) {
+      var tm = tarr[i].match(/^(\d+),(\d+):(\w+?)(\d)(?:\+(\S+))?$/);
+      if (!tm) return 'towers 行格式不识别：' + tarr[i];
+      tset[tm[1] + ',' + tm[2]] = tm;   // elem/star/affix 待网格扫到 T 时取用
+    }
+  }
+  for (var r = 0; r < CFG.MAP_ROWS; r++) {
+    var rowS = L[iLegend + 1 + r];
+    if (rowS.length !== CFG.MAP_COLS) return '地图第 ' + (r + 1) + ' 行长度 ' +
+      rowS.length + ' ≠ ' + CFG.MAP_COLS;
+    var row = [];
+    for (var c = 0; c < CFG.MAP_COLS; c++) {
+      var cell = { t: 'rubble', gold: false, heart: false, harvested: false, b: null };
+      var ch = rowS.charAt(c);
+      if (ch === '.') cell.t = 'blank';
+      else if (ch === 'G') { cell.t = 'blank'; cell.gold = true; }
+      else if (ch === 'g') cell.gold = true;                          // 仍埋废墟
+      else if (ch === 'H') { cell.t = 'blank'; cell.heart = true; }
+      else if (ch === 'h') cell.heart = true;
+      else if (ch === 'C') {
+        cell.t = 'blank';
+        core = { type: 'core', c: c, r: r };
+        cell.b = core; buildings.push(core);
+      } else if (ch === 'T') {
+        cell.t = 'blank';
+        var ts = tset[c + ',' + r];
+        if (!ts) return '地图 (' + c + ',' + r + ') 有塔但 towers 行缺记录';
+        delete tset[c + ',' + r];
+        // 对齐 TOWERS.placeAt 的字段全集（此处不引 TOWERS，保持 state 模块无关）
+        var t = { type: 'tower', elem: ts[3], star: +ts[4], cd: 0, c: c, r: r, flash: 0,
+                  affix: ts[5] || null, wcd: 0, streak: 0, lastT: null, chargeT: 0 };
+        cell.b = t; towers.push(t);
+      } else if (ch === 'M' || ch === 'F' || ch === 'A' || ch === 'E') {
+        cell.t = 'blank';
+        var bt = (ch === 'M') ? 'mint' : (ch === 'F') ? 'gas'
+               : (ch === 'A') ? 'factory' : 'econ';                   // E = 退役经济建筑（旧盘兼容）
+        var bl = { type: bt, c: c, r: r, flash: 0 };
+        if (bt === 'econ') bl.rate = CFG.ECON_RATE;
+        cell.b = bl; buildings.push(bl);
+      } else if (ch !== '#') {
+        return '地图第 ' + (r + 1) + ' 行含不识别字符：' + ch;
+      }
+      row.push(cell);
+    }
+    grid.push(row);
+  }
+  for (var k2 in tset) return 'towers 行的塔 ' + k2 + ' 在地图上无对应 T 格';
+  if (!core) return '地图缺镇中心 C';
+  // —— 站台（导入原文，不重解：复刻要和导出严格一致） ——
+  var st = null;
+  if (kv.station && kv.station !== '-') {
+    var sm = kv.station.match(/^(\d+),(\d+)@(\d+)$/);
+    if (!sm) return 'station 行格式不识别';
+    st = { c: +sm[1], r: +sm[2], index: +sm[3] };
+  }
+  // —— 刷怪态（怪本身不复活：foes 行只有数量，路径排查不需要怪） ——
+  var wave = 0, coreHP = CFG.CORE_HP, coreMaxHP = CFG.CORE_HP;
+  if (kv.foes) {
+    var fm = kv.foes.match(/^(\d+) wave: (\d+) coreHP: (\d+)\/(\d+)$/);
+    if (!fm) return 'foes 行格式不识别';
+    coreHP = +fm[3]; coreMaxHP = +fm[4]; wave = +fm[2];
+  }
+  var nextSpawns = null;
+  if (kv.nextSpawns && kv.nextSpawns !== '') {
+    nextSpawns = [];
+    var ns = kv.nextSpawns.split(' ');
+    for (i = 0; i < ns.length; i++) {
+      var nm = ns[i].match(/^(-?[\d.]+),(-?[\d.]+)×(\d+)$/);
+      if (!nm) return 'nextSpawns 项格式不识别：' + ns[i];
+      nextSpawns.push({ c: +nm[1], r: +nm[2], count: +nm[3] });
+    }
+  }
+  // —— 全部落账（至此再无失败路径，盘面整体替换） ——
+  GS.grid = grid; GS.buildings = buildings; GS.core = core;
+  GS.towers = towers; GS.foes = [];
+  // 资源块列表从网格标记重建（transport/engine 按列表遍历，置空 = 导入盘永远捡不了）
+  GS.goldTiles = []; GS.heartTiles = [];
+  for (var rg = 0; rg < CFG.MAP_ROWS; rg++) {
+    for (var rc = 0; rc < CFG.MAP_COLS; rc++) {
+      if (grid[rg][rc].gold) GS.goldTiles.push({ c: rc, r: rg });
+      if (grid[rg][rc].heart) GS.heartTiles.push({ c: rc, r: rg });
+    }
+  }
+  GS.railPath = rail; GS.station = st;
+  GS.train = { index: (kv.train && kv.train !== '-') ? +kv.train.split(',')[0] : 0,
+               frac: (kv.train && kv.train !== '-') ? +kv.train.split(',')[1] : 0,
+               cargo: kv.cargo ? +kv.cargo : 0,
+               hearts: kv.hearts ? +kv.hearts : 0, picked: [] };
+  GS.gold = kv.gold ? +kv.gold : 0;
+  GS.coreHP = coreHP; GS.coreMaxHP = coreMaxHP;
+  GS.gameOver = false;
+  GS.fx = []; GS.floats = []; GS.undoClean = null; GS.offer = [];
+  GS.mines = []; GS.fireZones = []; GS.frostZones = [];
+  GS.nextSpawns = nextSpawns;
+  FOES.wave = wave; FOES.active = false; FOES.pending = 0; FOES.spawnCd = 0;
+  FOES.spawnQueue = []; FOES.waveSpawns = null; FOES.fadeSpawns = null;
+  // 求解缓存全作废：防 skip 闸/异步飞行结果拿旧指纹坑新盘
+  GS.__v2cache = null;
+  if (typeof SOLVER_ASYNC !== 'undefined' && SOLVER_ASYNC.invalidate) SOLVER_ASYNC.invalidate();
+  if (typeof LOG !== 'undefined') LOG.add('import', { railLen: rail.length, wave: wave });
+  return null;
+};
+

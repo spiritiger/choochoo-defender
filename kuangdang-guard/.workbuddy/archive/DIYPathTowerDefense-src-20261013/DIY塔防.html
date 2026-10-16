@@ -1,0 +1,1449 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>UnderDark 营地保卫战 (四塔纯净版)</title>
+    <!-- 加载 Tailwind CSS 与 FontAwesome 图标库 -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <style>
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;900&family=Noto+Sans+SC:wght@400;700;900&display=swap');
+body {
+    background-color: #f8fafc;
+    color: #1e293b;
+    font-family: 'Noto Sans SC', 'Inter', sans-serif;
+    overflow: hidden;
+    user-select: none;
+    -webkit-user-select: none;
+    margin: 0;
+    height: 100vh;
+}
+.game-viewport {
+    width: 100%;
+    height: 100vh;
+    max-height: 100vh;
+    max-width: 480px;
+    margin: 0 auto;
+    display: flex;
+    flex-direction: column;
+    background: #ffffff;
+    box-shadow: 0 10px 25px rgba(100, 116, 139, 0.08);
+    position: relative;
+    border-left: 1px solid #e2e8f0;
+    border-right: 1px solid #e2e8f0;
+    overflow: hidden;
+}
+canvas {
+    display: block;
+    max-width: 100%;
+    max-height: 100%;
+    aspect-ratio: 15/23;
+    background-color: #fcfbf7;
+    touch-action: none;
+    box-shadow: inset 0 2px 10px rgba(0,0,0,0.03);
+}
+.custom-scroll::-webkit-scrollbar { width: 4px; }
+.custom-scroll::-webkit-scrollbar-track { background: rgba(0,0,0,0.02); }
+.custom-scroll::-webkit-scrollbar-thumb { background: rgba(0,0,0,0.08); border-radius: 2px; }
+.text-glow-orange { text-shadow: 0 0 8px rgba(249, 115, 22, 0.15); }
+.text-glow-green { text-shadow: 0 0 8px rgba(34, 197, 94, 0.15); }
+.hand-card { transition: transform 0.15s ease, box-shadow 0.15s ease; cursor: grab; }
+.hand-card:active {
+    cursor: grabbing;
+    transform: scale(1.08) rotate(-1deg);
+    border-color: #10b981;
+    box-shadow: 0 4px 12px rgba(16, 185, 129, 0.15);
+}
+
+    </style>
+</head>
+<body class="flex justify-center items-center h-screen bg-slate-900">
+    <div class="game-viewport">
+        <!-- 顶部 HUD 控制台 -->
+        <header class="p-3 bg-white border-b border-slate-100 flex justify-between items-center z-10 shadow-sm flex-shrink-0 h-16">
+            <div class="flex items-center gap-2">
+                <div class="w-8 h-8 rounded-lg bg-orange-50 border border-orange-200 flex justify-center items-center">
+                    <i class="fa-solid fa-shield-halved text-orange-500 animate-pulse text-base"></i>
+                </div>
+                <div>
+                    <div class="text-xs text-slate-500 font-bold tracking-wider uppercase">血量</div>
+                    <div class="text-lg font-black text-orange-600 text-glow-orange" id="hp-val">500</div>
+                </div>
+            </div>
+            <div class="text-center w-24">
+                <span class="text-xs text-emerald-500 font-bold uppercase tracking-wider block">波次</span>
+                <span class="text-lg font-black tracking-widest text-emerald-600 text-glow-green" id="wave-val">第 1 波</span>
+            </div>
+            <div class="flex items-center gap-2 text-right">
+                <div>
+                    <div class="text-xs text-slate-500 font-bold tracking-wider uppercase">宝石</div>
+                    <div class="text-lg font-black text-amber-500" id="gold-val">250</div>
+                </div>
+                <div class="w-8 h-8 rounded-lg bg-amber-50 border border-amber-200 flex justify-center items-center">
+                    <i class="fa-solid fa-gem text-amber-500 text-base"></i>
+                </div>
+            </div>
+        </header>
+        <!-- 战场主画布层：锁定逻辑分辨率，彻底防止塌陷灰屏 -->
+        <main class="flex-grow flex-shrink min-h-0 relative overflow-hidden flex items-center justify-center bg-slate-800">
+            <!-- 逻辑分辨率 600x920 对应 15 列 x 23 行，每格 40 像素 -->
+            <canvas id="gameCanvas" width="600" height="920"></canvas>
+            <div id="toast-msg" class="absolute top-4 left-1/2 -translate-x-1/2 bg-white/95 border border-amber-200 px-4 py-2 rounded-full text-xs text-amber-800 shadow-md opacity-0 transition-opacity duration-300 pointer-events-none flex items-center gap-2 z-30">
+                <i class="fa-solid fa-circle-exclamation text-amber-500"></i>
+                <span id="toast-text">提示信息</span>
+            </div>
+            <div id="drag-overlay-tip" class="hidden absolute top-12 left-1/2 -translate-x-1/2 bg-slate-900/80 backdrop-blur-sm text-white px-4 py-1.5 rounded-full text-xs z-30 pointer-events-none flex items-center gap-2">
+                <i class="fa-solid fa-hand-pointer animate-bounce"></i>
+                <span>拖拽布局中 ⏳ 战局已慢放 10 倍</span>
+            </div>
+            <!-- 2倍速悬浮按钮（不占用布局，绝对定位右上角） -->
+            <button id="speed-btn" onclick="toggleSpeed()" class="absolute top-3 right-3 z-30 w-9 h-9 rounded-full bg-slate-900/70 backdrop-blur-sm text-white text-[10px] font-bold flex items-center justify-center shadow-lg border border-white/20 hover:bg-slate-900/90 transition-all active:scale-90">
+                <span id="speed-label">1×</span>
+            </button>
+            <!-- 塔信息面板（点击塔时显示，游戏暂停；点击框外关闭） -->
+            <div id="tower-info-panel" class="hidden absolute inset-0 z-40 flex items-center justify-center p-4 pointer-events-auto" onclick="if(event.target===this) closeTowerInfo()"></div>
+            <!-- 三选一词条研习弹窗 -->
+            <div id="draft-modal" class="hidden absolute inset-0 bg-slate-900/60 backdrop-blur-sm flex flex-col justify-center items-center p-6 z-50">
+                <div class="bg-white rounded-2xl shadow-2xl p-5 w-full max-w-sm border border-slate-100 flex flex-col gap-4">
+                    <div class="text-center">
+                        <h3 class="text-base font-bold text-slate-800">🔮 研习全新法术秘籍</h3>
+                        <p class="text-[11px] text-slate-400 mt-1">选择一项永久恩赐，同品类全场防御塔生效：</p>
+                    </div>
+                    <div class="flex flex-col gap-3" id="draft-options-container"></div>
+                </div>
+            </div>
+            <!-- 开场遮罩 -->
+            <div id="game-overlay" class="absolute inset-0 bg-white/95 flex flex-col justify-center items-center p-6 text-center z-20 overflow-y-auto">
+                <div class="w-20 h-20 bg-emerald-50 rounded-2xl flex items-center justify-center mb-5 border border-emerald-100 shadow-lg shadow-emerald-500/10">
+                    <i class="fa-solid fa-wand-magic-sparkles text-emerald-500 text-4xl animate-pulse"></i>
+                </div>
+                <h1 class="text-2xl font-black tracking-wider text-slate-800 mb-3 uppercase">荒野营地保卫战</h1>
+                <div class="bg-slate-50 border border-slate-200 rounded-xl p-4 mb-4 max-w-sm text-left">
+                    <div class="text-xs font-black text-slate-700 mb-2 uppercase tracking-wider flex items-center gap-1.5">
+                        <i class="fa-solid fa-book-open text-emerald-500"></i> 核心循环
+                    </div>
+                    <ul class="text-sm text-slate-600 space-y-2 leading-relaxed">
+                        <li class="flex gap-2"><span class="text-emerald-500 font-bold">①</span>拖拽防御塔，阻止怪物抵达守护者</li>
+                        <li class="flex gap-2"><span class="text-amber-500 font-bold">②</span>摧毁迷雾解锁部署空间，获取奖励</li>
+                        <li class="flex gap-2"><span class="text-rose-500 font-bold">③</span>点击迷雾可锁定，集火优先驱散</li>
+                    </ul>
+                </div>
+                <p class="text-xs text-slate-500 max-w-xs mb-5">快捷键：空格倍速 · D招募 · F词条 · Q取消</p>
+                <button onclick="startGame()" class="px-8 py-3.5 bg-gradient-to-r from-emerald-500 to-teal-600 hover:from-emerald-600 hover:to-teal-700 text-white font-bold text-base uppercase rounded-xl shadow-lg shadow-emerald-500/30 transition-all active:scale-95">
+                    唤醒守护者
+                </button>
+            </div>
+        </main>
+        <!-- 底部控制台 -->
+        <footer class="bg-white border-t border-slate-100 p-2 flex flex-col gap-1.5 z-10 shadow-[0_-2px_10px_rgba(0,0,0,0.01)] flex-shrink-0 h-44">
+            <div class="flex justify-between items-center px-1">
+                <span class="text-xs text-slate-500 font-bold tracking-wider uppercase"><i class="fa-solid fa-suitcase mr-1"></i> 手牌</span>
+                <span class="text-xs text-emerald-600 bg-emerald-50 px-1.5 py-0.5 rounded font-bold" id="hand-count">0/5</span>
+            </div>
+            <div id="hand-cards-container" class="grid grid-cols-5 gap-1.5 min-h-[58px] bg-slate-50 border border-dashed border-slate-200 rounded-xl p-1 flex justify-center items-center">
+                <div class="text-xs text-slate-400 col-span-5 text-center py-2.5">手牌为空，点击下方招募</div>
+            </div>
+            <div class="grid grid-cols-2 gap-2 h-10">
+                <button onclick="drawTowerToHand()" class="group relative overflow-hidden bg-white border border-emerald-500/30 hover:border-emerald-500/60 p-1 rounded-xl flex flex-col items-center justify-center transition-all shadow-sm">
+                    <div class="flex items-center gap-1 text-emerald-600 font-black text-sm uppercase">
+                        <i class="fa-solid fa-plus-circle text-xs"></i> 招募
+                    </div>
+                    <span class="text-[11px] text-slate-500">消耗 <strong class="text-amber-500 font-bold" id="cost-tower-val">10</strong>💎</span>
+                </button>
+                <button onclick="startAffixDraft()" class="group relative overflow-hidden bg-white border border-indigo-500/30 hover:border-indigo-500/60 p-1 rounded-xl flex flex-col items-center justify-center transition-all shadow-sm">
+                    <div class="flex items-center gap-1 text-indigo-600 font-black text-sm uppercase">
+                        <i class="fa-solid fa-scroll text-xs"></i> 研习
+                    </div>
+                    <span class="text-[11px] text-slate-500">消耗 <strong class="text-amber-500 font-bold" id="cost-affix-val">100</strong>💎</span>
+                </button>
+            </div>
+            <div class="bg-slate-50 border border-slate-200/50 rounded-xl p-1.5 overflow-hidden flex-grow flex flex-col">
+                <button onclick="toggleCodex()" class="w-full flex justify-between items-center text-xs text-slate-600 font-bold uppercase tracking-wider">
+                    <span><i class="fa-solid fa-book-open mr-1 text-indigo-500"></i> 全局强化</span>
+                    <i id="codex-caret" class="fa-solid fa-caret-up transition-transform duration-300"></i>
+                </button>
+                <div id="codex-panel" class="hidden mt-1 flex-grow overflow-y-auto custom-scroll text-[11px] divide-y divide-slate-200/60">
+                    <div class="py-1 text-slate-400 italic text-center">暂未获得任何全局强化效果。</div>
+                </div>
+            </div>
+        </footer>
+    </div>
+    <!-- 游戏配置数据（构建时由 src/data/*.json 生成） -->
+    <script>
+window.__GameData__ = {"grid":{"cols":15,"rows":23,"cellSize":40,"heroRow":22,"heroCol":7},"towers":{"arrow":{"id":"arrow","name":"箭塔","emoji":"🏹","desc":"单体物理伤害高频输出。","baseAtk":15,"range":200,"rate":1.2,"color":"#0ea5e9","width":2,"height":3},"cannon":{"id":"cannon","name":"炮塔","emoji":"🚀","desc":"慢速长射程AOE物理范围伤害。","baseAtk":40,"range":280,"rate":0.4,"color":"#f59e0b","width":3,"height":3},"magic":{"id":"magic","name":"魔法塔","emoji":"🔮","desc":"高额单体魔法伤害，克制重甲。","baseAtk":50,"range":240,"rate":0.8,"color":"#a855f7","width":3,"height":2},"ice":{"id":"ice","name":"寒冰塔","emoji":"❄️","desc":"范围魔法伤害并使敌人减速。","baseAtk":12,"range":160,"rate":0.6,"color":"#3b82f6","width":2,"height":2}},"monsters":{"normal":{"id":"normal","name":"普通怪","emoji":"🦎","hpMult":1,"armorMult":1,"mrMult":1,"speedMult":1,"atkMult":1},"armored":{"id":"armored","name":"重甲怪","emoji":"🛡️","hpMult":1.5,"armorMult":3,"mrMult":0.5,"speedMult":0.8,"atkMult":1},"mystic":{"id":"mystic","name":"魔抗怪","emoji":"🔮","hpMult":1.2,"armorMult":0.5,"mrMult":3,"speedMult":1,"atkMult":1},"swift":{"id":"swift","name":"迅捷怪","emoji":"👻","hpMult":0.6,"armorMult":0.6,"mrMult":0.6,"speedMult":2,"atkMult":1},"tank":{"id":"tank","name":"巨坦","emoji":"🌋","hpMult":3.5,"armorMult":1.5,"mrMult":1.5,"speedMult":0.5,"atkMult":1}},"affixes":{"a1":{"towerId":"arrow","name":"散射箭","desc":"攻击从单体变为扇形发射3支箭。"},"a2":{"towerId":"arrow","name":"钉刺","desc":"击中时有15%概率令目标定身0.5秒。"},"a3":{"towerId":"arrow","name":"撕裂标记","desc":"施加标记，受炮塔轰击时二次物理割裂。"},"a4":{"towerId":"arrow","name":"影锁共鸣","desc":"击中目标时将其与附近怪物进行影锁链接。"},"a5":{"towerId":"arrow","name":"箭雨","desc":"每攻击8次向怪群降下追踪箭雨。"},"c1":{"towerId":"cannon","name":"哑弹布雷","desc":"爆炸后散落感应地雷，踩中引发短眩晕。"},"c2":{"towerId":"cannon","name":"冲击震退","desc":"爆炸将范围内怪物向外物理击退1格。"},"c3":{"towerId":"cannon","name":"弹头分裂","desc":"空中分裂成3颗子弹头，爆破范围扩大。"},"c4":{"towerId":"cannon","name":"烈焰燃油","desc":"爆炸区产生持续3秒的魔法燃烧地带。"},"c5":{"towerId":"cannon","name":"蓄势轰击","desc":"连续3秒未开火，下次爆炸半径增加50%。"},"m1":{"towerId":"magic","name":"电弧弹射","desc":"攻击化为闪电链，额外弹射3个目标。"},"m2":{"towerId":"magic","name":"融穿","desc":"每次命中永久削减敌人15%魔抗。"},"m3":{"towerId":"magic","name":"能量溢出","desc":"过量击杀伤害对周围产生聚能爆破法伤。"},"m4":{"towerId":"magic","name":"极化磁场","desc":"击中前两个目标产生磁极吸引物理重叠。"},"m5":{"towerId":"magic","name":"超频","desc":"连击同目标叠加攻速，最高提升60%。"},"i1":{"towerId":"ice","name":"深层冻结","desc":"攻击已减速目标有概率使其完全冰冻。"},"i2":{"towerId":"ice","name":"寒流破裂","desc":"命中冰冻怪引发冰爆，使全图减速加深。"},"i3":{"towerId":"ice","name":"霜痕路径","desc":"受击怪物身后留下一条减速霜痕地带。"},"i4":{"towerId":"ice","name":"极寒禁锢","desc":"寒冰塔的伤害和减速作用光环半径扩大。"},"i5":{"towerId":"ice","name":"冷血追击","desc":"对受控目标伤害倍增，并延长控制时间。"}}};
+    </script>
+    <!-- 游戏模块（分享版：构建时按 src/js/build-order.json 顺序内联；开发版：直接引用 src/js/ 散装文件） -->
+<!-- ======== src/js/dom.js ======== -->
+<script>
+/* ============================================================
+ * dom.js — DOM / Canvas 基础设施与通用坐标工具
+ * 必须最先加载（其他模块依赖 canvas 与 DOM 缓存）
+ * ============================================================ */
+
+const canvas = document.getElementById('gameCanvas');
+const ctx = canvas.getContext('2d');
+
+/** 统一提取鼠标/触摸事件的客户端坐标 */
+function getCoord(e) {
+    let t = e.touches && e.touches[0] || e.changedTouches && e.changedTouches[0];
+    return { x: e.clientX || (t && t.clientX) || 0, y: e.clientY || (t && t.clientY) || 0 };
+}
+
+/** 将像素坐标换算为所在网格单元格 */
+function cellOf(x, y) { return { r: Math.floor(y / CELL_SIZE), c: Math.floor(x / CELL_SIZE) }; }
+
+/** 缓存常用 DOM 元素（id 下划线转驼峰，如 hp-val → hpVal） */
+const DOM = {};
+['hp-val','gold-val','cost-tower-val','cost-affix-val','hand-count','game-overlay','toast-msg','toast-text','speed-btn','hand-cards-container'].forEach(id => {
+    let el = document.getElementById(id); if (el) DOM[id.replace(/-(\w)/g, (_, c) => c.toUpperCase())] = el;
+});
+
+</script>
+<!-- ======== src/js/config.js ======== -->
+<script>
+/* ============================================================
+ * config.js — 静态游戏配置
+ * 数据来源：src/data/*.json（构建时内联注入 window.__GameData__）
+ * 改数值请改 JSON 文件，改完跑 node build.js
+ * ============================================================ */
+
+const GAMEDATA = window.__GameData__;
+
+/* ---- 网格与战场结构（data/grid.json） ---- */
+const COLS = GAMEDATA.grid.cols;
+const ROWS = GAMEDATA.grid.rows;
+const CELL_SIZE = GAMEDATA.grid.cellSize;
+const HERO_ROW = GAMEDATA.grid.heroRow;
+const HERO_COL = GAMEDATA.grid.heroCol;
+
+/* ---- 防御塔静态数据（data/towers.json） ---- */
+const TOWER_TYPES = GAMEDATA.towers;
+
+/* ---- 怪物静态数据（data/monsters.json） ---- */
+const MONSTER_TYPES = GAMEDATA.monsters;
+
+/* ---- 词条静态描述（data/affixes.json） ---- */
+const AFFIX_DATA = GAMEDATA.affixes;
+
+</script>
+<!-- ======== src/js/state.js ======== -->
+<script>
+/* ============================================================
+ * state.js — 全局可变游戏状态（单例，跨模块共享）
+ * 只存放运行时会变化的数据；静态配置见 config.js
+ * ============================================================ */
+
+/* ---- 经济与进程 ---- */
+let gold = 100;
+let hp = 500;
+let wave = 1;
+
+/* ---- 时间与倍速 ---- */
+let gameTimeScale = 1.0;
+let speedMultiplier = 1;
+let isPaused = false;
+
+/* ---- 招募/研习计数（驱动价格成长） ---- */
+let g_towerDrawCount = 0;
+let g_affixDrawCount = 0;
+
+/* ---- 实体容器 ---- */
+let obstacles = [];               // 静态障碍物
+let towers = [];                  // 场上防御塔
+let monsters = [];                // 场上怪物
+let projectiles = [];             // 飞行弹道
+let particles = [];               // 粒子与飘字特效
+let temporaryGroundEffects = [];  // 临时地面效果（火带/地雷/霜痕/冰环）
+let fogZones = [];                // 迷雾区域
+let lockedFogZone = null;         // 被锁定的优先攻击迷雾
+let _visCache = null;             // 可见性矩阵缓存
+
+/* ---- 手牌与拖拽交互 ---- */
+let handTowers = [];              // 手牌中的塔
+let activeDragIndex = -1;         // 正在拖拽的手牌索引
+let isDragging = false;
+let touchX = 0, touchY = 0;       // 画布坐标系下的指针位置
+let hoverGrid = null;             // 拖拽悬停的目标格
+let isCodexExpanded = false;
+let draggedFieldTower = null;     // 拖拽场上的塔（预留）
+let mergeTarget = null;           // 合成升级目标塔
+let selectedTower = null;         // 当前选中查看的塔
+let simulatedPath = null;         // 拖拽预览用的模拟路径
+let simulatedPathValid = false;
+let handCardMouseDownInfo = null; // 手牌按下信息（区分点击与拖拽）
+let dragStartInfo = null;         // 场上拖拽起点信息（区分点击与拖拽）
+
+/* ---- 波次调度 ---- */
+let waveMonsterQueue = [];
+let waveSpawnTimer = 0;
+let waveIntervalTimer = 0;
+
+/* ---- 词条激活状态（值类型有含义：false/true 开关，number 为等级） ---- */
+const ACTIVE_AFFIXES = { a1: false, a2: 0, a3: false, a4: false, a5: 0, c1: 0, c2: false, c3: false, c4: false, c5: 0, m1: false, m2: 0, m3: false, m4: false, m5: 0, i1: false, i2: false, i3: 0, i4: 0, i5: false };
+const INITIAL_AFFIXES = JSON.parse(JSON.stringify(ACTIVE_AFFIXES));
+
+/* ---- 塔等级上限 ---- */
+const MAX_TOWER_LEVEL = 5;
+
+</script>
+<!-- ======== src/js/pathfinding.js ======== -->
+<script>
+/* ============================================================
+ * pathfinding.js — A* 寻路与放置合法性校验
+ * 怪物从出生行走向英雄格；任何部署不能堵死所有通路
+ * ============================================================ */
+
+class PathNode {
+    constructor(r, c, parent = null, g = 0, h = 0) {
+        this.r = r; this.c = c; this.parent = parent;
+        this.g = g; this.h = h; this.f = g + h;
+    }
+}
+
+/** 构建阻挡图：障碍物 + 塔身 + 可选的虚拟障碍（拖拽预演），可忽略某格 */
+function buildBlockMap(virtualObstacle = null, ignoreCell = null) {
+    let blockMap = Array(ROWS).fill(null).map(() => Array(COLS).fill(false));
+    obstacles.forEach(o => {
+        for(let dr=0; dr<(o.height||1); dr++) for(let dc=0; dc<(o.width||1); dc++) {
+            if(o.r+dr < ROWS && o.c+dc < COLS) blockMap[o.r+dr][o.c+dc] = true;
+        }
+    });
+    towers.forEach(t => {
+        for(let dr=0; dr<(t.height||1); dr++) for(let dc=0; dc<(t.width||1); dc++) {
+            if(t.r+dr < ROWS && t.c+dc < COLS) blockMap[t.r+dr][t.c+dc] = true;
+        }
+    });
+    if (virtualObstacle) {
+        for(let dr=0; dr<(virtualObstacle.height||1); dr++) for(let dc=0; dc<(virtualObstacle.width||1); dc++) {
+            if(virtualObstacle.r+dr < ROWS && virtualObstacle.c+dc < COLS) blockMap[virtualObstacle.r+dr][virtualObstacle.c+dc] = true;
+        }
+    }
+    if (ignoreCell) blockMap[ignoreCell.r][ignoreCell.c] = false;
+    return blockMap;
+}
+
+/** 在给定阻挡图上从任意顶行入口寻找通向英雄格的路径（4 向） */
+function findAStarPathOnMap(blockMap, startR, startC) {
+    startR = Math.max(0, Math.min(ROWS - 1, startR));
+    startC = Math.max(0, Math.min(COLS - 1, startC));
+    if (blockMap[startR][startC]) return null;
+    let openList = [];
+    let closedSet = new Set();
+    openList.push(new PathNode(startR, startC, null, 0, Math.abs(startR - HERO_ROW) + Math.abs(startC - HERO_COL)));
+    while(openList.length > 0) {
+        openList.sort((a, b) => a.f - b.f);
+        let current = openList.shift();
+        if (current.r === HERO_ROW && current.c === HERO_COL) {
+            let path = []; let temp = current;
+            while(temp) { path.push({r: temp.r, c: temp.c}); temp = temp.parent; }
+            return path.reverse();
+        }
+        closedSet.add(`${current.r},${current.c}`);
+        [[-1,0],[1,0],[0,-1],[0,1]].forEach(([dr, dc]) => {
+            let nr = current.r + dr, nc = current.c + dc;
+            if (nr < 0 || nr >= ROWS || nc < 0 || nc >= COLS) return;
+            if (blockMap[nr][nc] || closedSet.has(`${nr},${nc}`)) return;
+            let g = current.g + 1;
+            let exist = openList.find(n => n.r === nr && n.c === nc);
+            if (exist) { if (g < exist.g) { exist.g = g; exist.f = g + exist.h; exist.parent = current; } }
+            else openList.push(new PathNode(nr, nc, current, g, Math.abs(nr - HERO_ROW) + Math.abs(nc - HERO_COL)));
+        });
+    }
+    return null;
+}
+
+/** 便捷封装：实时构建阻挡图后寻路 */
+function findAStarPath(startR, startC, virtualObstacle = null, ignoreCell = null) {
+    return findAStarPathOnMap(buildBlockMap(virtualObstacle, ignoreCell), startR, startC);
+}
+
+/** 放置校验：将候选位置视为虚拟障碍后，仍需存在至少一条顶行到英雄的通路 */
+function checkPlacementValid(tr, tc, tw = 1, th = 1) {
+    let blockMap = buildBlockMap({r: tr, c: tc, width: tw, height: th});
+    for (let c = 0; c < COLS; c++) {
+        if (findAStarPathOnMap(blockMap, 0, c)) return true;
+    }
+    return false;
+}
+
+</script>
+<!-- ======== src/js/mapgen.js ======== -->
+<script>
+/* ============================================================
+ * mapgen.js — 地图生成与可见性
+ * 程序化障碍布局、迷雾区域生成、迷雾可见性矩阵（带缓存）
+ * ============================================================ */
+
+/**
+ * 程序化生成障碍：
+ * - 上半场随机 1~2 个 2x2 障碍
+ * - 下半场 S 形通道两侧各放 2x2 障碍收窄路线
+ * - 英雄上方 3 行×5 列为保护区，且保证放置后不堵死通路
+ */
+function generateProceduralObstacles() {
+    obstacles = [];
+    const aboveRow = HERO_ROW - 1;
+    const centerCol = HERO_COL;
+    const safeRows = new Set([aboveRow, aboveRow-1, aboveRow-2]);
+    const safeCols = new Set([centerCol - 2, centerCol - 1, centerCol, centerCol + 1, centerCol + 2].filter(c => c >= 0 && c < COLS));
+    function hasEnoughSpace(r, c, w, h) {
+        return !obstacles.some(o => {
+            let ow = o.width || 1, oh = o.height || 1;
+            return r < o.r + oh && r + h > o.r && c < o.c + ow && c + w > o.c;
+        });
+    }
+    function tryPlace(r, c, w, h, checkSafeCols) {
+        if (r < 1 || c < 0 || r + h > ROWS - 1 || c + w > COLS) return false;
+        for (let dr = 0; dr < h; dr++) for (let dc = 0; dc < w; dc++) {
+            if (safeRows.has(r + dr) && safeCols.has(c + dc)) return false;
+        }
+        if (checkSafeCols) { for (let dc = 0; dc < w; dc++) if (safeCols.has(c + dc)) return false; }
+        if (!hasEnoughSpace(r, c, w, h)) return false;
+        obstacles.push({ r, c, width: w, height: h });
+        if (!checkPlacementValid(r, c, w, h)) { obstacles.pop(); return false; }
+        return true;
+    }
+    const upperTarget = 1 + Math.floor(Math.random() * 2);
+    let tries = 0;
+    while (obstacles.length < upperTarget && tries < 300) {
+        tries++;
+        let r = 2 + Math.floor(Math.random() * 15);
+        let c = Math.floor(Math.random() * (COLS - 1));
+        tryPlace(r, c, 2, 2, false);
+    }
+    const sSegments = [
+        { minR: 17, maxR: 18, side: 'left',  count: 1 },
+        { minR: 19, maxR: 20, side: 'right', count: 1 + Math.floor(Math.random() * 2) },
+    ];
+    for (let seg of sSegments) {
+        for (let n = 0; n < seg.count; n++) {
+            tries = 0;
+            let placed = false;
+            while (!placed && tries < 200) {
+                tries++;
+                let r = seg.minR + Math.floor(Math.random() * (seg.maxR - seg.minR + 1));
+                let c = seg.side === 'left' ? Math.floor(Math.random() * 5) : COLS - 4 + Math.floor(Math.random() * 4);
+                if (tryPlace(r, c, 2, 2, true)) placed = true;
+            }
+        }
+    }
+}
+
+/**
+ * 生成迷雾区域：从第 2~16 行自上而下、由大到小（3x3 → 1x1）贪心铺放，
+ * 按尺寸随机跳过一部分，形成大小混排的迷雾带；不同尺寸对应不同血量与奖励
+ */
+function generateFogZones() {
+    fogZones = [];
+    const R_START = 2, R_END = 16;
+    let occupied = Array(ROWS).fill(null).map(() => Array(COLS).fill(false));
+    const hpTable = { 1: { hp: 250, reward: 100 }, 2: { hp: 600, reward: 250 }, 3: { hp: 1200, reward: 500 } };
+    for (let size = 3; size >= 1; size--) {
+        for (let r = R_START; r <= R_END - size + 1; r++) {
+            for (let c = 0; c <= COLS - size; c++) {
+                let free = true;
+                for (let dr = 0; dr < size && free; dr++)
+                    for (let dc = 0; dc < size && free; dc++)
+                        if (occupied[r+dr][c+dc]) free = false;
+                if (!free) continue;
+                if (size === 3 && Math.random() < 0.55) continue;
+                if (size === 2 && Math.random() < 0.20) continue;
+                let cfg = hpTable[size];
+                fogZones.push({
+                    r, c, size,
+                    x: c * CELL_SIZE + size * CELL_SIZE / 2,
+                    y: r * CELL_SIZE + size * CELL_SIZE / 2,
+                    hp: cfg.hp, maxHp: cfg.hp, reward: cfg.reward
+                });
+                for (let dr = 0; dr < size; dr++)
+                    for (let dc = 0; dc < size; dc++)
+                        occupied[r+dr][c+dc] = true;
+            }
+        }
+    }
+}
+
+/**
+ * 迷雾可见性矩阵（带脏检查缓存）：
+ * 迷雾存活的格子为不可见；只有迷雾血量/数量变化时才重建
+ */
+function getVisibilityMatrix() {
+    let needsRebuild = !_visCache || fogZones.some(fz => fz._dirty);
+    if (!needsRebuild && _visCache._fogSig !== fogZones.length) needsRebuild = true;
+    if (!needsRebuild) {
+        for (let fz of fogZones) { if (fz._lastHp !== fz.hp) { needsRebuild = true; break; } }
+    }
+    if (!needsRebuild) return _visCache;
+    let vis = Array(ROWS).fill(null).map(() => Array(COLS).fill(true));
+    fogZones.forEach(fz => {
+        fz._lastHp = fz.hp;
+        if (fz.hp > 0) {
+            let s = fz.size || 1;
+            for (let dr = 0; dr < s; dr++)
+                for (let dc = 0; dc < s; dc++)
+                    if (fz.r + dr < ROWS && fz.c + dc < COLS) vis[fz.r + dr][fz.c + dc] = false;
+        }
+    });
+    vis._fogSig = fogZones.length;
+    _visCache = vis;
+    return vis;
+}
+
+</script>
+<!-- ======== src/js/towers.js ======== -->
+<script>
+/* ============================================================
+ * towers.js — 防御塔业务逻辑
+ * 属性成长公式、手牌招募（抽塔）
+ * ============================================================ */
+
+/** 按星级换算塔的有效属性（攻/射程/攻速随等级线性成长） */
+function getTowerEffStats(t) {
+    const lvl = t.level || 1;
+    return { atk: t.baseAtk * (1 + (lvl - 1) * 0.5), range: t.range * (1 + (lvl - 1) * 0.08), rate: t.rate * (1 + (lvl - 1) * 0.1) };
+}
+
+/** 招募：随机抽一座塔进手牌，价格随招募次数递增（10、20、30...） */
+function drawTowerToHand() {
+    if (handTowers.length >= 5) return triggerToast("手牌已满，请先放下一座塔！");
+    const cost = 10 + 10 * g_towerDrawCount;
+    if (gold < cost) return triggerToast("能量宝石不足！");
+    gold -= cost; g_towerDrawCount++;
+    const keys = Object.keys(TOWER_TYPES);
+    const rK = keys[Math.floor(Math.random() * keys.length)];
+    handTowers.push({ ...TOWER_TYPES[rK], level: 1 });
+    updateHUD();
+    triggerToast(`已招募: ${TOWER_TYPES[rK].emoji} (Lv.1)！拖拽上阵。`);
+}
+
+</script>
+<!-- ======== src/js/monsters.js ======== -->
+<script>
+/* ============================================================
+ * monsters.js — 怪物与波次
+ * 波次编队、怪物生成（随波次成长）、击杀奖励
+ * ============================================================ */
+
+/** 开启新波次：按波数决定总量，随机编入五种怪物 */
+function startWave() {
+    document.getElementById('wave-val').textContent = `第 ${wave} 波`;
+    const total = 5 + 2 * wave;
+    const typeKeys = Object.keys(MONSTER_TYPES);
+    waveMonsterQueue = [];
+    for (let i = 0; i < total; i++) waveMonsterQueue.push(typeKeys[Math.floor(Math.random() * typeKeys.length)]);
+    waveSpawnTimer = 60;
+    waveIntervalTimer = 0;
+}
+
+/** 从顶行随机列出生一只怪物，属性随波次成长并乘以类型倍率 */
+function spawnMonster(type) {
+    let sc = Math.floor(Math.random() * COLS);
+    let sr = 0;
+    let sx = sc * CELL_SIZE + CELL_SIZE/2;
+    let sy = -CELL_SIZE;
+    const mtype = MONSTER_TYPES[type] || MONSTER_TYPES.normal;
+    let baseHP = 50 + (wave - 1) * 50, baseArmor = 10 + wave * 5, baseMR = 10 + wave * 5;
+    let finalHP = Math.round(baseHP * mtype.hpMult), finalArmor = Math.round(baseArmor * mtype.armorMult), finalMR = Math.round(baseMR * mtype.mrMult), finalSpeed = 1.5 * mtype.speedMult;
+    let m = {
+        id: Math.random().toString(),
+        x: sx, y: sy,
+        hp: finalHP, maxHp: finalHP,
+        speed: finalSpeed, armor: finalArmor, mr: finalMR,
+        atk: 2, asp: 1.0, range: 1.0,
+        emoji: mtype.emoji,
+        typeName: mtype.name,
+        atkCd: 0, slowT: 0, freezeT: 0,
+        pathIndex: 0, visibleOnce: false
+    };
+    m.activePath = findAStarPath(sr, sc);
+    monsters.push(m);
+}
+
+/** 防线变动后让所有怪物立即重新寻路 */
+function repathMonsters() {
+    monsters.forEach(m => {
+        m.pathIndex = 0;
+        let clampR = Math.max(0, Math.floor(m.y/CELL_SIZE));
+        let clampC = Math.max(0, Math.min(COLS - 1, Math.floor(m.x/CELL_SIZE)));
+        m.activePath = findAStarPath(clampR, clampC);
+    });
+}
+
+/** 击杀奖励：金币入账并飘字提示 */
+function killMonster(m) {
+    let reward = 8 + wave * 2;
+    gold += reward;
+    updateHUD();
+    particles.push({type: 'text', text: `+${reward}💎`, x: m.x, y: m.y, life: 30});
+}
+
+</script>
+<!-- ======== src/js/combat.js ======== -->
+<script>
+/* ============================================================
+ * combat.js — 战斗核心
+ * 伤害结算与词条反应、弹道更新、塔索敌开火、地面效果、
+ * 怪物移动与攻城、波次调度、粒子特效
+ * ============================================================ */
+
+/** 通用粒子迸溅 */
+function spawnParticles(x, y, color) {
+    for(let i=0; i<6; i++) particles.push({x, y, vx: (Math.random()-0.5)*4, vy: (Math.random()-0.5)*4, life: 15, color, size: Math.random()*3+1});
+}
+
+/** 伤害结算：物法抗性减伤、融穿削抗、冷血追击增伤、钉刺定身、能量溢出爆破 */
+function dealDamage(m, dmg, type, sourceTowerId) {
+    if(m.hp <= 0) return;
+    let res = type === 'physical' ? m.armor : m.mr;
+    if (type === 'magic' && sourceTowerId === 'magic' && ACTIVE_AFFIXES.m2 > 0) {
+        m.mr = Math.max(0, m.mr * (1 - 0.09 * ACTIVE_AFFIXES.m2));
+        res = m.mr;
+    }
+    if ((m.slowT > 0 || m.freezeT > 0) && sourceTowerId === 'ice' && ACTIVE_AFFIXES.i5) dmg *= 1 + 0.3;
+    m.hp -= Math.max(1, Math.floor(dmg * (100 / (100 + res))));
+    spawnParticles(m.x, m.y, type === 'magic' ? '#a855f7' : '#ef4444');
+    if (sourceTowerId === 'arrow' && ACTIVE_AFFIXES.a2 > 0 && Math.random() < 0.09 * ACTIVE_AFFIXES.a2) m.freezeT = Math.max(m.freezeT, 18);
+    if (sourceTowerId === 'magic' && ACTIVE_AFFIXES.m3 && m.hp <= 0) {
+        let overflow = -m.hp;
+        if (overflow > 0) monsters.forEach(other => { if (other !== m && other.hp > 0 && Math.hypot(other.x-m.x, other.y-m.y) < 80) { dealDamage(other, Math.floor(overflow * 0.3), 'magic', 'magic'); spawnParticles(other.x, other.y, '#a855f7'); } });
+    }
+    if (m.hp <= 0) killMonster(m);
+}
+
+/** 对迷雾区域造成伤害；击破后发奖励并解锁区域 */
+function damageFogZone(fz, dmg) {
+    if (fz.hp <= 0) return;
+    fz.hp -= dmg;
+    spawnParticles(fz.x, fz.y, '#6366f1');
+    if (fz.hp <= 0) {
+        gold += fz.reward; updateHUD();
+        particles.push({type: 'text', text: `+${fz.reward}💎`, x: fz.x, y: fz.y, life: 40});
+        if (lockedFogZone === fz) lockedFogZone = null;
+        triggerToast("迷雾已驱散！区域已解锁！");
+    }
+}
+
+/** 战斗主更新（每帧调用，dtScale 为时间缩放） */
+function updateCombat(dtScale) {
+    let vis = getVisibilityMatrix();
+    function isVisible(x, y) {
+        let r = Math.floor(y / CELL_SIZE), c = Math.floor(x / CELL_SIZE);
+        return r >= 0 && r < ROWS && c >= 0 && c < COLS && vis[r][c];
+    }
+    function repath(m) {
+        m.pathIndex = 0;
+        let cr = Math.max(0, Math.floor(m.y/CELL_SIZE)), cc = Math.max(0, Math.min(COLS-1, Math.floor(m.x/CELL_SIZE)));
+        m.activePath = findAStarPath(cr, cc);
+    }
+    /* 炮塔命中后的词条反应：震退/分裂/燃地带/布雷 */
+    function cannonAffixHit(p) {
+        if (p.isSplit) return;
+        if (ACTIVE_AFFIXES.c2) monsters.forEach(m => { if (m.hp > 0 && Math.hypot(m.x-p.x, m.y-p.y) < 60) { let dx = m.x-p.x, dy = m.y-p.y, len = Math.hypot(dx,dy)||1; m.x += (dx/len)*CELL_SIZE*0.5; m.y += (dy/len)*CELL_SIZE*0.5; repath(m); } });
+        if (ACTIVE_AFFIXES.c3) for (let k=0; k<2; k++) { let a = (k/2)*Math.PI*2; projectiles.push({x:p.x, y:p.y, vx:Math.cos(a)*6, vy:Math.sin(a)*6, dmg:p.dmg*0.3, towerId:'cannon', life:30, target:'monster', aoeRadius:0, isSplit:true}); }
+        if (ACTIVE_AFFIXES.c4) temporaryGroundEffects.push({x:p.x, y:p.y, life:120, type:'fire', dmg:3});
+        if (ACTIVE_AFFIXES.c1) for (let i=0; i<2; i++) { let a = Math.random()*Math.PI*2, d = 20+Math.random()*30; temporaryGroundEffects.push({x:p.x+Math.cos(a)*d, y:p.y+Math.sin(a)*d, life:600, type:'mine', dmg:p.dmg*0.3}); }
+    }
+    /* 法塔命中后的词条反应：电弧弹射/磁极吸引 */
+    function magicAffixHit(p) {
+        if (ACTIVE_AFFIXES.m1) { let last = monsters.find(mo => mo.hp > 0 && Math.hypot(mo.x-p.x, mo.y-p.y) < 25); if (last) { let bounced = [last]; for (let b=0; b<2; b++) { let next = monsters.find(mo => !bounced.includes(mo) && mo.hp > 0 && Math.hypot(mo.x-last.x, mo.y-last.y) < 120); if (!next) break; dealDamage(next, p.dmg*0.36, 'magic', 'magic'); spawnParticles(next.x, next.y, '#fbbf24'); bounced.push(next); last = next; } } }
+        if (ACTIVE_AFFIXES.m4) { let near = monsters.filter(mo => mo.hp > 0 && Math.hypot(mo.x-p.x, mo.y-p.y) < 100).slice(0,2); if (near.length === 2) { let cx = (near[0].x+near[1].x)/2, cy = (near[0].y+near[1].y)/2; near.forEach(mo => { mo.x += (cx-mo.x)*0.3; mo.y += (cy-mo.y)*0.3; repath(mo); }); } }
+    }
+    /* ---- 弹道更新 ---- */
+    for (let i = projectiles.length - 1; i >= 0; i--) {
+        let p = projectiles[i];
+        if (p.target === 'fogZone' && (!p.fogZoneRef || p.fogZoneRef.hp <= 0)) { projectiles.splice(i, 1); continue; }
+        p.x += p.vx * dtScale; p.y += p.vy * dtScale; p.life -= dtScale;
+        let hitM = null;
+        for (let j = 0; j < monsters.length; j++) {
+            let m = monsters[j];
+            if (isVisible(m.x, m.y) && m.hp > 0 && Math.hypot(p.x-m.x, p.y-m.y) < 25) { hitM = m; break; }
+        }
+        let hitFog = (p.target === 'fogZone' && p.fogZoneRef?.hp > 0 && Math.hypot(p.x-p.fogZoneRef.x, p.y-p.fogZoneRef.y) < 32) ? p.fogZoneRef : null;
+        if (!hitM && !hitFog) { if (p.life <= 0) projectiles.splice(i, 1); continue; }
+        if (hitM) dealDamage(hitM, p.dmg, p.towerId === 'magic' ? 'magic' : 'physical', p.towerId);
+        if (hitFog) damageFogZone(hitFog, p.dmg);
+        if (p.towerId === 'cannon' && p.aoeRadius > 0) {
+            monsters.forEach(mo => { if (mo !== hitM && mo.hp > 0 && isVisible(mo.x, mo.y) && Math.hypot(mo.x-p.x, mo.y-p.y) < p.aoeRadius) { dealDamage(mo, p.dmg*0.6, 'physical', 'cannon'); spawnParticles(mo.x, mo.y, '#f59e0b'); } });
+            fogZones.forEach(fz => { if (fz !== hitFog && fz.hp > 0) { let halfS = fz.size*CELL_SIZE/2, dx = Math.max(Math.abs(p.x-fz.x)-halfS, 0), dy = Math.max(Math.abs(p.y-fz.y)-halfS, 0); if (Math.hypot(dx, dy) < p.aoeRadius) { damageFogZone(fz, p.dmg*0.6); spawnParticles(fz.x, fz.y, '#f59e0b'); } } });
+            spawnParticles(p.x, p.y, '#f59e0b');
+        }
+        if (hitM) {
+            if (p.towerId === 'arrow' && ACTIVE_AFFIXES.a3) hitM.tornMark = true;
+            if (p.towerId === 'cannon' && hitM.tornMark && ACTIVE_AFFIXES.a3) { dealDamage(hitM, p.dmg*0.3, 'physical', 'cannon'); hitM.tornMark = false; }
+            if (p.towerId === 'arrow' && ACTIVE_AFFIXES.a4 && hitM.hp > 0) { let link = monsters.find(mo => mo !== hitM && mo.hp > 0 && Math.hypot(mo.x-hitM.x, mo.y-hitM.y) < 100); if (link) { dealDamage(link, p.dmg*0.18, 'physical', 'arrow'); spawnParticles((hitM.x+link.x)/2, (hitM.y+link.y)/2, '#6366f1'); for (let pi=0; pi<3; pi++) { let t = pi/3; particles.push({x:hitM.x+(link.x-hitM.x)*t, y:hitM.y+(link.y-hitM.y)*t, vx:0, vy:0, life:10, color:'#6366f1', size:2}); } } }
+        }
+        if (p.towerId === 'cannon') cannonAffixHit(p);
+        if (p.towerId === 'magic') magicAffixHit(p);
+        projectiles.splice(i, 1);
+    }
+    /* ---- 塔索敌与开火 ---- */
+    let heroCX = HERO_COL * CELL_SIZE + CELL_SIZE/2, heroCY = HERO_ROW * CELL_SIZE + CELL_SIZE/2;
+    towers.forEach(t => {
+        if (t.cooldown > 0) t.cooldown -= dtScale;
+        let rateMult = (t.id === 'magic' && ACTIVE_AFFIXES.m5 > 0 && t.lastTarget) ? 1 + Math.min(5, t.comboStacks||0) * 0.07 : 1;
+        if (t.cooldown > 0) {
+            if (t.id === 'cannon' && ACTIVE_AFFIXES.c5 > 0) t.idleTime = (t.idleTime||0) + dtScale;
+            return;
+        }
+        let eff = getTowerEffStats(t);
+        let effRange = eff.range * (t.id === 'ice' && ACTIVE_AFFIXES.i4 > 0 ? 1 + 0.09 * ACTIVE_AFFIXES.i4 : 1);
+        let inRange = monsters.filter(m => m.hp > 0 && isVisible(m.x, m.y) && Math.hypot(m.x-t.x, m.y-t.y) <= effRange);
+        let fogDist = (fz) => { let halfS = fz.size * CELL_SIZE / 2; return Math.hypot(fz.x-t.x, fz.y-t.y) - halfS; };
+        let fogTargets = fogZones.filter(fz => fz.hp > 0 && fogDist(fz) <= effRange);
+        let aim = null;
+        let lockedFog = (lockedFogZone && lockedFogZone.hp > 0 && fogDist(lockedFogZone) <= effRange) ? lockedFogZone : null;
+        if (lockedFog) aim = { x: lockedFog.x, y: lockedFog.y, fog: lockedFog };
+        else if (inRange.length > 0) { let tgt = inRange.reduce((b, m) => { let d = Math.hypot(m.x-heroCX, m.y-heroCY); return !b || d < b.d ? {m, d} : b; }, null).m; aim = { x: tgt.x, y: tgt.y, fog: null, m: tgt }; }
+        else if (fogTargets.length > 0) { let fz = fogTargets.reduce((b, f) => { let d = Math.hypot(f.x-t.x, f.y-t.y); return !b || d < b.d ? {f, d} : b; }, null).f; aim = { x: fz.x, y: fz.y, fog: fz }; }
+        if (!aim) return;
+        t.cooldown = 60 / (eff.rate * rateMult);
+        if (t.id === 'ice') {
+            temporaryGroundEffects.push({x:t.x, y:t.y, life:20, type:'icering', radius:effRange});
+            inRange.forEach(m => {
+                dealDamage(m, eff.atk, 'magic', 'ice');
+                m.slowT = Math.max(m.slowT, 120);
+                if (ACTIVE_AFFIXES.i1 && Math.random() < 0.15) { m.freezeT = Math.max(m.freezeT, 45); spawnParticles(m.x, m.y, '#3b82f6'); }
+                if (ACTIVE_AFFIXES.i2 && m.freezeT > 0) { monsters.forEach(o => { if (o.hp > 0) o.slowT = Math.max(o.slowT, 54); }); spawnParticles(m.x, m.y, '#06b6d4'); }
+                if (ACTIVE_AFFIXES.i3 > 0) temporaryGroundEffects.push({x:m.x, y:m.y, life:36*ACTIVE_AFFIXES.i3, type:'frost'});
+            });
+            fogTargets.forEach(fz => damageFogZone(fz, eff.atk));
+        } else {
+            let dx = aim.x - t.x, dy = aim.y - t.y, len = Math.hypot(dx, dy) || 1, aoeR = t.id === 'cannon' ? 55 : 0;
+            let mkProj = (vx, vy) => projectiles.push({x:t.x, y:t.y, vx, vy, dmg:eff.atk, towerId:t.id, life:120, target:aim.fog ? 'fogZone' : 'monster', fogZoneRef:aim.fog, aoeRadius:aoeR});
+            if (t.id === 'arrow' && ACTIVE_AFFIXES.a1) { for (let k=-1; k<=1; k++) { let a = Math.atan2(dy, dx) + k*0.25; mkProj(Math.cos(a)*9, Math.sin(a)*9); } }
+            else mkProj((dx/len)*9, (dy/len)*9);
+            if (t.id === 'cannon' && ACTIVE_AFFIXES.c5 > 0 && (t.idleTime||0) > 180) { let p = projectiles[projectiles.length-1]; if (p) p.dmg *= 1.5; }
+            if (aim.m && t.id === 'magic' && ACTIVE_AFFIXES.m5 > 0) { t.lastTarget = (t.lastTarget === aim.m.id) ? (t.comboStacks = Math.min(5, (t.comboStacks||0)+1), aim.m.id) : (t.comboStacks = 1, aim.m.id); }
+            if (aim.m && t.id === 'arrow' && ACTIVE_AFFIXES.a5 > 0) { t.attackCount = (t.attackCount||0)+1; if (t.attackCount >= 8) { t.attackCount = 0; inRange.slice(0,5).forEach(tg => { let ddx=tg.x-t.x, ddy=tg.y-t.y, ll=Math.hypot(ddx,ddy)||1; projectiles.push({x:t.x, y:t.y-60, vx:(ddx/ll)*12, vy:(ddy/ll)*12, dmg:eff.atk*0.6, towerId:'arrow', life:90, target:'monster', aoeRadius:0}); }); } }
+        }
+        if (t.id === 'cannon' && ACTIVE_AFFIXES.c5 > 0) t.idleTime = 0;
+    });
+    let gameRunning = DOM.gameOverlay.style.display === 'none';
+    /* ---- 清理已破迷雾 ---- */
+    if (fogZones.some(fz => fz.hp <= 0)) fogZones = fogZones.filter(fz => fz.hp > 0);
+    let hX = HERO_COL * CELL_SIZE + CELL_SIZE/2;
+    let hY = HERO_ROW * CELL_SIZE + CELL_SIZE/2;
+    /* ---- 地面效果更新（火带灼烧 / 地雷触发） ---- */
+    for (let gi = temporaryGroundEffects.length - 1; gi >= 0; gi--) {
+        let ge = temporaryGroundEffects[gi];
+        ge.life -= dtScale;
+        if (ge.type === 'fire') {
+            monsters.forEach(mo => {
+                if (mo.hp > 0 && Math.hypot(mo.x-ge.x, mo.y-ge.y) < 40) {
+                    mo.hp -= ge.dmg * dtScale;
+                    if (Math.random() < 0.1) spawnParticles(mo.x, mo.y, '#f97316');
+                    if (mo.hp <= 0) killMonster(mo);
+                }
+            });
+        } else if (ge.type === 'mine') {
+            let trig = monsters.find(mo => mo.hp > 0 && Math.hypot(mo.x-ge.x, mo.y-ge.y) < 25);
+            if (trig) {
+                trig.freezeT = Math.max(trig.freezeT, 40);
+                dealDamage(trig, ge.dmg, 'physical', 'cannon');
+                spawnParticles(ge.x, ge.y, '#f59e0b');
+                ge.life = 0;
+            }
+        }
+        if (ge.life <= 0) temporaryGroundEffects.splice(gi, 1);
+    }
+    /* ---- 怪物更新：攻城 / 冰冻减速 / 迷雾潜行加速 / 沿路径移动 ---- */
+    for (let i = monsters.length - 1; i >= 0; i--) {
+        let m = monsters[i];
+        if (m.hp <= 0) { monsters.splice(i, 1); continue; }
+        let { r: cr, c: cc } = cellOf(m.x, m.y);
+        if (cr >= 0 && cr < ROWS && cc >= 0 && cc < COLS && vis[cr][cc]) m.visibleOnce = true;
+        if (Math.hypot(hX - m.x, hY - m.y) <= m.range * CELL_SIZE) {
+            m.atkCd -= dtScale;
+            if (m.atkCd <= 0) {
+                m.atkCd = 60 / m.asp;
+                hp -= m.atk; updateHUD();
+                spawnParticles(m.x, hY, '#f97316');
+                if (hp <= 0) {
+                    if (DOM.gameOverlay) { DOM.gameOverlay.style.display = 'flex'; DOM.gameOverlay.querySelector('h1').textContent = "守护防线被突破"; }
+                    gameTimeScale = 0;
+                }
+            }
+        } else {
+            let spdMult = 1;
+            if (m.freezeT > 0) { m.freezeT -= dtScale; spdMult = 0; }
+            else if (m.slowT > 0) { m.slowT -= dtScale; spdMult = 0.4; }
+            temporaryGroundEffects.forEach(ge => {
+                if (ge.type === 'frost' && Math.hypot(m.x-ge.x, m.y-ge.y) < 40) spdMult *= 0.5;
+            });
+            let inFog = cr >= 0 && cr < ROWS && cc >= 0 && cc < COLS && !vis[cr][cc];
+            if (inFog) spdMult *= 2;
+            let effSpd = m.speed * spdMult;
+            if (effSpd > 0 && m.activePath && m.pathIndex < m.activePath.length) {
+                let node = m.activePath[m.pathIndex];
+                let dx = node.c * CELL_SIZE + CELL_SIZE/2 - m.x;
+                let dy = node.r * CELL_SIZE + CELL_SIZE/2 - m.y;
+                let dist = Math.hypot(dx, dy);
+                if (dist < effSpd * dtScale) { m.x += dx; m.y += dy; m.pathIndex++; }
+                else { m.x += (dx/dist)*effSpd*dtScale; m.y += (dy/dist)*effSpd*dtScale; }
+            } else if (cr >= 0 && m.freezeT <= 0) {
+                m.activePath = findAStarPath(cr, cc); m.pathIndex = 0;
+            }
+        }
+    }
+    /* ---- 波次调度：出怪间隔与波间倒计时 ---- */
+    if (waveMonsterQueue.length > 0) {
+        waveSpawnTimer -= dtScale;
+        if (waveSpawnTimer <= 0) {
+            spawnMonster(waveMonsterQueue.shift());
+            waveSpawnTimer = 90;
+            if (waveMonsterQueue.length === 0) waveIntervalTimer = 10 * 60;
+        }
+    } else if (waveIntervalTimer > 0) {
+        waveIntervalTimer -= dtScale;
+        if (monsters.length === 0) {
+            waveIntervalTimer = 0;
+            wave++; updateHUD(); startWave();
+        } else {
+            document.getElementById('wave-val').textContent = `下波: ${Math.ceil(waveIntervalTimer/60)}s`;
+            if (waveIntervalTimer <= 0) { wave++; updateHUD(); startWave(); }
+        }
+    }
+    /* ---- 粒子与飘字更新 ---- */
+    for (let i = particles.length - 1; i >= 0; i--) {
+        let p = particles[i];
+        p.life -= dtScale;
+        if (p.type === 'text') p.y -= 1.5 * dtScale;
+        else { p.x += p.vx * dtScale; p.y += p.vy * dtScale; }
+        if (p.life <= 0) particles.splice(i, 1);
+    }
+}
+
+</script>
+<!-- ======== src/js/ui.js ======== -->
+<script>
+/* ============================================================
+ * ui.js — 界面层
+ * Toast 提示、HUD 数值、手牌渲染、塔信息面板、
+ * 词条三选一弹窗、全局强化图鉴
+ * ============================================================ */
+
+/** 顶部悬浮提示（2.2 秒后淡出） */
+function triggerToast(msg) {
+    if (DOM.toastText) DOM.toastText.textContent = msg;
+    if (DOM.toastMsg) {
+        DOM.toastMsg.style.opacity = '100';
+        setTimeout(() => { DOM.toastMsg.style.opacity = '0'; }, 2200);
+    }
+}
+
+/** 刷新 HUD 数值与招募/研习价格 */
+function updateHUD() {
+    if (DOM.hpVal) DOM.hpVal.textContent = hp;
+    if (DOM.goldVal) DOM.goldVal.textContent = gold;
+    if (DOM.costTowerVal) DOM.costTowerVal.textContent = 10 + 10 * g_towerDrawCount;
+    if (DOM.costAffixVal) DOM.costAffixVal.textContent = Math.round(100 * Math.pow(1.3, g_affixDrawCount));
+    if (DOM.handCount) DOM.handCount.textContent = `${handTowers.length}/5`;
+    renderHandUI();
+}
+
+/** 渲染手牌卡片（带星级角标） */
+function renderHandUI() {
+    const container = document.getElementById('hand-cards-container');
+    if (handTowers.length === 0) {
+        container.innerHTML = `<div class="text-[9px] text-slate-400 col-span-5 text-center py-2.5">手牌为空，点击下方招募</div>`;
+        return;
+    }
+    container.innerHTML = handTowers.map((tower, idx) => {
+        const lvl = tower.level || 1;
+        const lvlBadge = lvl > 1 ? `<span class="absolute top-0 right-0 text-[8px] font-bold text-amber-600 bg-amber-100 px-0.5 rounded-bl border-l border-b border-amber-200 leading-none">${'★'.repeat(lvl)}</span>` : '';
+        return `
+        <div class="hand-card bg-white border border-slate-200 hover:border-emerald-500 rounded-lg p-1 flex flex-col items-center justify-center text-center shadow-xs select-none h-[50px] overflow-hidden relative"
+             onmousedown="onHandCardMouseDown(event, ${idx})" ontouchstart="onHandCardMouseDown(event, ${idx})">
+            ${lvlBadge}
+            <span class="text-base leading-none">${tower.emoji}</span>
+            <span class="text-[8px] font-bold text-slate-700 mt-0.5 leading-none w-full whitespace-nowrap">${tower.name}</span>
+        </div>`;
+    }).join('');
+}
+
+/** 塔信息弹窗：属性、已激活词条、升级提示；打开时暂停战局 */
+function showTowerInfo(t) {
+    let eff = getTowerEffStats(t);
+    let lvl = t.level || 1;
+    let affixList = [];
+    for (let k in AFFIX_DATA) {
+        if (AFFIX_DATA[k].towerId === t.id && ACTIVE_AFFIXES[k]) {
+            let lvl2 = typeof ACTIVE_AFFIXES[k] === 'number' ? ` <span class='text-amber-600 font-bold'>Lv${ACTIVE_AFFIXES[k]}</span>` : '';
+            affixList.push(`<div class='bg-slate-50 rounded-md px-2 py-1 border border-slate-100'><div class='text-[10px] font-bold text-slate-700'>• ${AFFIX_DATA[k].name}${lvl2}</div><div class='text-[9px] text-slate-500 mt-0.5 leading-relaxed'>${AFFIX_DATA[k].desc}</div></div>`);
+        }
+    }
+    if (affixList.length === 0) affixList.push(`<div class='text-[10px] text-slate-400 italic py-0.5 text-center'>暂无激活词条</div>`);
+    let panel = document.getElementById('tower-info-panel');
+    let stars = '★'.repeat(lvl) + '<span style="color:#cbd5e1">' + '★'.repeat(MAX_TOWER_LEVEL - lvl) + '</span>';
+    let isFieldTower = towers.includes(t);
+    let upgradeHint = isFieldTower && lvl < MAX_TOWER_LEVEL
+        ? `<div class='text-[9px] text-amber-600 font-bold text-center mt-2 pt-2 border-t border-slate-100'>拖拽相同塔至此处可升至 ${lvl+1}★</div>`
+        : (lvl >= MAX_TOWER_LEVEL ? `<div class='text-[9px] text-emerald-600 font-bold text-center mt-2 pt-2 border-t border-slate-100'>已达最高星级</div>` : '');
+    panel.innerHTML = `
+        <div class='bg-white rounded-xl shadow-2xl border border-slate-200 p-4 w-full max-w-xs' onclick='event.stopPropagation()'>
+            <div class='flex items-center gap-2 mb-3 pb-2 border-b border-slate-100'>
+                <span class='text-2xl'>${t.emoji}</span>
+                <div>
+                    <div class='text-sm font-black text-slate-800'>${t.name} <span class='text-amber-500 text-base'>${stars}</span></div>
+                    <div class='text-[9px] text-slate-500'>${t.desc || ''}</div>
+                </div>
+                <button onclick='closeTowerInfo()' class='ml-auto text-slate-400 hover:text-slate-600 text-sm'><i class='fa-solid fa-xmark'></i></button>
+            </div>
+            <div class='grid grid-cols-3 gap-2 mb-3 text-center'>
+                <div class='bg-slate-50 rounded-lg p-1.5'><div class='text-[8px] text-slate-400 uppercase'>攻击</div><div class='text-sm font-bold text-rose-600'>${eff.atk}</div></div>
+                <div class='bg-slate-50 rounded-lg p-1.5'><div class='text-[8px] text-slate-400 uppercase'>射程</div><div class='text-sm font-bold text-sky-600'>${Math.round(eff.range)}</div></div>
+                <div class='bg-slate-50 rounded-lg p-1.5'><div class='text-[8px] text-slate-400 uppercase'>攻速</div><div class='text-sm font-bold text-emerald-600'>${eff.rate.toFixed(1)}</div></div>
+            </div>
+            <div class='text-[9px] font-bold text-slate-500 uppercase mb-1'>已激活词条（${affixList.length > 1 ? affixList.length : 0}）</div>
+            <div class='space-y-1 max-h-32 overflow-y-auto custom-scroll'>${affixList.join('')}</div>
+            ${upgradeHint}
+            <div class='text-[9px] text-slate-400 text-center mt-2 pt-2 border-t border-slate-100'>点击框外任意区域关闭</div>
+        </div>`;
+    panel.classList.remove('hidden');
+    gameTimeScale = 0;
+}
+
+/** 关闭塔信息弹窗并恢复战局 */
+function closeTowerInfo() {
+    document.getElementById('tower-info-panel').classList.add('hidden');
+    selectedTower = null;
+    gameTimeScale = 1.0;
+}
+
+/**
+ * 词条三选一弹窗
+ * @param towerIdFilter 限定塔系（4 级觉醒的专属恩赐）
+ * @param free 免费抽取（觉醒赠送，不扣宝石）
+ */
+function startAffixDraft(towerIdFilter = null, free = false) {
+    if (!free) {
+        const cost = Math.round(100 * Math.pow(1.3, g_affixDrawCount));
+        if (gold < cost) return triggerToast("宝石能量不足！");
+        gold -= cost; g_affixDrawCount++; updateHUD();
+    }
+    let avail = Object.keys(ACTIVE_AFFIXES).filter(k => {
+        if (typeof ACTIVE_AFFIXES[k] === 'number' ? ACTIVE_AFFIXES[k] >= 5 : ACTIVE_AFFIXES[k]) return false;
+        if (towerIdFilter && AFFIX_DATA[k].towerId !== towerIdFilter) return false;
+        return true;
+    });
+    if (avail.length === 0) {
+        if (towerIdFilter) return triggerToast("该塔系词条已全部习得！");
+        return triggerToast("已习得全部全局强化！");
+    }
+    const picked = avail.sort(() => 0.5 - Math.random()).slice(0, 3);
+    gameTimeScale = 0;
+    const container = document.getElementById('draft-options-container');
+    const titleEl = document.querySelector('#draft-modal h3');
+    if (titleEl) {
+        titleEl.textContent = free && towerIdFilter
+            ? `🌟 ${TOWER_TYPES[towerIdFilter].emoji} 4级觉醒·专属恩赐`
+            : '🔮 研习全新法术秘籍';
+    }
+    container.innerHTML = picked.map(key => {
+        const item = AFFIX_DATA[key];
+        return `
+            <div onclick="selectAffix('${key}')" class="bg-slate-50 border border-slate-200 hover:border-indigo-400 p-2.5 rounded-xl cursor-pointer flex items-start gap-2">
+                <span class="text-xl p-1 bg-white rounded shadow-xs">${TOWER_TYPES[item.towerId].emoji}</span>
+                <div><div class="font-bold text-[11px] text-slate-800">${item.name}</div><p class="text-[9px] text-slate-500 mt-0.5">${item.desc}</p></div>
+            </div>`;
+    }).join('');
+    document.getElementById('draft-modal').classList.remove('hidden');
+}
+
+/** 选择词条：布尔型点亮、数值型升级 */
+function selectAffix(key) {
+    if (typeof ACTIVE_AFFIXES[key] === 'number') ACTIVE_AFFIXES[key]++; else ACTIVE_AFFIXES[key] = true;
+    document.getElementById('draft-modal').classList.add('hidden');
+    gameTimeScale = 1.0;
+    updateCodexUI(); updateHUD(); triggerToast(`习得【${AFFIX_DATA[key].name}】！`);
+}
+
+/** 展开/收起全局强化图鉴 */
+function toggleCodex() {
+    const p = document.getElementById('codex-panel'); const c = document.getElementById('codex-caret');
+    isCodexExpanded = !isCodexExpanded;
+    p.classList.toggle('hidden', !isCodexExpanded);
+    c.className = isCodexExpanded ? "fa-solid fa-caret-down" : "fa-solid fa-caret-up transition-transform";
+}
+
+/** 重绘全局强化图鉴内容 */
+function updateCodexUI() {
+    const p = document.getElementById('codex-panel');
+    let h = ''; let count = 0;
+    for (let k in ACTIVE_AFFIXES) {
+        if (ACTIVE_AFFIXES[k]) {
+            count++;
+            let info = AFFIX_DATA[k];
+            let lvl = typeof ACTIVE_AFFIXES[k] === 'number' ? `(等级 ${ACTIVE_AFFIXES[k]})` : '';
+            h += `<div class="py-1 border-b border-slate-100"><span class="font-bold text-indigo-600 text-[8px]">${info.name}${lvl}</span><span class="text-slate-500 text-[7px] block mt-0.5">${info.desc}</span></div>`;
+        }
+    }
+    p.innerHTML = count === 0 ? `<div class="py-1 text-slate-400 italic text-center">暂未获得全局强化。</div>` : h;
+}
+
+</script>
+<!-- ======== src/js/input.js ======== -->
+<script>
+/* ============================================================
+ * input.js — 输入交互
+ * 手牌/场上拖拽（拖拽时战局慢放 10 倍）、点击选中塔与锁定迷雾、
+ * 部署落子与合成升级判定、键盘快捷键
+ * ============================================================ */
+
+/* ---- 手牌按下：记录起点以区分"点击查看"与"拖拽上阵" ---- */
+function onHandCardMouseDown(e, index) {
+    let {x: clientX, y: clientY} = getCoord(e);
+    handCardMouseDownInfo = { index, startX: clientX, startY: clientY, time: Date.now() };
+    onDragStartEvent(e, index);
+}
+
+/** 松手时若位移极小且时间短，判定为点击手牌 → 查看塔详情 */
+function checkHandCardClick(clientX, clientY) {
+    if (!handCardMouseDownInfo) return false;
+    let dt = Date.now() - handCardMouseDownInfo.time;
+    let dx = Math.abs((clientX || 0) - handCardMouseDownInfo.startX);
+    let dy = Math.abs((clientY || 0) - handCardMouseDownInfo.startY);
+    let info = handCardMouseDownInfo;
+    handCardMouseDownInfo = null;
+    if (dt < 250 && dx < 10 && dy < 10) {
+        let tower = handTowers[info.index];
+        if (tower) { selectedTower = null; showTowerInfo(tower); return true; }
+    }
+    return false;
+}
+
+/* ---- 开始拖拽：进入慢放预演模式 ---- */
+function onDragStartEvent(e, index) {
+    e.preventDefault();
+    activeDragIndex = index;
+    draggedFieldTower = null;
+    isDragging = true;
+    gameTimeScale = 0.1;
+    document.getElementById('drag-overlay-tip').classList.remove('hidden');
+    let {x: clientX, y: clientY} = getCoord(e);
+    updateDragCoordinates(clientX, clientY);
+}
+
+/* ---- 点击画布：优先命中塔（选中查看），其次迷雾（锁定集火），否则取消选中 ---- */
+function onCanvasDragStart(e) {
+    let {x: clientX, y: clientY} = getCoord(e);
+    if (!clientX) return;
+    const rect = canvas.getBoundingClientRect();
+    let cx = (clientX - rect.left) / rect.width * canvas.width;
+    let cy = (clientY - rect.top) / rect.height * canvas.height;
+    let tower = towers.find(t => Math.hypot(t.x - cx, t.y - cy) < 30);
+    if (tower) {
+        selectedTower = tower;
+        showTowerInfo(tower);
+    } else {
+        let clickedFog = fogZones.find(fz => {
+            if (fz.hp <= 0) return false;
+            let s = fz.size || 1;
+            return cx >= fz.c*CELL_SIZE && cx <= (fz.c+s)*CELL_SIZE && cy >= fz.r*CELL_SIZE && cy <= (fz.r+s)*CELL_SIZE;
+        });
+        if (clickedFog) {
+            lockedFogZone = (lockedFogZone === clickedFog) ? null : clickedFog;
+            triggerToast(lockedFogZone ? "已锁定迷雾为优先攻击目标！" : "已取消优先攻击目标");
+        } else {
+            if (selectedTower) { selectedTower = null; closeTowerInfo(); }
+        }
+    }
+}
+
+/** 场上拖拽松手时若判定为点击，还原塔位置并弹出详情 */
+function checkClickAfterDrag() {
+    if (!dragStartInfo) return false;
+    let rect = canvas.getBoundingClientRect();
+    let dt = Date.now() - dragStartInfo.time;
+    let dx = Math.abs(touchX - ((dragStartInfo.startX - rect.left) / rect.width * canvas.width));
+    let dy = Math.abs(touchY - ((dragStartInfo.startY - rect.top) / rect.height * canvas.height));
+    if (dt < 250 && dx < 15 && dy < 15 && dragStartInfo.tower) {
+        selectedTower = dragStartInfo.tower;
+        showTowerInfo(dragStartInfo.tower);
+        towers.push(dragStartInfo.tower);
+        dragStartInfo = null;
+        return true;
+    }
+    dragStartInfo = null;
+    return false;
+}
+
+/**
+ * 拖拽坐标实时演算：
+ * 换算画布坐标 → 计算悬停格 → 检查重叠/迷雾/合成候选 → 演算放置后通路是否可达
+ */
+function updateDragCoordinates(clientX, clientY) {
+    const rect = canvas.getBoundingClientRect();
+    touchX = (clientX - rect.left) / rect.width * canvas.width;
+    touchY = (clientY - rect.top) / rect.height * canvas.height;
+    let draggedT = activeDragIndex !== -1 ? handTowers[activeDragIndex] : draggedFieldTower;
+    let tw = draggedT ? (draggedT.width || 1) : 1;
+    let th = draggedT ? (draggedT.height || 1) : 1;
+    let c = Math.floor((touchX - tw * CELL_SIZE / 2) / CELL_SIZE);
+    let r = Math.floor((touchY - th * CELL_SIZE / 2) / CELL_SIZE);
+    if (r >= 1 && r + th <= HERO_ROW && c >= 0 && c + tw <= COLS) {
+        hoverGrid = { r, c };
+        let vis = getVisibilityMatrix();
+        let blocked = false;
+        let potentialMerge = null;
+        for(let dr=0; dr<th && !blocked; dr++) for(let dc=0; dc<tw && !blocked; dc++) {
+            if (obstacles.some(o => o.r <= r+dr && o.r + (o.height||1) > r+dr && o.c <= c+dc && o.c + (o.width||1) > c+dc)) blocked = true;
+            if (fogZones.some(fz => fz.hp > 0 && fz.r <= r+dr && fz.r + (fz.size||1) > r+dr && fz.c <= c+dc && fz.c + (fz.size||1) > c+dc)) blocked = true;
+            let overlapTower = towers.find(t => t.r <= r+dr && t.r + (t.height||1) > r+dr && t.c <= c+dc && t.c + (t.width||1) > c+dc);
+            if (overlapTower) {
+                if (overlapTower === potentialMerge) {
+                } else if (!potentialMerge && draggedT && overlapTower.id === draggedT.id && (overlapTower.level || 1) < MAX_TOWER_LEVEL) {
+                    potentialMerge = overlapTower;
+                } else {
+                    blocked = true;
+                }
+            }
+            if (!vis[r+dr][c+dc]) blocked = true;
+        }
+        if (!blocked && potentialMerge) {
+            mergeTarget = potentialMerge;
+            simulatedPathValid = false;
+            simulatedPath = null;
+        } else if (!blocked) {
+            mergeTarget = null;
+            simulatedPathValid = checkPlacementValid(r, c, tw, th);
+            simulatedPath = simulatedPathValid ? findAStarPath(0, c, {r, c, width: tw, height: th}) : null;
+        } else {
+            mergeTarget = null; simulatedPathValid = false; simulatedPath = null;
+        }
+    } else {
+        hoverGrid = null; mergeTarget = null; simulatedPathValid = false; simulatedPath = null;
+    }
+}
+
+/* ---- 拖拽结束：合成升级 / 部署落子 / 非法位置回弹 ---- */
+function onDragEndEvent(e) {
+    if (!isDragging) return;
+    let {x: clientX, y: clientY} = getCoord(e);
+    if (checkHandCardClick(clientX, clientY)) {
+        isDragging = false;
+        document.getElementById('drag-overlay-tip').classList.add('hidden');
+        activeDragIndex = -1; draggedFieldTower = null; hoverGrid = null; simulatedPath = null; mergeTarget = null;
+        return;
+    }
+    isDragging = false; gameTimeScale = 1.0;
+    document.getElementById('drag-overlay-tip').classList.add('hidden');
+    let draggedT = activeDragIndex !== -1 ? handTowers[activeDragIndex] : draggedFieldTower;
+    if (mergeTarget && draggedT && activeDragIndex !== -1) {
+        mergeTarget.level = Math.min(MAX_TOWER_LEVEL, (mergeTarget.level || 1) + 1);
+        handTowers.splice(activeDragIndex, 1);
+        triggerToast(mergeTarget.name + " 升级至 " + mergeTarget.level + "★！");
+        renderHandUI();
+    } else if (hoverGrid && draggedT && activeDragIndex !== -1 && simulatedPathValid) {
+        let tr = hoverGrid.r, tc = hoverGrid.c;
+        let tw = draggedT.width || 1, th = draggedT.height || 1;
+        towers.push({
+            ...draggedT, r: tr, c: tc, width: tw, height: th,
+            x: tc * CELL_SIZE + (tw * CELL_SIZE) / 2, y: tr * CELL_SIZE + (th * CELL_SIZE) / 2,
+            cooldown: 0
+        });
+        handTowers.splice(activeDragIndex, 1);
+        triggerToast("防线部署完成！");
+        repathMonsters();
+    } else if (activeDragIndex !== -1) {
+        triggerToast("位置不合法、有迷雾阻挡或堵死了终点路段！");
+    }
+    activeDragIndex = -1; draggedFieldTower = null; hoverGrid = null; simulatedPath = null; simulatedPathValid = false; mergeTarget = null;
+    renderHandUI();
+    updateHUD();
+}
+
+/* ---- 全局事件绑定（脚本加载即生效） ---- */
+window.addEventListener('mousemove', e => { if (isDragging) { let {x, y} = getCoord(e); updateDragCoordinates(x, y); } });
+window.addEventListener('touchmove', e => { if (isDragging && e.touches[0]) { let {x, y} = getCoord(e); updateDragCoordinates(x, y); } }, { passive: false });
+window.addEventListener('mouseup', onDragEndEvent);
+window.addEventListener('touchend', onDragEndEvent);
+canvas.addEventListener('mousedown', onCanvasDragStart);
+canvas.addEventListener('touchstart', onCanvasDragStart, { passive: false });
+
+/* ---- 键盘快捷键：空格倍速 · D 招募 · F 词条 · Q/Esc 取消 ---- */
+window.addEventListener('keydown', e => {
+    if (e.repeat) return;
+    const overlay = DOM.gameOverlay;
+    if (!overlay || overlay.style.display !== 'none') return;
+    switch (e.key.toLowerCase()) {
+        case ' ': e.preventDefault(); toggleSpeed(); break;
+        case 'd': drawTowerToHand(); break;
+        case 'f': startAffixDraft(); break;
+        case 'q':
+        case 'escape':
+            if (!document.getElementById('tower-info-panel').classList.contains('hidden')) { closeTowerInfo(); }
+            else if (!document.getElementById('draft-modal').classList.contains('hidden')) { }
+            else if (selectedTower) { selectedTower = null; }
+            break;
+    }
+});
+
+</script>
+<!-- ======== src/js/renderer.js ======== -->
+<script>
+/* ============================================================
+ * renderer.js — Canvas 渲染层
+ * 每帧完整重绘：棋盘格 → 障碍 → 塔（含合成高亮） → 怪物 →
+ * 地面效果 → 弹道 → 粒子 → 迷雾 → 英雄行 → 拖拽预览
+ * ============================================================ */
+
+/** 通用血条绘制 */
+function drawHpBar(cx, cy, hpRatio, width) {
+    ctx.fillStyle = "rgba(0,0,0,0.1)"; ctx.fillRect(cx - width/2, cy, width, 4);
+    ctx.fillStyle = hpRatio > 0.5 ? "#10b981" : "#ef4444"; ctx.fillRect(cx - width/2, cy, width * hpRatio, 4);
+}
+
+/** 主绘制函数（每帧调用） */
+function draw() {
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    let vis = getVisibilityMatrix();
+    for (let r = 0; r < ROWS; r++) {
+        for (let c = 0; c < COLS; c++) {
+            ctx.fillStyle = (r+c)%2 === 0 ? "#f8fafc" : "#f1f5f9";
+            if (r <= 1) ctx.fillStyle = "#fee2e2";
+            ctx.fillRect(c*CELL_SIZE, r*CELL_SIZE, CELL_SIZE, CELL_SIZE);
+            if (vis[r][c] && r > 1 && r < HERO_ROW) {
+                ctx.strokeStyle = "rgba(16, 185, 129, 0.08)";
+                ctx.lineWidth = 1; ctx.strokeRect(c*CELL_SIZE, r*CELL_SIZE, CELL_SIZE, CELL_SIZE);
+            }
+        }
+    }
+    obstacles.forEach(o => {
+        let ow = o.width || 1, oh = o.height || 1;
+        ctx.fillStyle = "#475569"; ctx.beginPath();
+        ctx.roundRect(o.c*CELL_SIZE+4, o.r*CELL_SIZE+4, ow*CELL_SIZE-8, oh*CELL_SIZE-8, 12); ctx.fill();
+        ctx.strokeStyle = "#1e293b"; ctx.lineWidth = 2; ctx.stroke();
+        ctx.fillStyle = "#fbbf24"; ctx.font = (ow*oh >= 4 ? "44px" : "40px") + " Arial"; ctx.textAlign="center"; ctx.textBaseline="middle";
+        ctx.fillText("🗿", o.c*CELL_SIZE+(ow*CELL_SIZE)/2, o.r*CELL_SIZE+(oh*CELL_SIZE)/2);
+    });
+    towers.forEach(t => {
+        let lvl = t.level || 1;
+        let tw = t.width || 1, th = t.height || 1;
+        ctx.fillStyle = "rgba(255,255,255,0.9)";
+        ctx.strokeStyle = t.color;
+        ctx.lineWidth = 3;
+        ctx.beginPath(); ctx.roundRect(t.c*CELL_SIZE+4, t.r*CELL_SIZE+4, tw*CELL_SIZE-8, th*CELL_SIZE-8, 12); ctx.fill(); ctx.stroke();
+        if (isDragging && activeDragIndex !== -1 && handTowers[activeDragIndex] && t.id === handTowers[activeDragIndex].id && lvl < MAX_TOWER_LEVEL) {
+            let pulse = 0.5 + 0.5 * Math.sin(Date.now() / 200);
+            ctx.fillStyle = "rgba(251, 191, 36, " + (0.12 + pulse * 0.18) + ")";
+            ctx.beginPath(); ctx.roundRect(t.c*CELL_SIZE-4, t.r*CELL_SIZE-4, tw*CELL_SIZE+8, th*CELL_SIZE+8, 16); ctx.fill();
+            ctx.fillStyle = "rgba(251, 191, 36, " + (0.2 + pulse * 0.2) + ")";
+            ctx.beginPath(); ctx.roundRect(t.c*CELL_SIZE-1, t.r*CELL_SIZE-1, tw*CELL_SIZE+2, th*CELL_SIZE+2, 14); ctx.fill();
+            ctx.strokeStyle = "#fbbf24"; ctx.lineWidth = 4 + pulse * 1.5;
+            ctx.beginPath(); ctx.roundRect(t.c*CELL_SIZE+1, t.r*CELL_SIZE+1, tw*CELL_SIZE-2, th*CELL_SIZE-2, 13); ctx.stroke();
+            let arwY = t.r*CELL_SIZE - 12;
+            ctx.fillStyle = "#fbbf24";
+            ctx.beginPath(); ctx.arc(t.x, arwY, 11, 0, Math.PI*2); ctx.fill();
+            ctx.strokeStyle = "#fff"; ctx.lineWidth = 1.5; ctx.stroke();
+            ctx.fillStyle = "#fff"; ctx.font = "bold 15px Arial"; ctx.textAlign="center"; ctx.textBaseline="middle";
+            ctx.fillText("⬆", t.x, arwY + 1);
+        }
+        if (mergeTarget === t) {
+            ctx.strokeStyle = "#10b981"; ctx.lineWidth = 4;
+            ctx.beginPath(); ctx.roundRect(t.c*CELL_SIZE+2, t.r*CELL_SIZE+2, tw*CELL_SIZE-4, th*CELL_SIZE-4, 14); ctx.stroke();
+            ctx.fillStyle = "#10b981"; ctx.font = "bold 20px Arial"; ctx.textAlign="center"; ctx.textBaseline="middle";
+            ctx.fillText("⬆", t.x, t.y - tw*CELL_SIZE/2 - 6);
+        }
+        if (selectedTower === t) {
+            let eff = getTowerEffStats(t);
+            ctx.fillStyle = t.color + '20';
+            ctx.beginPath(); ctx.arc(t.x, t.y, eff.range, 0, Math.PI*2); ctx.fill();
+            ctx.strokeStyle = t.color + 'aa'; ctx.lineWidth = 2; ctx.setLineDash([6,6]);
+            ctx.beginPath(); ctx.arc(t.x, t.y, eff.range, 0, Math.PI*2); ctx.stroke(); ctx.setLineDash([]);
+            ctx.strokeStyle = "#10b981"; ctx.lineWidth = 2; ctx.setLineDash([4,4]);
+            ctx.beginPath(); ctx.roundRect(t.c*CELL_SIZE+4, t.r*CELL_SIZE+4, tw*CELL_SIZE-8, th*CELL_SIZE-8, 12); ctx.stroke(); ctx.setLineDash([]);
+        }
+        ctx.fillStyle = "#000"; ctx.font = (tw*th >= 4 ? "36px" : "32px") + " Arial"; ctx.textAlign="center"; ctx.textBaseline="middle";
+        ctx.fillText(t.emoji, t.x, t.y+2);
+        {
+            let stars = '★'.repeat(lvl);
+            ctx.font = "bold " + (lvl >= 4 ? "10px" : "11px") + " Arial";
+            ctx.textAlign="center"; ctx.textBaseline="middle";
+            ctx.fillStyle = lvl >= 4 ? "#f59e0b" : t.color;
+            ctx.fillText(stars, t.x, t.r*CELL_SIZE + 10);
+        }
+    });
+    monsters.forEach(m => {
+        let { r: mr, c: mc } = cellOf(m.x, m.y);
+        let inFog = !vis[mr]?.[mc];
+        if (!inFog) {
+            ctx.font="32px Arial"; ctx.fillText(m.emoji, m.x, m.y);
+            drawHpBar(m.x, m.y-24, m.hp/m.maxHp, 36);
+        }
+    });
+    temporaryGroundEffects.forEach(ge => {
+        if (ge.type === 'fire') {
+            ctx.fillStyle = "rgba(249, 115, 22, 0.2)";
+            ctx.beginPath(); ctx.arc(ge.x, ge.y, 40, 0, Math.PI*2); ctx.fill();
+            ctx.font = "20px Arial"; ctx.textAlign="center"; ctx.textBaseline="middle";
+            ctx.fillText("🔥", ge.x, ge.y);
+        } else if (ge.type === 'frost') {
+            ctx.fillStyle = "rgba(59, 130, 246, 0.15)";
+            ctx.beginPath(); ctx.arc(ge.x, ge.y, 30, 0, Math.PI*2); ctx.fill();
+        } else if (ge.type === 'mine') {
+            ctx.fillStyle = "rgba(245, 158, 11, 0.3)";
+            ctx.beginPath(); ctx.arc(ge.x, ge.y, 8, 0, Math.PI*2); ctx.fill();
+            ctx.fillStyle = "#f59e0b";
+            ctx.beginPath(); ctx.arc(ge.x, ge.y, 4, 0, Math.PI*2); ctx.fill();
+        } else if (ge.type === 'icering') {
+            let progress = 1 - ge.life / 20;
+            let r = ge.radius * progress;
+            ctx.strokeStyle = "rgba(59, 130, 246, " + (ge.life/20 * 0.8) + ")";
+            ctx.lineWidth = 4;
+            ctx.beginPath(); ctx.arc(ge.x, ge.y, r, 0, Math.PI*2); ctx.stroke();
+            ctx.fillStyle = "rgba(96, 165, 250, " + (ge.life/20 * 0.15) + ")";
+            ctx.beginPath(); ctx.arc(ge.x, ge.y, r, 0, Math.PI*2); ctx.fill();
+        }
+    });
+    projectiles.forEach(p => { ctx.fillStyle=TOWER_TYPES[p.towerId].color; ctx.beginPath(); ctx.arc(p.x, p.y, 6, 0, Math.PI*2); ctx.fill(); });
+    particles.forEach(p => {
+        if (p.type === 'text') { ctx.fillStyle="rgba(245, 158, 11, 0.9)"; ctx.font="bold 16px Arial"; ctx.fillText(p.text, p.x, p.y); }
+        else { ctx.fillStyle=p.color; ctx.beginPath(); ctx.arc(p.x, p.y, p.size, 0, Math.PI*2); ctx.fill(); }
+    });
+    let fogCells = new Set();
+    fogZones.forEach(fz => {
+        if (fz.hp > 0) { let s = fz.size || 1; for (let dr = 0; dr < s; dr++) for (let dc = 0; dc < s; dc++) fogCells.add((fz.r+dr) + ',' + (fz.c+dc)); }
+    });
+    for (let r = 0; r < ROWS; r++) {
+        for (let c = 0; c < COLS; c++) {
+            if (!vis[r][c]) {
+                ctx.fillStyle = "#334155"; ctx.fillRect(c*CELL_SIZE, r*CELL_SIZE, CELL_SIZE, CELL_SIZE);
+                if (!fogCells.has(r + ',' + c)) {
+                    ctx.font = "32px Arial"; ctx.textAlign="center"; ctx.textBaseline="middle";
+                    ctx.fillText("☁️", c*CELL_SIZE+CELL_SIZE/2, r*CELL_SIZE+CELL_SIZE/2);
+                }
+            }
+        }
+    }
+    monsters.forEach(m => {
+        let { r: mr, c: mc } = cellOf(m.x, m.y);
+        if (!vis[mr]?.[mc]) {
+            let pulse = 1 + 0.2 * Math.sin(Date.now() / 200);
+            ctx.fillStyle = "#ef4444";
+            ctx.strokeStyle = "rgba(255,255,255,0.9)"; ctx.lineWidth = 2;
+            ctx.beginPath(); ctx.arc(m.x, m.y, 7 * pulse, 0, Math.PI*2); ctx.fill(); ctx.stroke();
+        }
+    });
+    fogZones.forEach(fz => {
+        if (fz.hp <= 0) return;
+        let s = fz.size || 1;
+        let px = fz.c * CELL_SIZE, py = fz.r * CELL_SIZE;
+        let pw = s * CELL_SIZE, ph = s * CELL_SIZE;
+        let iconSize = s === 1 ? 32 : s === 2 ? 44 : 56;
+        ctx.font = iconSize + "px Arial"; ctx.textAlign="center"; ctx.textBaseline="middle";
+        ctx.fillText("☁️", fz.x, fz.y);
+        let pulse = 0.5 + 0.5 * Math.sin(Date.now() / 400);
+        ctx.strokeStyle = "rgba(139, 92, 246, " + (0.5 + pulse * 0.3) + ")"; ctx.lineWidth = 3;
+        ctx.beginPath(); ctx.roundRect(px+2, py+2, pw-4, ph-4, 8); ctx.stroke();
+        {
+            let bw = s * 36;
+            drawHpBar(fz.x, py + 4, fz.hp/fz.maxHp, bw);
+        }
+        if (lockedFogZone === fz) {
+            ctx.strokeStyle = "#facc15"; ctx.lineWidth = 3;
+            let r = s * CELL_SIZE / 2 + 4;
+            ctx.beginPath(); ctx.arc(fz.x, fz.y, r, 0, Math.PI*2); ctx.stroke();
+            ctx.beginPath();
+            ctx.moveTo(fz.x - r - 6, fz.y); ctx.lineTo(fz.x - r + 4, fz.y);
+            ctx.moveTo(fz.x + r - 4, fz.y); ctx.lineTo(fz.x + r + 6, fz.y);
+            ctx.moveTo(fz.x, fz.y - r - 6); ctx.lineTo(fz.x, fz.y - r + 4);
+            ctx.moveTo(fz.x, fz.y + r - 4); ctx.lineTo(fz.x, fz.y + r + 6);
+            ctx.stroke();
+        }
+    });
+    for (let c = 0; c < COLS; c++) {
+        let cx = c*CELL_SIZE+CELL_SIZE/2, cy = HERO_ROW*CELL_SIZE+CELL_SIZE/2;
+        if(c === HERO_COL) { ctx.font="42px Arial"; ctx.fillText("🧙‍♂️", cx, cy); }
+        else { ctx.font="30px Arial"; ctx.fillText("🔥", cx, cy); }
+    }
+    if (isDragging && activeDragIndex !== -1 && hoverGrid) {
+        let tr = hoverGrid.r, tc = hoverGrid.c;
+        let bt = handTowers[activeDragIndex];
+        let tw = bt.width || 1, th = bt.height || 1;
+        if (mergeTarget) {
+            let mt = mergeTarget;
+            let newLvl = Math.min(MAX_TOWER_LEVEL, (mt.level || 1) + 1);
+            ctx.fillStyle = "#10b981"; ctx.font = "bold 14px Arial"; ctx.textAlign="center"; ctx.textBaseline="middle";
+            ctx.fillText("⬆ " + newLvl + "★", mt.x, mt.y - (mt.width||1)*CELL_SIZE/2 - 14);
+        } else {
+            ctx.strokeStyle = simulatedPathValid ? "#10b981" : "#ef4444";
+            ctx.lineWidth = 3; ctx.setLineDash([6,6]);
+            ctx.strokeRect(tc*CELL_SIZE, tr*CELL_SIZE, tw*CELL_SIZE, th*CELL_SIZE); ctx.setLineDash([]);
+            if (simulatedPathValid && bt) {
+                let eff = getTowerEffStats(bt);
+                let cx = tc*CELL_SIZE + (tw*CELL_SIZE)/2, cy = tr*CELL_SIZE + (th*CELL_SIZE)/2;
+                ctx.fillStyle = bt.color + '15';
+                ctx.beginPath(); ctx.arc(cx, cy, eff.range, 0, Math.PI*2); ctx.fill();
+                ctx.strokeStyle = bt.color + '80'; ctx.lineWidth = 1.5; ctx.setLineDash([4,4]);
+                ctx.beginPath(); ctx.arc(cx, cy, eff.range, 0, Math.PI*2); ctx.stroke(); ctx.setLineDash([]);
+            }
+            ctx.globalAlpha = 0.8;
+            ctx.fillStyle = "rgba(255,255,255,0.9)";
+            ctx.strokeStyle = bt.color;
+            ctx.lineWidth = 3;
+            ctx.beginPath(); ctx.roundRect(tc*CELL_SIZE+4, tr*CELL_SIZE+4, tw*CELL_SIZE-8, th*CELL_SIZE-8, 12); ctx.fill(); ctx.stroke();
+            ctx.globalAlpha = 1.0;
+            ctx.fillStyle="#000"; ctx.font = (tw*th >= 4 ? "36px" : "32px") + " Arial"; ctx.textAlign="center"; ctx.textBaseline="middle";
+            ctx.fillText(bt.emoji, tc*CELL_SIZE+(tw*CELL_SIZE)/2, tr*CELL_SIZE+(th*CELL_SIZE)/2+2);
+        }
+    }
+}
+
+</script>
+<!-- ======== src/js/main.js ======== -->
+<script>
+/* ============================================================
+ * main.js — 游戏流程与主循环
+ * 开局初始化、每帧驱动、倍速切换、入口挂载
+ * ============================================================ */
+
+/** 开新局：重置全部状态并生成地图，随后进入第一波 */
+function startGame() {
+    if (DOM.gameOverlay) DOM.gameOverlay.style.display = 'none';
+    hp = 500; gold = 100; wave = 1; gameTimeScale = 1.0;
+    speedMultiplier = 1; isPaused = false;
+    const sl = document.getElementById('speed-label'); if (sl) sl.textContent = '1×';
+    const sb = document.getElementById('speed-btn');
+    if (sb) sb.classList.remove('bg-emerald-600/80', 'border-emerald-400/50', 'bg-rose-600/80', 'border-rose-400/50');
+    g_towerDrawCount = 0; g_affixDrawCount = 0;
+    towers = []; monsters = []; projectiles = []; particles = []; handTowers = []; fogZones = []; temporaryGroundEffects = [];
+    draggedFieldTower = null; mergeTarget = null; activeDragIndex = -1; isDragging = false; selectedTower = null; dragStartInfo = null; lockedFogZone = null;
+    for (let k in ACTIVE_AFFIXES) ACTIVE_AFFIXES[k] = INITIAL_AFFIXES[k];
+    updateCodexUI();
+    document.getElementById('tower-info-panel').classList.add('hidden');
+    generateProceduralObstacles();
+    generateFogZones();
+    updateHUD(); startWave();
+}
+
+/** 主循环：暂停时仅重绘（保持界面响应），否则按时间缩放推进战斗 */
+function engineLoop() {
+    if (isPaused) { draw(); requestAnimationFrame(engineLoop); return; }
+    let effScale = gameTimeScale < 1 ? gameTimeScale : gameTimeScale * speedMultiplier;
+    updateCombat(effScale); draw(); requestAnimationFrame(engineLoop);
+}
+
+/** 倍速切换：1× → 2× → 4× → 暂停 → 1× */
+function toggleSpeed() {
+    if (isPaused) { isPaused = false; speedMultiplier = 1; }
+    else if (speedMultiplier === 1) speedMultiplier = 2;
+    else if (speedMultiplier === 2) speedMultiplier = 4;
+    else { isPaused = true; speedMultiplier = 1; }
+    const btn = document.getElementById('speed-btn');
+    const label = document.getElementById('speed-label');
+    label.textContent = isPaused ? '❚❚' : speedMultiplier + '×';
+    btn.classList.toggle('bg-emerald-600/80', !isPaused && speedMultiplier > 1);
+    btn.classList.toggle('border-emerald-400/50', !isPaused && speedMultiplier > 1);
+    btn.classList.toggle('bg-rose-600/80', isPaused);
+    btn.classList.toggle('border-rose-400/50', isPaused);
+    triggerToast(isPaused ? '已暂停' : `已切换 ${speedMultiplier} 倍速`);
+}
+
+/* ---- 入口：页面加载后先生成一张预览地图，再启动主循环 ---- */
+window.onload = () => { generateProceduralObstacles(); generateFogZones(); engineLoop(); };
+
+</script>
+</body>
+</html>

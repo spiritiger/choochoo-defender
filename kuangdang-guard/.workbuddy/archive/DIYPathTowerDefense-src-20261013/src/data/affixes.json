@@ -1,0 +1,22 @@
+{
+    "a1": { "towerId": "arrow", "name": "散射箭", "desc": "攻击从单体变为扇形发射3支箭。" },
+    "a2": { "towerId": "arrow", "name": "钉刺", "desc": "击中时有15%概率令目标定身0.5秒。" },
+    "a3": { "towerId": "arrow", "name": "撕裂标记", "desc": "施加标记，受炮塔轰击时二次物理割裂。" },
+    "a4": { "towerId": "arrow", "name": "影锁共鸣", "desc": "击中目标时将其与附近怪物进行影锁链接。" },
+    "a5": { "towerId": "arrow", "name": "箭雨", "desc": "每攻击8次向怪群降下追踪箭雨。" },
+    "c1": { "towerId": "cannon", "name": "哑弹布雷", "desc": "爆炸后散落感应地雷，踩中引发短眩晕。" },
+    "c2": { "towerId": "cannon", "name": "冲击震退", "desc": "爆炸将范围内怪物向外物理击退1格。" },
+    "c3": { "towerId": "cannon", "name": "弹头分裂", "desc": "空中分裂成3颗子弹头，爆破范围扩大。" },
+    "c4": { "towerId": "cannon", "name": "烈焰燃油", "desc": "爆炸区产生持续3秒的魔法燃烧地带。" },
+    "c5": { "towerId": "cannon", "name": "蓄势轰击", "desc": "连续3秒未开火，下次爆炸半径增加50%。" },
+    "m1": { "towerId": "magic", "name": "电弧弹射", "desc": "攻击化为闪电链，额外弹射3个目标。" },
+    "m2": { "towerId": "magic", "name": "融穿", "desc": "每次命中永久削减敌人15%魔抗。" },
+    "m3": { "towerId": "magic", "name": "能量溢出", "desc": "过量击杀伤害对周围产生聚能爆破法伤。" },
+    "m4": { "towerId": "magic", "name": "极化磁场", "desc": "击中前两个目标产生磁极吸引物理重叠。" },
+    "m5": { "towerId": "magic", "name": "超频", "desc": "连击同目标叠加攻速，最高提升60%。" },
+    "i1": { "towerId": "ice", "name": "深层冻结", "desc": "攻击已减速目标有概率使其完全冰冻。" },
+    "i2": { "towerId": "ice", "name": "寒流破裂", "desc": "命中冰冻怪引发冰爆，使全图减速加深。" },
+    "i3": { "towerId": "ice", "name": "霜痕路径", "desc": "受击怪物身后留下一条减速霜痕地带。" },
+    "i4": { "towerId": "ice", "name": "极寒禁锢", "desc": "寒冰塔的伤害和减速作用光环半径扩大。" },
+    "i5": { "towerId": "ice", "name": "冷血追击", "desc": "对受控目标伤害倍增，并延长控制时间。" }
+}

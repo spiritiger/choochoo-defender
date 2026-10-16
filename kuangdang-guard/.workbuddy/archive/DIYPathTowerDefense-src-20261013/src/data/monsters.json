@@ -1,0 +1,7 @@
+{
+    "normal": { "id": "normal", "name": "普通怪", "emoji": "🦎", "hpMult": 1.0, "armorMult": 1.0, "mrMult": 1.0, "speedMult": 1.0, "atkMult": 1.0 },
+    "armored": { "id": "armored", "name": "重甲怪", "emoji": "🛡️", "hpMult": 1.5, "armorMult": 3.0, "mrMult": 0.5, "speedMult": 0.8, "atkMult": 1.0 },
+    "mystic": { "id": "mystic", "name": "魔抗怪", "emoji": "🔮", "hpMult": 1.2, "armorMult": 0.5, "mrMult": 3.0, "speedMult": 1.0, "atkMult": 1.0 },
+    "swift": { "id": "swift", "name": "迅捷怪", "emoji": "👻", "hpMult": 0.6, "armorMult": 0.6, "mrMult": 0.6, "speedMult": 2.0, "atkMult": 1.0 },
+    "tank": { "id": "tank", "name": "巨坦", "emoji": "🌋", "hpMult": 3.5, "armorMult": 1.5, "mrMult": 1.5, "speedMult": 0.5, "atkMult": 1.0 }
+}

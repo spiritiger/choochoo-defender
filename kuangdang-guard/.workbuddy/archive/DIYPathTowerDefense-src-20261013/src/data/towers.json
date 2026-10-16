@@ -1,0 +1,6 @@
+{
+    "arrow": { "id": "arrow", "name": "箭塔", "emoji": "🏹", "desc": "单体物理伤害高频输出。", "baseAtk": 15, "range": 200, "rate": 1.2, "color": "#0ea5e9", "width": 2, "height": 3 },
+    "cannon": { "id": "cannon", "name": "炮塔", "emoji": "🚀", "desc": "慢速长射程AOE物理范围伤害。", "baseAtk": 40, "range": 280, "rate": 0.4, "color": "#f59e0b", "width": 3, "height": 3 },
+    "magic": { "id": "magic", "name": "魔法塔", "emoji": "🔮", "desc": "高额单体魔法伤害，克制重甲。", "baseAtk": 50, "range": 240, "rate": 0.8, "color": "#a855f7", "width": 3, "height": 2 },
+    "ice": { "id": "ice", "name": "寒冰塔", "emoji": "❄️", "desc": "范围魔法伤害并使敌人减速。", "baseAtk": 12, "range": 160, "rate": 0.6, "color": "#3b82f6", "width": 2, "height": 2 }
+}

@@ -49,10 +49,18 @@ function setupFromRows(rows) {
     for (let c = 0; c < CFG.MAP_COLS; c++) {
       const ch = rows[r][c];
       const isGold = ch === 'G' || ch === 'g';
+      const isHeart = ch === 'H' || ch === 'h';
+      // v1.6.28：补齐导出图例全集（h/H 爱心、T 塔、M 铸币所、F 加油站）——
+      //   原先只认 '#'/'.'/'C'/'E'/'G'/'g'，'h' 会被误建成空地（usable 多算格）。
+      //   genBoard 只产 '#'/'.'/'C'，故 V1~V14 既有用例行为逐格不变。
       row.push({
-        t: (ch === '#' || ch === 'X' || ch === 'g') ? 'rubble' : 'blank',
-        gold: isGold, harvested: false,
-        b: ch === 'E' ? { type: 'econ', c: c, r: r } : (ch === 'C' ? { type: 'core', c: c, r: r } : null)
+        t: (ch === '#' || ch === 'X' || ch === 'g' || ch === 'h') ? 'rubble' : 'blank',
+        gold: isGold, heart: isHeart, harvested: false,
+        b: ch === 'E' ? { type: 'econ', c: c, r: r }
+         : ch === 'C' ? { type: 'core', c: c, r: r }
+         : ch === 'T' ? { type: 'tower', c: c, r: r }
+         : ch === 'M' ? { type: 'mint', c: c, r: r }
+         : ch === 'F' ? { type: 'gas', c: c, r: r } : null
       });
       if (ch === 'C') GS.core = { type: 'core', c: c, r: r };
       if (isGold) GS.goldTiles.push({ c: c, r: r });
@@ -549,6 +557,89 @@ const MONSTER_0905 = [
     check('[V13b] 09:05 冷解 ≥56 步（v1 同盘 16 步残环）', GS.railPath.length >= 56, '步数 ' + GS.railPath.length);
     check('[V13c] 09:05 零往返格', !hasBacktrack(GS.railPath), '往返格 ' + hasBacktrack(GS.railPath));
   });
+}
+
+// [V14] 已知困难盘满覆盖锁定（2026-10-12「能满没满」修复轮）：
+//   固定种子 hard 语料 i∈{78,250,260,356,67}——2026-10-12 扫 400 盘 hard 时抓到的
+//   v2 覆盖劣化/边界盘。病史：② 主跳步「2 的幂」跨过中间窄可解窗口（满覆盖解在中间 k、
+//   顶档 hCap 昂贵），v2 只拿 40/41、41/42、34/37、31/34；③b 兜底又「从最宽 tol 降序
+//   取首个命中」锁死低覆盖。修复＝③b 改「tol 从窄到宽 + 便宜端快跳 0,1,2,4,8 + 主池二分
+//   (8,hCap] + 不因单个 null 即 break」（详见 state.js ③b / 需求规格）。hard67 是**反例**：
+//   它的窗口在顶档（命中 0 节点）、中间 k12 是 1135 万节点的坑，靠主跳步命中，**不可把
+//   主跳步改成二分**（改了它就掉到 peel 19/45）。
+//   本用例为质量口径（GS.debugNoDeadline=true）锁：五张盘必须**满覆盖**（cov ≥ |contourB|）
+//   且合法、零往返，防再退化。
+const HARD_LOCK = [78, 250, 260, 356, 67];
+for (const hl of HARD_LOCK) {
+  setupFromRows(genBoard(mulberry32(500000 + hl * 17), 16 + (hl % 14)));
+  GS.railV2 = true;
+  GS.recomputeRails();
+  GS.railV2 = false;
+  const hErr = ringError(GS.railPath);
+  const hCov = covOf(GS.railPath, GS.contourB), hBl = cntB(GS.contourB);
+  const hBt = hasBacktrack(GS.railPath);
+  check('[V14] hard' + hl + ' 满覆盖且合法零往返 (' + hCov + '/' + hBl + ')',
+    !hErr && hCov >= hBl && !hBt, (hErr || (hCov + '/' + hBl) + (hBt ? ' 往返' + hBt : '')));
+}
+
+// [V15] **worker 合并契约**（v1.6.28 真机 bug 锁 · 2026-10-13）：
+//   真浏览器 http 下，清格子/撤销走 `GS.recomputeRailsAsync()` → Worker 解完读
+//   **`GS.ringStatsOf`** 算终环三量回传，主线程 `onResult` 用「`!r.st` ⇒ 失败片，丢弃」过滤，
+//   全丢则 `best=null` ⇒ **静默保留旧环**。
+//   v1.6.9 rail-v2 转正后该钩子只挂在 v1 函数里 ⇒ v2 下恒 `undefined` ⇒ worker 回传
+//   `st=null` ⇒ **每一片都被丢弃** ⇒ 真机症状「清出一块地，铁轨一动不动」。
+//   （同步路径 newGame / file:// 降级 / 强制刷新不经 worker，所以一直正常 —— bug 藏了很久。）
+//   本用例锁：**任意一次同步 v2 求解之后**，该钩子必须可用、三量为数字，
+//   且能被主线程的入池判据接受。缺它就等于分片合并整条链失效。
+{
+  setupFromRows(genBoard(mulberry32(500000 + 250 * 17), 16 + (250 % 14)));
+  GS.railV2 = true;
+  GS.recomputeRails();
+  GS.railV2 = false;
+  const stLike = (typeof GS.ringStatsOf === 'function') ? GS.ringStatsOf(GS.railPath) : null;
+  const accepted = !!(stLike && GS.railPath.length >= 4);      // ← onResult 的入池判据逐字同款
+  check('[V15] worker 合并契约：v2 解完 GS.ringStatsOf 可用、三量为数字（缺它 worker 结果会被整片丢弃）',
+    accepted && typeof stLike.cov === 'number' &&
+    typeof stLike.cross === 'number' && typeof stLike.cells === 'number',
+    JSON.stringify(stLike));
+}
+
+// [V16] **大王实报盘**（2026-10-13）：开局 3×5 之外、车尾下方清出一个 2×2 凸出，
+//   铁轨必须伸下去把新轮廓盖满（15 格）。注：本用例走**同步**路径，锁的是几何口径
+//   （真机"不动"的根因是上面 [V15] 的 worker 契约，同步路径本来就正常）。
+const REPORTED_BOARD = [
+  '#######g#', 'h#g######', '####h####', '########h',
+  'g##...###', '###...###', '#g#.C.##g', '###...###',
+  'h##...###', '###..###g', '#g#G.g###', '#########', 'g#####h##'
+];
+{
+  setupFromRows(REPORTED_BOARD);
+  GS.railV2 = true;
+  GS.recomputeRails();
+  GS.railV2 = false;
+  const rBl = cntB(GS.contourB), rCov = covOf(GS.railPath, GS.contourB);
+  const rErr = ringError(GS.railPath), rBt = hasBacktrack(GS.railPath);
+  check('[V16] 实报盘：清出车尾下方 2×2 后铁轨伸下去、盖满全部轮廓 (' + rCov + '/' + rBl + ')',
+    !rErr && !rBt && rBl === 15 && rCov >= rBl,
+    (rErr || (rCov + '/' + rBl)) + ' |B|=' + rBl + (rBt ? ' 往返' + rBt : ''));
+}
+
+// [V17] **强制刷新不得被烧穿省略闸短路**（v1.6.65 大王实报病灶锁 · 2026-10-15）：
+//   实机链路：清理后 worker 400ms 墙钟掐断 → anytime 保底劣环写入 __v2cache
+//   （fp/railLen 齐备）→ 大王按强制刷新：指纹未变 + 旧环仍 valid + railLen 相同
+//   ⇒ skip 闸 0ms 原样保留 ⇒ 刷新形同虚设（重放实锤：skip 0ms / 环 74 步未动）。
+//   修复 = skip 闸加 `!GS.forceRefresh`（刷新语义 = 无视省略闸真重算）。
+//   本用例锁：同盘面二次求解时，forceRefresh 不得走 skip（provenance ≠ 'skip'）。
+{
+  setupFromRows(genBoard(mulberry32(500000 + 250 * 18), 16 + (250 % 14)));
+  GS.railV2 = true;
+  GS.recomputeRails();                       // 首解：__v2cache 写入 fp/railLen
+  GS.forceRefresh = true;
+  GS.recomputeRails();                       // 同盘面强制刷新（fp/prev/railLen 全部命中 skip 条件）
+  GS.forceRefresh = false;
+  check('[V17] forceRefresh 旁路烧穿省略闸（不被 0ms skip 短路）',
+    GS.__v2last && GS.__v2last.provenance !== 'skip' && GS.railPath.length >= 4,
+    'provenance=' + (GS.__v2last && GS.__v2last.provenance));
 }
 
 console.log('正确性：' + pass + ' 通过 / ' + fail + ' 失败');

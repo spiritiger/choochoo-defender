@@ -127,6 +127,17 @@ CLOCK.notifyStation = function () {
   // 行为记录（v1.3.5 经济类）：防守结束（与 waveStart 的时间差 = 波时长）
   if (typeof LOG !== 'undefined') LOG.add('waveEnd',
     { wave: (typeof FOES !== 'undefined') ? FOES.wave : 0 });
+  // 关卡模式胜利钩子（v1.7.0 §14.62 大王令"波次有限"）：清完第 LEVEL_WAVES 波
+  //   收车回白天 = 通关。随机模式（mode!=='level'）一字不进。通关旗与 gameOver
+  //   同闸锁操作（ui.js），进度解锁 + 记录在此落账。
+  if (GS.mode === 'level' && !GS.gameOver && !GS.levelDone &&
+      typeof FOES !== 'undefined' &&
+      FOES.wave >= (typeof LEVEL_WAVES !== 'undefined' ? LEVEL_WAVES : 10) &&
+      typeof GS.levelUnlock === 'function') {
+    GS.levelDone = true;
+    GS.levelUnlock(GS.levelIdx);
+    if (typeof LOG !== 'undefined') LOG.add('levelClear', { idx: GS.levelIdx });
+  }
   return true;
 };
 

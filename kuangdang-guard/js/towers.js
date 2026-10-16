@@ -1,15 +1,20 @@
 // ============================================================================
-// 塔模块（v1.3-rc 临时迭代）—— 冰火雷毒四元素 · 单体攻击
+// 塔模块 —— **v1.6.34 塔型替换**（大王拍板 2026-10-13：英雄卡元素 → 4 塔型）
 //
-// 大王拍板（2026-09-28，规格 §13）：
-//   · 四种元素**第一期只做数值差异**（伤害/攻速），冰减速、毒 DOT 等机制后续再说；
-//   · 【抽塔】10 金币 → 场上"空地"随机召唤 1 星塔（元素随机）；
-//     空地口径 = t==='blank' && 无建筑 && 非金币格 && 非铁轨格（与 placeEcon 同口径去掉贴轨）；
-//   · 合成：拖 A 到**同类同星** B 上 → **B 的位置**生成**随机元素** star+1 塔
-//     （类型不继承），A 所在格空出；
-//   · 星级无上限，伤害 ×star。
+// 沿革：v1.3-rc 冰火雷毒四元素（只做数值差异）→ v1.6.34 **移植 DIY 塔防的 4 塔型**：
+//   · 箭塔 arrow / 炮塔 cannon / 魔法塔 magic / 寒冰塔 ice（数值方案 A「等 DPS 包络」）；
+//   · **字段名仍是 `elem`**（避免全库改名），只是**取值域**从 fire/ice/thunder/poison
+//     换成 arrow/cannon/magic/ice —— 现有元素特效**并入塔型**：
+//     火→炮塔灼烧、毒→魔法塔中毒、冰→寒冰塔减速、雷→箭塔高频。
 //
-// 存储：塔 = 建筑格模型第三种类型 `cell.b = {type:'tower', elem, star, cd, c, r}`，
+// 数值方案 A（**等 DPS 包络**，不动我们的平衡基准）：四种塔**只在"伤害×攻速"的乘积内取舍**
+//   （都 ≈0.833 基准/秒），靠范围 / 特效 / 射程换差异。表在 `TOWERS.TYPES`，调优只动它。
+//   ⚠️ **车头（ENG.trainCombat）不变**（仍 8+4w 撞击式），只改**车厢**（ENG.wagonCombat）。
+//
+// 依附（v1.6.34 词条系统，见 affixes.js）：塔对象带 `affix` 字段（该塔装的那 1 条词条 id，
+//   无则 null）。**每座塔上限 1 条**（大王拍板"每个塔的词条只能选1次"）。
+//
+// 存储：塔 = 建筑格模型第三种类型 `cell.b = {type:'tower', elem, star, cd, c, r, affix}`，
 //   占位判定（placeEcon 的"已有建筑"、铁轨求解的障碍判定）自动生效；
 //   `GS.towers` 数组是权威列表（渲染/攻击遍历用），与格子互为镜像。
 //
@@ -18,21 +23,41 @@
 // ============================================================================
 window.TOWERS = {};
 
+// 四塔型数值表（**方案 A：等 DPS 包络**，2026-10-13 大王拍板）
+//   · dmgMul  伤害倍率（基准 = 12×star 固定基数，见 ENG.WAGON.dmg；v1.6.79 起不随波次）
+//   · interval 攻击间隔秒        · range 射程（格，欧氏）
+//   · targets  1 = 单体；'aoe' = 命中格 3×3 内全体（cannon）
+//   · effect   'none' | 'burn'（灼烧 2s）| 'poison'（中毒 4s）| 'slow'（减速 1.5s）
+//   ▍DPS 包络：箭 1.0/1.2=0.833 · 炮 2.5/3.0=0.833（AOE）· 魔法 2.0/2.4=0.833 · 冰 0.8/1.0=0.800
+//   ▍配色沿用旧元素色板（3 色复用 + 魔法换紫），避免与金币黄/城墙橙/怪红撞脸。
+TOWERS.TYPES = {
+  arrow:  { id: 'arrow',  name: '箭塔',   color: '#f7d94c', dmgMul: 1.0, interval: 1.2, range: 4.5, targets: 1,     effect: 'none'   },
+  cannon: { id: 'cannon', name: '炮塔',   color: '#e8563f', dmgMul: 2.5, interval: 3.0, range: 6.3, targets: 'aoe', effect: 'burn'   },
+  magic:  { id: 'magic',  name: '魔法塔', color: '#a855f7', dmgMul: 2.0, interval: 2.4, range: 5.4, targets: 1,     effect: 'poison' },
+  ice:    { id: 'ice',    name: '寒冰塔', color: '#6ec6ff', dmgMul: 0.8, interval: 1.0, range: 3.6, targets: 1,     effect: 'slow'   }
+};
+
+// （2026-10-15 代码整理：TOWERS.typeOf(elem) 已删 —— 全项目 0 调用（取塔型历来
+//   直取 TOWERS.TYPES[elem] 或走 typeName）；清理前版本见
+//   .workbuddy/archive/js-before-code-tidy-20261015/）
+TOWERS.typeName = function (elem) { var t = TOWERS.TYPES[elem]; return t ? t.name : elem; };
+
 TOWERS.CFG = {
   COST: 10,            // 抽塔价格（大王定案 10 金币/次）
-  RANGE: 2.5,          // 射程（格，塔中心到怪中心欧氏距离）
-  // 元素数值表（v1.3-rc 第一期只做数值差异；调优只动这里）
-  //   fire 均衡 / ice 低伤快速 / thunder 高伤慢速 / poison 中庸
+  RANGE: 2.5,          // （旧字段，仅 __towerAtk_retired 用）
+  // ⚠️ 旧元素数值表（仅 `__towerAtk_retired` 那个退役函数还引用）。**新塔型数值走
+  //    `TOWERS.TYPES`**；这张表只为"退役函数万一被复活时不至于崩"而保留。
   STATS: {
-    fire:    { dmg: 12, rate: 1.0 },
-    ice:     { dmg: 7,  rate: 0.8 },
-    thunder: { dmg: 16, rate: 1.4 },
-    poison:  { dmg: 9,  rate: 0.9 }
+    arrow:  { dmg: 12, rate: 1.2 },
+    cannon: { dmg: 30, rate: 3.0 },
+    magic:  { dmg: 24, rate: 2.4 },
+    ice:    { dmg: 8,  rate: 1.0 }
   }
 };
 
-// 四元素固定顺序（随机抽取 / 渲染色板都按这个序，保证稳定）
-TOWERS.ELEMS = ['fire', 'ice', 'thunder', 'poison'];
+// 四塔型固定顺序（随机抽取 / 渲染色板都按这个序，保证稳定）
+//   ⚠️ 名称保留 `ELEMS` 是**兼容别名**（大量旧引用读它），语义已是"塔型"。
+TOWERS.ELEMS = ['arrow', 'cannon', 'magic', 'ice'];
 
 TOWERS.randElem = function () {
   return TOWERS.ELEMS[Math.floor(Math.random() * TOWERS.ELEMS.length)];
@@ -40,15 +65,8 @@ TOWERS.randElem = function () {
 
 // ---- 放置判定 ---------------------------------------------------------------
 // 空地口径（拍板 ⑤）：空地 + 非铁轨 + 非金币格 + 无建筑。铁轨上放塔会堵列车路。
-TOWERS.isFreeSpot = function (c, r) {
-  if (!CFG.inBounds(c, r)) return false;
-  var cell = GS.grid[r][c];
-  if (cell.t !== 'blank') return false;   // 废墟/障碍不行
-  if (cell.b) return false;               // 已有建筑（含塔、镇中心）
-  if (cell.gold) return false;            // 金币格 = 资源格，不占用
-  if (GS.onRail(c, r)) return false;      // 铁轨格不占（列车不做碰撞，视觉重叠即逻辑荒谬）
-  return true;
-};
+// ⚠️ v1.6.23：判据**上移到 `GS.isFreeSpot`**（塔 / 建筑卡共用一条，别再维护第二份）。
+TOWERS.isFreeSpot = function (c, r) { return GS.isFreeSpot(c, r); };
 
 // 全场可放塔的格子列表
 TOWERS.freeSpots = function () {
@@ -63,7 +81,9 @@ TOWERS.freeSpots = function () {
 // 在 (c,r) 放一座指定 elem/star 的塔。调用方保证格子合法（此处不重复校验，
 // 便于合成时"原地替换"不被 isFreeSpot 的 !cell.b 卡住）。
 TOWERS.placeAt = function (c, r, elem, star) {
-  var t = { type: 'tower', elem: elem, star: star, cd: 0, c: c, r: r, flash: 0 };
+  // affix = 该塔装的词条 id（v1.6.34，**每塔上限 1 条**，见 affixes.js）；wcd = 车厢攻击冷却
+  var t = { type: 'tower', elem: elem, star: star, cd: 0, c: c, r: r, flash: 0,
+            affix: null, wcd: 0, streak: 0, lastT: null, chargeT: 0 };
   GS.grid[r][c].b = t;
   GS.towers.push(t);
   return t;

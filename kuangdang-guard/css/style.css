@@ -32,29 +32,25 @@ html,body { margin:0; padding:0; height:100%; background:#0b0c12; overflow:hidde
 .hud-btn:active { color:var(--text); border-color:var(--brand); }
 
 /* Field */
-/* Field：高度必须等于 CFG.fieldH() = CANVAS_H(844) − HUD_H(52) − FOOTER_H(232) = 560。
-   ⚠️ 改了 FOOTER_H 或 HUD_H 时要同步改这里，否则画布与容器错位。 */
-#fieldWrap { position:relative; height:560px; background:var(--bg); overflow:hidden; }
+/* v1.6.38 作战拉远：fieldWrap = HUD 以下**全部**（792 = 844-52），画布物理高度同步；
+   白天 footer（absolute，高 = CFG.FOOTER_H，v1.6.39 由 232 压到 148——status 提示行
+   退役）遮住画布下部；夜晚 footer 淡出 ⇒ 全画布可见，LAY 切 battleLayout（缩小居中）*/
+#fieldWrap { position:relative; height:792px; background:var(--bg); overflow:hidden; }
 #game { position:absolute; left:0; top:0; display:block; touch-action:none; }
 
 /* Footer */
-#footer { position:absolute; left:0; right:0; bottom:0; height:232px; background:var(--panel);
-  border-top:1px solid var(--line); padding:10px 12px; display:flex; flex-direction:column; }
-#cards { display:flex; gap:8px; flex:1 1 auto; min-height:0; }
-.card { flex:1; border:1px solid var(--line); border-radius:10px; background:var(--panel2);
-  display:flex; flex-direction:column; align-items:center; justify-content:center; cursor:pointer; }
-.card .c-name { font-size:13px; font-weight:600; margin-top:6px; }
-.card .c-meta { font-size:11px; color:var(--muted); margin-top:3px; text-align:center; padding:0 4px; }
-.card.selected { border-color:var(--brand); box-shadow:0 0 0 2px var(--brand); }
-.card .c-ico { font-size:22px; line-height:1; }
-.card .shapePrev { position:relative; min-height:24px; }
-.card .shapePrev i { position:absolute; width:10px; height:10px; border-radius:2px;
-  background:var(--brand); box-shadow:0 0 0 1px rgba(0,0,0,0.25) inset; }
-.actionRow { display:flex; gap:8px; margin-top:10px; }
-.btn { flex:1; height:40px; border-radius:10px; border:1px solid var(--line); background:var(--panel2);
+#footer { position:absolute; left:0; right:0; bottom:0; height:148px; background:var(--panel);
+  border-top:1px solid var(--line); padding:8px 12px; display:flex; flex-direction:column;
+  transition:opacity .5s ease; }              /* v1.6.39 作战拉远平滑过渡：淡出而非硬切 */
+#footer.battle-hidden { opacity:0; pointer-events:none; }   /* 夜晚拉远：藏 + 防误触 */
+/* 【死代码 v1.6.33 清出】这里原有 #cards / .card / .c-* / .shapePrev（v1.4 之前的旧"抽卡
+   三选一大卡"样式）。index.html 自 v1.4 起就没有 #cards 容器了，一直没被引用 ——
+   原文已备份到本文件末尾的注释块（无 VCS，留档备查）。
+   【v1.6.39 退役】#status 行样式随元素一并删除（提示行退役，见 ui.js setStatus 注释）。 */
+.actionRow { display:flex; gap:8px; margin-top:6px; }
+.btn { flex:1; height:38px; border-radius:10px; border:1px solid var(--line); background:var(--panel2);
   color:var(--text); font-size:14px; font-weight:600; cursor:pointer; }
 .btn:disabled { opacity:.45; cursor:default; }
-#status { min-height:16px; margin-top:6px; font-size:11px; color:var(--muted); text-align:center; }
 
 /* ---- v1.3-rc 塔防迭代 ---- */
 /* 挑战失败遮罩：盖住整个 app，只留重开按钮 */
@@ -65,33 +61,119 @@ html,body { margin:0; padding:0; height:100%; background:#0b0c12; overflow:hidde
 #overTitle { font-size:30px; font-weight:800; color:#e8563f; margin-bottom:10px; }
 #overWave { font-size:14px; color:var(--muted); margin-bottom:22px; }
 #overBox .btn { width:160px; }
-/* ---- v1.4 卡牌大改 ---- */
-/* 底部牌库：持有的形状卡 / 英雄卡，拖到场上使用 */
-#deckRow { display:flex; gap:8px; min-height:52px; margin-top:8px; align-items:stretch; }
-.pcard { flex:0 0 auto; width:76px; border:1px solid var(--line); border-radius:8px;
+/* v1.7.0 关卡通关弹层（§14.62）：配色与失败层同构，绿调表"过" */
+#winOverlay { position:absolute; inset:0; background:rgba(10,10,16,0.82); z-index:10;
+  display:flex; align-items:center; justify-content:center; }
+#winOverlay.hidden { display:none; }
+#winBox { text-align:center; }
+#winTitle { font-size:30px; font-weight:800; color:#58c98a; margin-bottom:10px; }
+#winInfo { font-size:14px; color:var(--muted); margin-bottom:22px; }
+#winBox .btn { width:160px; margin-bottom:10px; }
+#winBox .winRow { display:flex; gap:10px; justify-content:center; margin-bottom:10px; }
+#winBox .winRow .btn { width:110px; margin-bottom:0; }
+/* v1.7.0 失败层追加的「回随机模式」（关卡模式才显示） */
+#overBox #btnOverRandom { display:none; margin-top:10px; }
+#overBox.lv #btnOverRandom { display:block; }
+/* v1.7.0 工具菜单「关卡模式」区块（§14.62）：当前模式高亮、锁定关禁用 */
+#modeArea { border-top:1px solid var(--line); margin-top:4px; padding-top:12px; }
+#modeTitle { font-size:13px; font-weight:700; color:var(--muted); margin-bottom:8px; }
+#modeArea .menuRow .btn.lvBtn { max-width:none; font-size:12px; padding:0 2px; }
+.lvBtn.active { border-color:var(--brand); color:var(--brand); }
+.lvBtn:disabled { opacity:.35; }
+#modeHint { min-height:16px; font-size:11px; color:var(--muted); margin:-2px 0 8px; }
+/* ---- v1.4 卡牌大改（v1.6.33 大王令重订版式）----
+   底部牌库：持有的卡，拖到场上使用。
+   ▍版式统一 = **顶部形状样式 / 中间名字 / 下面描述**，三类卡同一套三行结构、**全卡统一字号**。
+   ▍不再顶破屏幕：卡数多时 `overflow-x:auto` 横向滑动，卡 `flex:0 0 auto` 不收缩
+     （5 张及以上会溢出，靠滑动看全）。触摸端横滑由 ui.js `startDeckDrag` 的
+     "手势轴锁定"手动驱动 scrollLeft —— 卡上 `touch-action:none` 要留给"拖到场上"。*/
+#deckRow { display:flex; gap:8px; min-height:78px; margin-top:8px; align-items:stretch;
+  overflow-x:auto; overflow-y:hidden; -webkit-overflow-scrolling:touch;
+  scrollbar-width:thin; scrollbar-color:rgba(255,255,255,0.22) transparent; }
+#deckRow::-webkit-scrollbar { height:4px; }
+#deckRow::-webkit-scrollbar-thumb { background:rgba(255,255,255,0.22); border-radius:2px; }
+#deckRow::-webkit-scrollbar-track { background:transparent; }
+.pcard { flex:0 0 auto; width:84px; border:1px solid var(--line); border-radius:8px;
   background:var(--panel2); display:flex; flex-direction:column; align-items:center;
-  justify-content:center; cursor:grab; touch-action:none; padding:4px 2px; }
+  justify-content:center; gap:3px; cursor:grab; touch-action:none; padding:5px 3px; }
 .pcard:active { cursor:grabbing; border-color:var(--brand); }
-.pcard .p-kind { font-size:10px; color:var(--muted); }
-.pcard .p-name { font-size:13px; font-weight:700; margin-top:2px; }
-.pcard .p-shape { display:grid; gap:1px; margin-top:4px; }
-.pcard .p-shape i { width:7px; height:7px; border-radius:1px; background:var(--brand); }
 #deckEmpty { flex:1; display:flex; align-items:center; justify-content:center;
   font-size:11px; color:var(--muted); }
+
+/* 卡面三行：牌库小卡(.p-*) 与弹层大卡(.o-*) 共用同一套结构 + **同一字号 12px** */
+.pcard .p-name, .oc .o-name { font-size:12px; font-weight:700; line-height:1.15; text-align:center; }
+.pcard .p-desc, .oc .o-desc { font-size:12px; line-height:1.15; color:var(--muted);
+  text-align:center; padding:0 2px; }
+/* v1.6.37 大王令"卡牌放大，词条文本挤"：弹层大卡单独放宽行距（词条 land 文案长，
+   3~4 行才放得下）；牌库小卡文案短，行距不动 */
+.oc .o-desc { line-height:1.5; padding:0 4px; }
+.pcard .p-shape, .oc .o-shape { display:grid; gap:1px; }
+.pcard .p-shape i { width:6px; height:6px; border-radius:1px; background:var(--brand); }
+.oc .o-shape i { width:10px; height:10px; border-radius:1px; background:var(--brand); }
+.pcard .p-art, .oc .o-art { display:flex; align-items:center; justify-content:center; height:16px; }
+.oc .o-art { height:28px; }
+/* 顶部"形状样式"图形（与 renderer 的形状互斥口径一致）：塔 = 六边形 / 建筑 = 方块 */
+.art-hex { display:block; width:16px; height:16px;
+  clip-path:polygon(50% 0,100% 25%,100% 75%,50% 100%,0 75%,0 25%); }
+.art-sq { display:block; width:15px; height:15px; border-radius:2px; }
+.oc .art-hex { width:26px; height:26px; }
+.oc .art-sq { width:24px; height:24px; }
+/* v1.6.34 词条卡图形 = 菱形（与塔六边形/建筑方块互斥） */
+.art-dia { display:block; width:13px; height:13px; transform:rotate(45deg); border-radius:2px; }
+.oc .art-dia { width:22px; height:22px; }
+/* v1.6.35 建筑范围图：3×3 地块，中心建筑本色、周围范围淡色（军工厂四角隐藏成十字） */
+.p-range, .o-range { display:grid; gap:1px; }
+.pcard .p-range i { display:block; width:5px; height:5px; border-radius:1px; }
+.oc .o-range i { display:block; width:9px; height:9px; border-radius:1px; }
 
 /* 三选一弹层 */
 #offerOverlay { position:absolute; inset:0; background:rgba(10,10,16,0.85); z-index:11;
   display:flex; align-items:center; justify-content:center; }
 #offerOverlay.hidden { display:none; }
+
+/* ---- v1.6.67 工具菜单弹层（大王令：工具类功能统一收纳，点击暂停游戏）---- */
+#menuOverlay { position:absolute; inset:0; background:rgba(10,10,16,0.85); z-index:12;
+  display:flex; align-items:center; justify-content:center; }
+#menuOverlay.hidden { display:none; }
+#menuBox { width:300px; padding:18px 16px; border:1px solid var(--line); border-radius:14px;
+  background:var(--panel); text-align:center; }
+#menuTitle { font-size:18px; font-weight:800; margin-bottom:14px; }
+#menuBox .menuRow { display:flex; gap:10px; justify-content:center; margin-bottom:10px; }
+#menuBox .menuRow .btn { flex:1; max-width:130px; }
+#importText { width:100%; height:110px; resize:vertical; font-size:11px; line-height:1.4;
+  font-family:Consolas,monospace; color:var(--text); background:var(--panel2);
+  border:1px solid var(--line); border-radius:8px; padding:6px; box-sizing:border-box; }
+#menuHint { min-height:18px; font-size:12px; color:var(--muted); margin:4px 0 10px; }
+#menuHint.err { color:#e8563f; }
+#menuHint.ok { color:#58c98a; }
+#menuBox #btnMenuClose { width:160px; }
 #offerBox { text-align:center; }
-#offerTitle { font-size:18px; font-weight:800; margin-bottom:16px; }
-#offerCards { display:flex; gap:12px; justify-content:center; }
-.oc { width:96px; height:120px; border:1px solid var(--line); border-radius:10px;
+#offerTitle { font-size:18px; font-weight:800; margin-bottom:20px; }
+/* v1.6.37 放大：3×116 + 2×10 = 368 ≤ 390（画布宽），三卡不溢出 */
+#offerCards { display:flex; gap:10px; justify-content:center; }
+.oc { position:relative; width:116px; height:176px; border:1px solid var(--line); border-radius:12px;
   background:var(--panel2); display:flex; flex-direction:column; align-items:center;
-  justify-content:center; cursor:pointer; gap:6px; }
+  justify-content:center; cursor:pointer; gap:6px; padding:8px 6px; }
 .oc:active { border-color:var(--brand); box-shadow:0 0 0 2px var(--brand); }
-.oc .o-kind { font-size:11px; color:var(--muted); }
-.oc .o-main { font-size:15px; font-weight:800; }
-.oc .o-sub { font-size:10px; color:var(--muted); }
-.oc .o-shape { display:grid; gap:1px; }
-.oc .o-shape i { width:8px; height:8px; border-radius:1px; background:var(--brand); }
+/* 【退役 v1.6.73】快捷键 1/2/3 角标（v1.6.61 加，大王令撤视觉提示；快捷键本身
+   保留，选择器不再被任何 DOM 使用，保留备查（无 VCS，删了就找不回）。*/
+/* .oc .oc-key { position:absolute; top:5px; left:5px; width:18px; height:18px; line-height:18px;
+  text-align:center; font-size:11px; font-weight:800; color:#fff; background:var(--brand);
+  border-radius:50%; opacity:.9; } */
+
+/* 【退役 v1.6.33】旧三选一卡面（.o-kind/.o-main/.o-sub 与 .p-kind）已被上面的
+   统一三行版式取代，选择器不再被任何 DOM 使用，保留备查（无 VCS，删了就找不回）。*/
+/* .oc .o-kind{font-size:11px;color:var(--muted)} .oc .o-main{font-size:15px;font-weight:800}
+   .oc .o-sub{font-size:10px;color:var(--muted)} .pcard .p-kind{font-size:10px;color:var(--muted)} */
+/* 【退役 v1.4】旧"抽卡三选一大卡"（#cards/.card/.c-*）与 .shapePrev —— 自 v1.4 起
+   index.html 已无 #cards 容器，这套样式一直没被引用（v1.6.33 复核确认死代码，保留备查）。*/
+/* #cards{display:flex;gap:8px;flex:1 1 auto;min-height:0}
+   .card{flex:1;border:1px solid var(--line);border-radius:10px;background:var(--panel2);
+     display:flex;flex-direction:column;align-items:center;justify-content:center;cursor:pointer}
+   .card .c-name{font-size:13px;font-weight:600;margin-top:6px}
+   .card .c-meta{font-size:11px;color:var(--muted);margin-top:3px;text-align:center;padding:0 4px}
+   .card.selected{border-color:var(--brand);box-shadow:0 0 0 2px var(--brand)}
+   .card .c-ico{font-size:22px;line-height:1}
+   .card .shapePrev{position:relative;min-height:24px}
+   .card .shapePrev i{position:absolute;width:10px;height:10px;border-radius:2px;
+     background:var(--brand);box-shadow:0 0 0 1px rgba(0,0,0,0.25) inset} */
