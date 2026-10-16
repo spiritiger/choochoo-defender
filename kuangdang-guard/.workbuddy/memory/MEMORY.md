@@ -4,7 +4,7 @@
 
 ## ⛔ 铁律
 1. 只有明确说「打包成单文件」才跑 build_single.js；改完源码即停手。
-2. 无 git/VCS ⇒ 废弃函数/资源**保留+注释**不删；破坏性操作前先全量归档 archive/。
+2. ~~无 git/VCS~~ **2026-10-16 起有 git**（仓库根=上一级 choochoo-defender/，远端 github.com/spiritiger/choochoo-defender）；废弃函数/资源**保留+注释**不删的习惯保留；破坏性操作前先全量归档 archive/。
 3. 不擅自改行为：先结论请拍板；改行为**必须先改 docs/设计规格.md**。
 4. 「精简/优化」默认=不动行为 ⇒ 固定种子大批量逐盘 diff 证等价。
 5. node --check 只查语法 ⇒ 必须真跑求解器+全套回归。
