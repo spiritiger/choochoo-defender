@@ -11,7 +11,11 @@
   // 全局地图布局（各模块共用）
   window.LAY = CFG.layout();
 
-  ENG.init();
+  // 2026-10-18 大王令：**默认关卡制** —— 首次进游戏直接落在第 1 关。
+  //   GS.startLevel 内部 = ENG.restart()（全量重置）+ 关卡地形/资源重建 + 重解铁轨，
+  //   故本分支不再调 ENG.init()（避免重复开局）。想玩随机图从工具菜单切「随机模式」。
+  if (GS.mode === 'level') GS.startLevel(0);
+  else ENG.init();
   UI.init(canvas);
   UI.resize();
   UI.tick();

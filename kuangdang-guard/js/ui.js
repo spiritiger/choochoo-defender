@@ -97,14 +97,6 @@ UI.init = function (canvas) {
     }
   }
   UI.btnRestart.addEventListener('click', UI.onRestart);
-  // v1.7.3 终局预览（§14.63）：常开 toggle —— 开关在工具弹层、虚线画在真地图上；
-  //   关菜单不复位（与两步确认的 _modePendingReset 不同族），再点按钮才收。
-  UI.finalPreview = false;
-  UI.btnFinalPreview = document.getElementById('btnFinalPreview');
-  if (UI.btnFinalPreview) UI.btnFinalPreview.addEventListener('click', function () {
-    UI.finalPreview = !UI.finalPreview;
-    UI.btnFinalPreview.textContent = '终局预览：' + (UI.finalPreview ? '开' : '关');
-  });
   UI.renderDeck();     // 开局画一次空牌库（此后由选卡/用卡/重开触发刷新）
 };
 

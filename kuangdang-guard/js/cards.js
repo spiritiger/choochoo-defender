@@ -28,9 +28,8 @@ GS.pickShapeCard = function (size) {
 // 卡牌去重签名（v0.6.11）：判断"两张卡是不是同一个选项"，也是去重规则的可执行定义。
 //   · 形状按**尺寸家族**去重：只看外框两维（小的在前），所以 2×3 和 3×2
 //     视为同一形状 —— 大王反馈"偶尔出现三个一样的形状选项"，把旋转也算重。
-//   · 经济建筑只有一种，签名固定 'econ' → 最多出现一张。
+//   （经济建筑签名 'econ' 随经济建筑退役一并移除；本函数只被形状卡调用。）
 GS.cardSig = function (card) {
-  if (card.kind !== 'shape') return 'econ';
   var w = 0, h = 0;
   for (var i = 0; i < card.cells.length; i++) {
     if (card.cells[i][0] + 1 > w) w = card.cells[i][0] + 1;
@@ -90,15 +89,22 @@ GS.rollCardKind = function () {
 };
 
 // 三选一发牌（v1.4 起三张独立随机；v1.6.23 加入建筑卡）
+//   ▍2026-10-18 大王令：「首次抽卡三选一时，至少有 1 个废墟清理区域」——
+//      本局**第一次**发牌时首张强制为清理形状卡（否则三张全英雄/建筑，开局没牌清废墟、
+//      扩张断链）。"首次"按**局**计：标记 `GS.__offerSeen` 由 newGame 清零（重开/换关/
+//      切模式都重置），发过一轮即置 true，之后按概率正常发牌。
 //   去重：形状按尺寸家族 / 英雄按元素 / 建筑按种类；撞重就重抽。
 //   ⚠️ 兜底：建筑只有 2 种，若长时间撞重（重抽 >30 次）改补**英雄卡**（4 种元素，
 //      三张必不撞）——保证一定凑满 3 张，且不写"抽重就重抽整组"的循环。
 GS.drawCardOffer = function () {
   var cards = [], sigs = {}, guard = 0;
+  var first = !GS.__offerSeen;      // 本局首次发牌：首张保底清理形状卡
+  GS.__offerSeen = true;
   while (cards.length < 3) {
     guard++;
     var full = GS.deckShapeCount() >= GS.DECK_SHAPE_MAX;   // 形状卡满 → 顺延英雄
     var kind = GS.rollCardKind();
+    if (first && cards.length === 0) kind = 'shape';       // 首次三选一：保底一张清理形状
     if (kind === 'shape' && full) kind = 'hero';
     var card, sig;
     if (kind === 'shape') { card = GS.pickShapeCard(); sig = 'shape:' + GS.cardSig(card); }

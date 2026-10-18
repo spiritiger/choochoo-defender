@@ -6,7 +6,6 @@ REND.C = {
   blank: '#20242f',
   rubble: '#2c2620',
   core: '#e08c33',
-  econ: '#35b06a',
   gold: '#f0b429',
   heart: '#ff5c8a',      // v1.6.22 爱心地块主色（玫红，与金/红/绿全都拉开）
   railLine: '#c3c9d6',   // v0.7.0 贴片双线（亮灰，暗底上清晰；v0.7.0 前的单线色 rail 已随之移除）
@@ -19,8 +18,6 @@ REND.C = {
   //   3 色沿用旧元素（thunder→arrow 黄 / fire→cannon 红 / ice 蓝），魔法换紫（原 poison 绿
   //   与经济建筑绿 #35b06a 撞脸，顺手改掉）。
   tower: { arrow: '#f7d94c', cannon: '#e8563f', magic: '#a855f7', ice: '#6ec6ff' },
-  // 攻击范围环用的 rgb 模板串（与上面一一对应；车头 = 攻击连线同款浅紫）
-  towerRGB: { arrow: '247,217,76', cannon: '232,86,63', magic: '168,85,247', ice: '110,198,255' },
   // v1.6.34 地面物
   mine: '#8a8f9c',        // 地雷（哑光金属灰）
   fireZone: 'rgba(240,120,50,0.30)',   // 烈焰地带
@@ -287,10 +284,6 @@ REND.draw = function (ctx, L, hover, drag) {
   //   加油站 3×3 / 军工厂十字内**在轨**的格子，淡色覆盖 + 同色描边 ——
   //   一眼看清"这条轨吃到几座加成"（覆盖多座时颜色随座数加深）。
   REND.rangeHighlights(ctx, L);
-  // 终局预览（v1.7.3，规格 §14.63 大王令"链接所有金币爱心的最大地图"）：
-  //   建造期的规划尺 —— 资源连通清空区的外轮廓，虚线格 = "清到底会变轨道"。
-  //   开关 UI.finalPreview（工具菜单 toggle）；只在白天画（夜晚战斗期无规划意义）。
-  REND.finalPreview(ctx, L);
   // 地面物（v1.6.34 词条）：烈焰地带 c4 / 霜痕 i3 / 地雷 c1 —— 铁轨之上、建筑之下
   REND.groundFx(ctx, L);
 
@@ -321,35 +314,46 @@ REND.draw = function (ctx, L, hover, drag) {
     // 【v1.6.76 退役】车尾拖尾速度线已改镜头级（大王令）——新 speedLines 是全屏
     //   径向流线，调用点挪到 draw 尾部（battleBanner 之前），不再挂车头。
 
-    // 屁股货堆（v1.6.25 大王令；v1.6.27 改版；**v1.6.29 修正朝向**）：拾取的金币/爱心堆在
-    //   车头屁股上，到站交付才清空（流水 = GS.train.picked，transport.js 记账）。
-    //   ▍v1.6.29 修正（大王实报"车头朝左时金币堆朝下了"）——**堆叠方向恒为屏幕上方**：
-    //     病因：v1.6.25~27 整堆画在**车头的旋转系**里，"上"（本地 −y）跟着车头转 ⇒ 车头朝左时
-    //     local −y 落到屏幕下方 ⇒ 看着像倒挂。把它挪到 `ctx.restore()` **之后**画即可。
-    //     ⚠️ 所以**必须画在这里**（屏幕坐标系），别挪回车头的 save/translate/rotate 块内。
-    //   ▍位置仍"挂车尾"：锚点 = 车头中心沿**世界尾巴方向**（= −前进方向）退 `PK_D`，
-    //     车往哪开，堆就吊在它屁股后头（不脱钩）；两列在**屏幕水平方向**并排 ±PK_SEP。
-    //     车朝右时与原布局逐像素等价（金 −15.5 / 心 −25）。
-    //   ▍基线夹紧 `min(锚点y, tp.y−4)`：车头朝上时"尾巴方向"朝下，不夹的话堆会从车底往上
-    //     盖住车头；夹紧后堆永远从车头中线以上起叠。
-    //   ▍粒度未变（v1.6.27 大王三条）：每种资源 1 条竖列、计数按总数合并、只向上、
-    //     列内步距 3.6 < 直径 9.2（压掉 61%）⇒ 读起来是"一枚压一枚"的堆；从下往上画。
-    //   ⚠️ 纯表现：只读 GS.train.picked，不写任何状态。
+    // 屁股货堆（v1.6.25 大王令；v1.6.27 改版；v1.6.29 修正朝向；**v1.8g 方案 B 定稿**）：
+    //   拾取的金币/爱心堆在车头屁股上，到站交付才清空（流水 = GS.train.picked，transport.js 记账）。
+    //   ▍v1.8g 大王拍板（B 案）：**资源堆刚性挂在车尾** —— 堆内每一枚都按"车体局部坐标"
+    //     (沿尾巴方向的距离 back、侧向偏移 side) 定位：世界坐标 = 车头 − 前进·back + 侧向·side。
+    //     于是不论车头朝哪，每枚资源到车头的距离恒 = √(back²+side²)，**彻底消除"忽长忽短"**。
+    //   ▍沿革：v1.6.29 曾把堆挪出车头旋转系、改成**屏幕坐标系**（"堆叠恒朝屏幕上方"）以修
+    //     "车头朝左时朝下"；但屏幕系的堆内偏移不随车头转 ⇒ 车头换向时同一枚到车头的距离
+    //     在 18.9↔28.3px 摆动（≈50%），即 v1.8f 后大王新报的"金币与车头距离不稳定"。
+    //     B 案 = 回到车体局部系**刚性**挂车尾，但**叠的方向改沿尾巴方向**（不是车头局部 −y），
+    //     ⇒ 两条拖尾永远指向车尾，既恒定又**不会再出现"朝下"**（v1.6.29 的病根是用了垂直于车头
+    //     的方向去叠）。车朝右时两列由"左右并排"变为"上下两排向左拖尾"（大王认可此代价）。
+    //   ▍v1.8h 大王令"资源与车头的距离更近一点"：首枚退距系数 **20.25 → 17**（车尾贴得更近，
+    //     首枚边缘离车尾约 2px 缝，不与车头体（半长 11×s）重叠）。
+    //   ▍v1.8i 大王令"把资源堆再往前调一点"：系数 **17 → 16**（车尾外沿含 1.5 描边半宽后
+    //     已到 13.5px，首枚边缘只剩约 1.4px 缝）。**这是下限**：再往下（≈15.9 起）首枚就压上
+    //     车头体了。要更近只能改"让金币叠在车头屁股上"的观感，另议。
+    //   ▍粒度未变（v1.6.27 大王三条）：每种资源 1 条拖尾、计数按总数合并、只向车尾、
+    //     列内步距 3.6 < 直径 9.2（压掉 61%）⇒ 读起来仍是"一枚压一枚"的堆，只是方向随车。
+    //   ⚠️ 纯表现：只读 GS.train.picked，不写任何状态。别挪回车头的 save/translate/rotate 块内。
     var picked = GS.train.picked;
     if (picked && picked.length) {
-      var PK_R = 4.6, PK_STEP = 3.6, PK_Y0 = -3.5;   // 半径 / 向上步距（重叠 61%）/ 首枚基线
-      var PK_D = 20.25 * REND.TRAIN_SCALE, PK_SEP = 4.75;  // 尾巴方向退距（v1.6.74 随车头放大）/ 两列屏幕水平半间距
+      var PK_R = 4.6, PK_STEP = 3.6;                 // 半径 / 沿尾巴方向的叠距（重叠 61%）
+      var PK_D = 16 * REND.TRAIN_SCALE, PK_SEP = 4.75;  // 首枚退距（v1.8i：17→16，已近下限）/ 两拖尾侧向半间距
       var pkAng = ENG.trainAngle();
-      var pkAx = tp.x - Math.cos(pkAng) * PK_D;      // 锚点：车尾方向退 D
-      var pkAy = Math.min(tp.y - Math.sin(pkAng) * PK_D, tp.y - 4);
+      var ux = Math.cos(pkAng), uy = Math.sin(pkAng);   // 前进单位向量
+      var px = -uy, py = ux;                            // 侧向单位向量（车头朝右时指向屏幕下方）
       var pkG = 0, pkH = 0, pkq;
       for (pkq = 0; pkq < picked.length; pkq++) {
         if (picked[pkq] === 'heart') pkH++; else pkG++;
       }
-      // 一律**从下往上**画（先画低枚、后画高枚）⇒ 上面的压住下面的一半，成"叠"。
-      //   两列固定屏幕次序：**金币在右、爱心在左**（与 v1.6.27 车朝右时的观感一致）。
-      for (pkq = 0; pkq < pkG; pkq++) REND.coin(ctx, pkAx + PK_SEP, pkAy + PK_Y0 - pkq * PK_STEP, PK_R, false);
-      for (pkq = 0; pkq < pkH; pkq++) REND.heart(ctx, pkAx - PK_SEP, pkAy + PK_Y0 - pkq * PK_STEP, PK_R, false);
+      // 从车头沿**尾巴方向**（−前进）依次后拖；金币/爱心两条平行拖尾侧向错开 ±PK_SEP。
+      //   先画近枚、后画远枚 ⇒ 远端压住近端的一半，仍是"一枚压一枚"的堆。
+      for (pkq = 0; pkq < pkG; pkq++) {
+        var gd = PK_D + pkq * PK_STEP;
+        REND.coin(ctx, tp.x - ux * gd - px * PK_SEP, tp.y - uy * gd - py * PK_SEP, PK_R, false);
+      }
+      for (pkq = 0; pkq < pkH; pkq++) {
+        var hd = PK_D + pkq * PK_STEP;
+        REND.heart(ctx, tp.x - ux * hd + px * PK_SEP, tp.y - uy * hd + py * PK_SEP, PK_R, false);
+      }
     }
     // 车厢（v1.4.1）：**独立炮位** —— 每座英雄塔（GS.towers 镜像）派生一节
     //   同元素同星车厢，按 ENG.wagonPos 沿轨排位绝对绘制（元素色车体+星点）。
@@ -366,18 +370,13 @@ REND.draw = function (ctx, L, hover, drag) {
       var wn = GS.towers.length;
       if (wn > 0) {
         var headArc = GS.train.index + GS.train.frac;   // 车头弧长（格，浮点）
-        // 弧长（格，可负可超一圈）→ 画布像素：环形取模后沿线段插值。
-        //   与 ENG.wagonPos 同一套取模公式，保证链条和车厢严格同位。
-        //   v1.4.3c 带出 ang（所在轨段的行进方向角）—— 车厢贴片要跟着转。
+        // 弧长（格，可负可超一圈）→ 画布像素：**走 ENG.railPoint（圆角路径，v1.8f）**，
+        //   与 ENG.wagonPos 同一套公式 ⇒ 链条/车厢严格同位，且拐角处角度连续（不再跳变）。
+        //   带出 ang（该处行进方向角）—— 车厢贴片跟着转。
         var arcPix = function (arc) {
-          var n2 = path.length;
-          var p = ((arc % n2) + n2) % n2;
-          var k2 = Math.floor(p), fr2 = p - k2;
-          var a2 = GS.railCell(k2), b2 = GS.railCell(k2 + 1);
-          return { x: CFG.ccx(L, a2.c) + (CFG.ccx(L, b2.c) - CFG.ccx(L, a2.c)) * fr2,
-                   y: CFG.ccy(L, a2.r) + (CFG.ccy(L, b2.r) - CFG.ccy(L, a2.r)) * fr2,
-                   ang: Math.atan2(CFG.ccy(L, b2.r) - CFG.ccy(L, a2.r),
-                                   CFG.ccx(L, b2.c) - CFG.ccx(L, a2.c)) };
+          var pt = ENG.railPoint(arc);
+          if (!pt) return { x: 0, y: 0, ang: 0 };
+          return { x: CFG.ccx(L, pt.c), y: CFG.ccy(L, pt.r), ang: pt.ang };
         };
         // ① 短链杆：车头中心 → 各节车厢中心（贴身编组下就是几截短耦合杆）
         ctx.strokeStyle = '#232347';
@@ -479,7 +478,7 @@ REND.draw = function (ctx, L, hover, drag) {
   ctx.stroke();
 
   // v1.3.4 入夜遮罩已删（大王拍板"不再有日夜交替"）：防守/建造画面亮度一致，
-  //   阶段区分只靠开波按钮文案与状态栏；CLOCK.darkness() 恒 0 保留兼容。
+  //   阶段区分只靠开波按钮文案与状态栏（原 CLOCK.darkness() 已随退役记录移除）。
 
   // ---- v1.3.3 攻击范围提示（画在地面上、怪之下：范围是"地面信息"，
   //      怪 / 攻击连线 / 拖动幽灵保持在上层）—— 细虚线 + 极淡填充，不抢视觉 ----
@@ -1099,22 +1098,6 @@ REND.building = function (ctx, L, b) {
     ctx.fillStyle = REND.C.core; ctx.fillRect(cx - s / 2, cy - s / 2, s, s);
     ctx.fillStyle = '#fff'; ctx.font = 'bold 10px sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
     ctx.fillText('城', cx, cy);
-  } else if (b.type === 'econ') {
-    ctx.fillStyle = REND.C.econ;
-    ctx.fillRect(cx - s / 2, cy - s / 2, s, s);
-    // 屋顶
-    ctx.fillStyle = '#1f7a4d';
-    ctx.beginPath();
-    ctx.moveTo(cx - s / 2, cy - s * 0.05);
-    ctx.lineTo(cx, cy - s / 2 - s * 0.18);
-    ctx.lineTo(cx + s / 2, cy - s * 0.05);
-    ctx.closePath(); ctx.fill();
-    // 金币点
-    ctx.fillStyle = REND.C.gold; ctx.beginPath(); ctx.arc(cx, cy + s * 0.2, 3.4, 0, 7); ctx.fill();
-    if (b.flash > 0) {
-      ctx.strokeStyle = 'rgba(240,180,41,' + (b.flash * 3) + ')'; ctx.lineWidth = 2;
-      ctx.strokeRect(cx - s / 2 - 1, cy - s / 2 - 1, s + 2, s + 2);
-    }
   } else if (b.type === 'mint') {
     // v1.6.23 铸币所：深色垫层 + 暗金主体 + 金色描边 + **三枚叠币**（"造币/加值"语义）。
     //   配色刻意贴着金币黄（它是给金币加值的建筑），但形状用**方块**，
@@ -1184,7 +1167,7 @@ REND.building = function (ctx, L, b) {
     //   雷元素色 #f7d94c 还与金币色 #f0b429 同为黄系。定稿口径（形状类别互斥）：
     //   金币=圆 / 塔=六边形 / 列车=圆角矩形 / 废墟=方格裂纹。
     //   双层 = 深色底座六边形（落地的分量）+ 元素色主体六边形 + 白细描边；
-    //   星点与命中闪光沿用 v1.3-rc 口径。元素色板与 towerRGB 不动（牵连车厢/范围环）。
+    //   星点与命中闪光沿用 v1.3-rc 口径。元素色板不动（车厢也用同一套 tower 色）。
     var tc = REND.C.tower[b.elem] || '#888';
     var hexPts = function (rr) {                    // 尖顶六边形顶点（cell 内居中）
       var pts = [];
@@ -1267,63 +1250,6 @@ REND.rangeHighlights = function (ctx, L) {
       ctx.lineWidth = 1;
       ctx.strokeRect(px + 0.5, py + 0.5, L.cell - 1, L.cell - 1);
     }
-  }
-};
-
-// 终局预览（v1.7.3，规格 §14.63 大王令"链接所有金币、爱心的最大地图"）：
-//   建造期的规划尺 —— 把当前局全部资源格连回镇中心（MST 走廊 + 块状膨胀），
-//   GS.finalPreviewCells 每帧直算（微秒级纯函数，零副作用），
-//   UI.finalPreview 开关 + 白天才画。
-//   ▍v1.7.5 改真链环（大王验收"①连通资源 ②铁轨呈环"；∂U 云状轮廓不呈环，
-//     v1.7.4 邻接双线随之降级 fallback）：轨道 = GS.finalPreviewRail() 解出的
-//     **真欧拉环**，用真轨道贴片 REND.railTiles 画透明版（globalAlpha 0.42）——
-//     直线/弯道弧/十字/T 岔全真，"清到底轨道长这样"所见即所得；
-//     U 走廊区保留极淡填充（"清到底会清出来的地"）。解不出环 → fallback 邻接双线。
-REND.finalPreview = function (ctx, L) {
-  if (!(typeof UI !== 'undefined' && UI.finalPreview)) return;
-  if (typeof CLOCK !== 'undefined' && !CLOCK.isDay()) return;
-  if (typeof GS.finalPreviewCells !== 'function') return;
-  var pv = GS.finalPreviewCells();
-  var k, kk;
-  // ① 灰区：极淡填充（清理目标区域，区别于轨道线的"强语义"）
-  //   v1.7.8：真链通道的灰区 = 推演 board（含 2×2 资源块 − 废墟沟），≠ 骨架 pv.u
-  //   —— rail.u 优先，骨架 fallback 才用 pv.u。
-  var rail0 = (typeof GS.finalPreviewRail === 'function') ? GS.finalPreviewRail() : null;
-  var uSrc = (rail0 && rail0.u) ? rail0.u : pv.u;
-  ctx.fillStyle = 'rgba(140,160,190,0.06)';
-  for (k in uSrc) {
-    kk = k.split(',');
-    ctx.fillRect(L.x + (+kk[0]) * L.cell, L.y + (+kk[1]) * L.cell, L.cell, L.cell);
-  }
-  // ② 轨道：真链环（透明真贴片）优先，解不出环 fallback 邻接双线
-  var rail = rail0;
-  if (rail && rail.ok && rail.path.length) {
-    ctx.globalAlpha = 0.42;                          // 大王拍板：带透明度的轨道
-    REND.railTiles(ctx, L, rail.path);
-    ctx.globalAlpha = 1;
-  } else {
-    // fallback（v1.7.4）：每对相邻 ∂U 格各画半段双线（格心 → 共享边中点），
-    // 相邻格两半段在共享边中点无缝拼接，拐角在格心直角相接；真轨几何同款。
-    var s = L.cell, d = s * 0.12;
-    var DIRS = [[0, -1], [1, 0], [0, 1], [-1, 0]];
-    ctx.strokeStyle = 'rgba(195,201,214,0.42)';      // railLine(#c3c9d6) × alpha 0.42
-    ctx.lineWidth = Math.max(1.6, s * 0.075);
-    ctx.lineCap = 'butt';
-    ctx.beginPath();
-    for (k in pv.set) {
-      kk = k.split(',');
-      var c = +kk[0], r = +kk[1];
-      var cx = L.x + (c + 0.5) * L.cell, cy = L.y + (r + 0.5) * L.cell;
-      for (var di = 0; di < 4; di++) {
-        if (!pv.set[(c + DIRS[di][0]) + ',' + (r + DIRS[di][1])]) continue;   // 邻格不在 ∂U
-        var mx = L.x + (c + 0.5 + DIRS[di][0] * 0.5) * L.cell;                // 共享边中点
-        var my = L.y + (r + 0.5 + DIRS[di][1] * 0.5) * L.cell;
-        var nx = DIRS[di][1], ny = -DIRS[di][0];                              // 法向（行进方向转 90°）
-        ctx.moveTo(cx + nx * d, cy + ny * d); ctx.lineTo(mx + nx * d, my + ny * d);
-        ctx.moveTo(cx - nx * d, cy - ny * d); ctx.lineTo(mx - nx * d, my - ny * d);
-      }
-    }
-    ctx.stroke();
   }
 };
 

@@ -43,16 +43,7 @@ TOWERS.TYPES = {
 TOWERS.typeName = function (elem) { var t = TOWERS.TYPES[elem]; return t ? t.name : elem; };
 
 TOWERS.CFG = {
-  COST: 10,            // 抽塔价格（大王定案 10 金币/次）
-  RANGE: 2.5,          // （旧字段，仅 __towerAtk_retired 用）
-  // ⚠️ 旧元素数值表（仅 `__towerAtk_retired` 那个退役函数还引用）。**新塔型数值走
-  //    `TOWERS.TYPES`**；这张表只为"退役函数万一被复活时不至于崩"而保留。
-  STATS: {
-    arrow:  { dmg: 12, rate: 1.2 },
-    cannon: { dmg: 30, rate: 3.0 },
-    magic:  { dmg: 24, rate: 2.4 },
-    ice:    { dmg: 8,  rate: 1.0 }
-  }
+  COST: 10             // 抽塔价格（大王定案 10 金币/次）
 };
 
 // 四塔型固定顺序（随机抽取 / 渲染色板都按这个序，保证稳定）
@@ -155,8 +146,10 @@ TOWERS.mergeFromHand = function (elem, dst) {
 
 // ---- 攻击（每帧）------------------------------------------------------------
 // ⚠️ v1.4.2 大王纠偏："塔没有攻击能力，车厢才有" —— 塔 = 星级容器（合成升星
-//   提升对应车厢），**不再索敌开火**。旧塔攻击循环冻结保留在下方 __towerAtk_retired
-//   （无 VCS，留档可随时复活）；TOWERS.update 现在只维护连线衰减与闪光衰减。
+//   提升对应车厢），**不再索敌开火**。旧塔攻击循环 `__towerAtk_retired` 已随
+//   2026-10-18 死代码清理移除（原文见
+//   .workbuddy/archive/retired-code-20261018/removed-code.md）；TOWERS.update
+//   现在只维护连线衰减与闪光衰减。
 TOWERS.beams = [];    // {ac,ar, bc,br, t}  t = 剩余显示秒（车头/车厢攻击连线共用）
 
 TOWERS.update = function (dt) {
@@ -168,37 +161,6 @@ TOWERS.update = function (dt) {
   // 塔闪光衰减（合成闪光 renderer 用）—— 攻击 flash 已无来源，衰减照留防残留冻结
   for (var i = 0; i < GS.towers.length; i++) {
     if (GS.towers[i].flash > 0) GS.towers[i].flash -= dt;
-  }
-};
-
-// ⚠️ 退役留档：旧"塔单体攻击"循环（v1.3-rc~v1.4.1）。复活要点：塔对象带
-//   cd/flash 字段、TOWERS.CFG.STATS 提供元素伤害表、连线塞 TOWERS.beams。
-TOWERS.__towerAtk_retired = function (dt) {
-  if (GS.gameOver) return;
-  var foes = GS.foes;
-  if (!foes || !foes.length) return;
-  var core = GS.core;
-  for (var i = 0; i < GS.towers.length; i++) {
-    var t = GS.towers[i];
-    if (t.flash > 0) t.flash -= dt;
-    t.cd -= dt;
-    if (t.cd > 0) continue;
-    var st = TOWERS.CFG.STATS[t.elem];
-    // 选目标：射程内、离镇中心最近（直线冲的怪里最前面的）
-    var best = null, bestD = Infinity;
-    for (var j = 0; j < foes.length; j++) {
-      var f = foes[j];
-      var dx = f.c - t.c, dy = f.r - t.r;
-      if (dx * dx + dy * dy > TOWERS.CFG.RANGE * TOWERS.CFG.RANGE) continue;
-      var dc = f.c - core.c, dr = f.r - core.r;
-      var dCore = dc * dc + dr * dr;
-      if (dCore < bestD) { bestD = dCore; best = f; }
-    }
-    if (!best) continue;
-    best.hp -= st.dmg * t.star;             // 星级倍率
-    t.cd = st.rate;
-    t.flash = 0.25;
-    TOWERS.beams.push({ ac: t.c, ar: t.r, bc: best.c, br: best.r, t: 0.12 });
   }
 };
 

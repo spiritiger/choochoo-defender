@@ -170,25 +170,6 @@ ENG.undoShape = function () {
   return true;
 };
 
-// ---- 建造经济建筑（需已清空空白格 + 紧贴铁轨；金币地块是资源格，不可占用）----
-// ⚠️【v1.3-rc 退役】经济建筑随三选一一起退役（拍板分叉 ①），本函数冻结保留不调用
-//   （test_rules 既有用例仍依赖；TRANS.serviceCell 的 econ 收款分支同理保留——
-//   旧存档/回退盘面可能还有 econ 建筑）。转正后可整体清理。
-ENG.placeEcon = function (c, r) {
-  var cell = GS.grid[r][c];
-  if (cell.t !== 'blank') return '这里是废墟，先清理';
-  if (cell.gold) return '金币地块，不可建造';
-  if (cell.heart) return '爱心地块，不可建造';
-  if (GS.onRail(c, r)) return '铁轨地块，不可建造';
-  if (cell.b) return '已有建筑';
-  if (!GS.railNeighbor(c, r)) return '需紧贴铁轨';
-  var b = { type: 'econ', c: c, r: r, rate: CFG.ECON_RATE, flash: 0 };
-  cell.b = b;
-  GS.buildings.push(b);
-  GS.recomputeRails();
-  return true;
-};
-
 // ---- v1.6.23 建筑卡落位（铸币所 / 加油站）--------------------------------------
 //   · 落点：**任意空地**（判据 = GS.isFreeSpot，与抽塔同一口径：已清空 + 无建筑 +
 //     非金币/爱心 + 非铁轨）—— 不要求贴轨（大王令"可以摆放在任意空地位置"）。
@@ -419,16 +400,58 @@ ENG.AFFIX = {
   C5_CHARGE: 3, C5_MUL: 1.5                // c5 蓄势：静默 3s → 半径/伤害 ×1.5
 };
 
-// 第 i 节（0 起）的浮点格坐标。headPos = 车头弧长位置（index+frac，单位格），
-//   后退 (i+1)×GAP 后对 railPath 长度取模（环形：退过头绕到车头前方）。
-ENG.wagonPos = function (i) {
+// ---- 圆角轨道路径（v1.8f 平滑转弯，大王令"转弯不平滑"）-------------------------
+// 铁轨贴片在拐格画的是**半径 = 半格**（h = L.cell/2）的四分之一圆弧（见 REND.railTiles），
+//   但列车此前按"格心直线折线"行走 ⇒ 车头/车厢每到拐角**瞬间 90° 跳转**，挂车尾的
+//   资源堆锚点方向随之跳变（"与车头距离一会儿近一会儿远"）。本函数把 railPath 折线
+//   按**同一半径 0.5 格**在拐角处倒角成圆弧：位置与切线角都连续，列车正好贴着画出来
+//   的轨道中心线走。直线段仍是格心直线（几何不变）。
+//   ▍参数 p = 弧长参数（格）= train.index + train.frac（对环长取模）。
+//   ▍返回 {c, r, ang}：**格坐标**（浮点；战斗 wagonPos 直接复用）+ 行进方向角（弧度，
+//     与 CFG.ccx/ccy 同构 ⇒ 画布角与格坐标角一致）。
+//   ▍安全退化：任一边非正交相邻（斜步/退化）时该处不倒角，回退成旧的线性插值。
+ENG.RAIL_R = 0.5;                       // 倒角半径（格），= 贴片弧半径 h
+ENG.railPoint = function (p) {
   var n = GS.railPath.length;
   if (!n) return null;
-  var head = GS.train.index + GS.train.frac;
-  var p = ((head - (i + 1) * ENG.WAGON.GAP) % n + n) % n;
-  var k = Math.floor(p), fr = p - k;
+  var R = ENG.RAIL_R;
+  p = ((p % n) + n) % n;
+  var k = Math.floor(p), f = p - k;      // 当前边起点格下标 k、边内进度 f∈[0,1)
   var a = GS.railCell(k), b = GS.railCell(k + 1);
-  return { c: a.c + (b.c - a.c) * fr, r: a.r + (b.r - a.r) * fr };
+  var ux = (b.c > a.c) ? 1 : (b.c < a.c ? -1 : 0);   // 当前边方向（轴单位）
+  var uy = (b.r > a.r) ? 1 : (b.r < a.r ? -1 : 0);
+  var pv = GS.railCell((k - 1 + n) % n);             // 前格 → 起点拐角入方向
+  var ix = a.c - pv.c, iy = a.r - pv.r;
+  var nx = GS.railCell((k + 2) % n);                 // 后格 → 终点拐角出方向
+  var ox = nx.c - b.c, oy = nx.r - b.r;
+  // 轴正交判定（两方向都是轴单位且互相垂直；斜步/折返 → false，走直线退化）
+  function perp(mx, my, px, py) {
+    return mx * px + my * py === 0 && mx * mx + my * my === 1 && px * px + py * py === 1;
+  }
+  // 拐角弧取点：顶点 V、入方向 I、出方向 O、t∈[0,1]（0=入点 1=出点）
+  function arcAt(vc, vr, Ix, Iy, Ox, Oy, t) {
+    var cx = vc - Ix * R + Ox * R, cy = vr - Iy * R + Oy * R;   // 弧心 = V − I·R + O·R
+    var t0 = Math.atan2(-Oy, -Ox);                              // 入点（相对弧心 = −O·R）
+    var d = Math.atan2(Iy, Ix) - t0;                            // 出点方向 − 入点方向（±90°）
+    if (d > Math.PI) d -= 2 * Math.PI; else if (d < -Math.PI) d += 2 * Math.PI;
+    var th = t0 + d * t, sd = d < 0 ? -1 : 1;
+    return { c: cx + R * Math.cos(th), r: cy + R * Math.sin(th),
+             ang: Math.atan2(sd * Math.cos(th), -sd * Math.sin(th)) };   // 切线 = 半径转 90°
+  }
+  if (perp(ix, iy, ux, uy) && f < R)      // 起点拐角（占当前边前段 f∈[0,R]）
+    return arcAt(a.c, a.r, ix, iy, ux, uy, 0.5 + 0.5 * (f / R));
+  if (perp(ux, uy, ox, oy) && f > 1 - R)  // 终点拐角（占当前边后段 f∈[1−R,1]）
+    return arcAt(b.c, b.r, ux, uy, ox, oy, 0.5 * (f - (1 - R)) / R);
+  return { c: a.c + ux * f, r: a.r + uy * f, ang: Math.atan2(uy, ux) };
+};
+
+// 第 i 节（0 起）的浮点格坐标（沿**圆角路径**）。headPos = 车头弧长位置（index+frac，单位格），
+//   后退 (i+1)×GAP 后对 railPath 长度取模（环形：退过头绕到车头前方）。
+//   ⚠️ 与渲染 wagonPos 严格同源（renderer 的 arcPix 也走 ENG.railPoint）——改一处必改另一处。
+ENG.wagonPos = function (i) {
+  var head = GS.train.index + GS.train.frac;
+  var pt = ENG.railPoint(head - (i + 1) * ENG.WAGON.GAP);
+  return pt ? { c: pt.c, r: pt.r } : null;
 };
 
 // 词条查询唯一入口（v1.6.78 大王拍板 A 案，规格 §14.54）：GS.hasAffix(id) 之外
@@ -612,14 +635,6 @@ ENG._knockback = function (f, dist) {
   f.kbAnim = { fx: f.c, fy: f.r, t: -(f.stun || 0), dur: Math.min(0.35, 0.1 + 0.09 * k) };  // v1.6.74 滑动演出；v1.6.80：t 从 −stun 起步——撞击场景先顿再滑（c2 无 stun 照旧即滑）
   f.c = Math.max(0, Math.min(CFG.MAP_COLS - 1, nc));
   f.r = Math.max(0, Math.min(CFG.MAP_ROWS - 1, nr));
-};
-// ⚠️【v1.6.80 退役】全场静止顿帧：大王令"顿的应该是敌方单位，不是游戏"（§14.56）——
-//   撞击改挂 fo.stun（怪定身，foes.js 行动闸）。helper 保留代码备查（无 VCS 惯例），
-//   调用点已清空、main.js 消费已退役——请勿再调用。
-// 顿帧（v1.6.74 大王令"最好还能有顿帧之类的停顿效果"）：GS.hitStop 秒内 main.js
-//   跳过整个模拟（渲染照常）——全场静止一瞬。取 max 不叠加：同帧撞一片怪只停一次。
-ENG.hitStop = function (s) {
-  GS.hitStop = Math.max(GS.hitStop || 0, s);
 };
 // 撞击冲击环（v1.6.74）：白色细环从撞击点外扩，fx 地基复用（同 deathFx ring 风格）。
 ENG.bumpFx = function (fo) {
@@ -892,17 +907,14 @@ ENG.startNight = function () {
   return true;
 };
 
+// 车头行进方向 / 像素坐标：**同源走 ENG.railPoint（圆角路径）**，与车厢、资源堆一致。
+//   v1.8f 前直取"当前轨段方向 / 格心线性插值"⇒ 拐角瞬间 90° 跳变（见 railPoint 头注释）。
 ENG.trainAngle = function () {
-  var a = GS.railCell(GS.train.index);
-  var b = GS.railCell(GS.train.index + 1);
-  return Math.atan2(CFG.ccy(LAY, b.r) - CFG.ccy(LAY, a.r), CFG.ccx(LAY, b.c) - CFG.ccx(LAY, a.c));
+  var pt = ENG.railPoint(GS.train.index + GS.train.frac);
+  return pt ? pt.ang : 0;
 };
 ENG.trainPos = function () {
-  var a = GS.railCell(GS.train.index);
-  var b = GS.railCell(GS.train.index + 1);
-  var f = GS.train.frac;
-  return {
-    x: CFG.ccx(LAY, a.c) + (CFG.ccx(LAY, b.c) - CFG.ccx(LAY, a.c)) * f,
-    y: CFG.ccy(LAY, a.r) + (CFG.ccy(LAY, b.r) - CFG.ccy(LAY, a.r)) * f
-  };
+  var pt = ENG.railPoint(GS.train.index + GS.train.frac);
+  if (!pt) return { x: 0, y: 0 };
+  return { x: CFG.ccx(LAY, pt.c), y: CFG.ccy(LAY, pt.r) };
 };

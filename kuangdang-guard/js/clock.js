@@ -141,9 +141,6 @@ CLOCK.notifyStation = function () {
   return true;
 };
 
-// v1.3.4 遮罩已删：防守/建造画面亮度一致，darkness 恒 0（renderer 兼容保留）。
-CLOCK.darkness = function () { return 0; };
-
 // 状态文案（UI 用）。v1.3.4 概念改名：白天→建造，夜晚→防守；
 //   文案带波次号（FOES.wave，typeof 守卫——test 沙箱可能只载 clock 不载 foes）
 CLOCK.label = function () {

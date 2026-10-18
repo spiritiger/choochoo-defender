@@ -3,8 +3,8 @@
 //
 // 覆盖 v1.7.0/v1.7.1 §14.62（大王令"两种挑战模式" + "关卡也 3×5 开局"纠偏）：
 //   1) 关卡表硬约束：13×9、字符集、C 恒 (4,6)、内区 3×5 全空地、
-//      **非内区格一律废墟（与随机模式同构）**、恒 10 金币格 + 5 爱心格、
-//      资源两两切比雪夫距离 ≥ RES_GAP
+//      **非内区格一律废墟（与随机模式同构）**、金 EXP_GOLD[li] + 5 爱心格、
+//      资源无同格叠放（切比雪夫 ≥ 1；2026-10-18 手绘关卡图允许 1 格相邻）
 //   2) startLevel 冒烟：五关全部能解出开局环、金币 30、模式/索引落账、
 //      grid 与 ASCII 一致（资源列表/core 指针）
 //   3) 胜利钩子：第 10 波收车回白天 → levelDone + 进度解锁；
@@ -40,8 +40,17 @@ function check(name, ok, detail) {
 // ---- 1) 关卡表硬约束 --------------------------------------------------------
 check('关卡数量 = 5', Array.isArray(LEVELS) && LEVELS.length === 5, 'len=' + (LEVELS && LEVELS.length));
 check('LEVEL_WAVES = 10（大王拍板：5 关统一 10 波）', LEVEL_WAVES === 10, 'v=' + LEVEL_WAVES);
+// 2026-10-18 大王令：**初始进入游戏默认有限关卡制**（levels.js 默认值 'level'，
+//   main.js 开机据此直接 startLevel(0)）。此处断言默认值本身（尚未被本套件改动）。
+check('默认模式 = level（初始进入游戏即有限关卡制）', GS.mode === 'level', 'mode=' + GS.mode);
 
 const RES = [[], [], [], [], []];   // 每关资源坐标 [(c,r)]
+// 每关金币格数（2026-10-18 大王令：关卡资源量与随机模式 CFG.GOLD_TILES=10 解耦）：
+//   五关**已全部**按新标准重排 = 金 13；爱心五关恒 5。
+const EXP_GOLD = [13, 13, 13, 13, 13];
+// 已按 2026-10-18 新标准重排的关卡（禁 3×3 三连 / 带位配额 / 金 13）：2026-10-18 五关
+//   全部重排完毕（外郭/双轴/四缘/环心/边陲），逐关启用 3×3 密度门。
+const REWORKED = [true, true, true, true, true];
 for (let li = 0; li < LEVELS.length; li++) {
   const lv = LEVELS[li], rows = lv.rows;
   check('第' + (li + 1) + '关「' + lv.name + '」13 行', rows.length === CFG.MAP_ROWS,
@@ -58,7 +67,8 @@ for (let li = 0; li < LEVELS.length; li++) {
     }
   }
   check('第' + (li + 1) + '关 字符集/列宽/C 位', bad.length === 0, bad.join(';'));
-  check('第' + (li + 1) + '关 资源量 10 金 + 5 爱心', nG === 10 && nH === 5, 'g=' + nG + ' h=' + nH);
+  check('第' + (li + 1) + '关 资源量 ' + EXP_GOLD[li] + ' 金 + 5 爱心',
+        nG === EXP_GOLD[li] && nH === 5, 'g=' + nG + ' h=' + nH);
   // 内区 3×5（c3..5 × r4..8）全空地 —— 保底开局环
   let innerBad = 0;
   for (let r = 4; r <= 8; r++) for (let c = 3; c <= 5; c++)
@@ -73,14 +83,31 @@ for (let li = 0; li < LEVELS.length; li++) {
   }
   check('第' + (li + 1) + '关 非内区全废墟（随机模式同构）', outerBlank === 0,
         'blank=' + outerBlank);
-  // 资源间距：两两切比雪夫 ≥ RES_GAP(2)（3×3 邻域内不许有第二枚，同随机模式撒点规则）
+  // 资源间距（2026-10-18 大王令：手绘关卡图 1/3/6/9/10 允许 1 格相邻——随机模式
+  //   CFG.RES_GAP=2 只管自动撒点；手工关卡以设计图点位为准，硬约束只有"不落同一格"）
   let gapBad = '';
   for (let a = 0; a < RES[li].length; a++) for (let b = a + 1; b < RES[li].length; b++) {
     const d = Math.max(Math.abs(RES[li][a][0] - RES[li][b][0]),
                        Math.abs(RES[li][a][1] - RES[li][b][1]));
-    if (d < CFG.RES_GAP) gapBad += '(' + RES[li][a] + ')-(' + RES[li][b] + ')d' + d + ' ';
+    if (d < 1) gapBad += '(' + RES[li][a] + ')-(' + RES[li][b] + ')d' + d + ' ';
   }
-  check('第' + (li + 1) + '关 资源间距 ≥ ' + CFG.RES_GAP, gapBad === '', gapBad);
+  check('第' + (li + 1) + '关 资源无同格叠放（切比雪夫 ≥ 1）', gapBad === '', gapBad);
+  // 3×3 密度禁令（2026-10-18 大王令："把禁 3 连斜边改成不允许任意 3×3 范围内出现
+  //   3 个资源点"）：逐 3×3 窗口统计资源数，>2 即违规。比只禁对角三连更严——
+  //   横/竖三连、任意三点挤进一个 3×3 都会被这条否掉。
+  //   ⚠️ 仅对已按新标准重排的关卡生效（REWORKED）；旧手绘关 ②③④⑤ 重排后再启用。
+  if (REWORKED[li]) {
+    let bad3 = '';
+    const rset = new Set(RES[li].map(p => p[0] + ',' + p[1]));
+    for (let wr = 0; wr <= CFG.MAP_ROWS - 3; wr++)
+      for (let wc = 0; wc <= CFG.MAP_COLS - 3; wc++) {
+        let n = 0;
+        for (let dr = 0; dr < 3; dr++) for (let dc = 0; dc < 3; dc++)
+          if (rset.has((wc + dc) + ',' + (wr + dr))) n++;
+        if (n > 2) bad3 += '窗口(' + wc + ',' + wr + ')=' + n + ' ';
+      }
+    check('第' + (li + 1) + '关 任意 3×3 内资源 ≤2', bad3 === '', bad3);
+  }
 }
 
 // ---- 2) startLevel 冒烟（五关全解） -----------------------------------------
@@ -97,8 +124,8 @@ for (let li = 0; li < LEVELS.length; li++) {
   check('startLevel(' + li + ')「' + LEVELS[li].name + '」开局环 ' + GS.railPath.length +
         ' 步 / 金币 30 / 模式落账', ok,
         'rail=' + GS.railPath.length + ' gold=' + GS.gold + ' mode=' + GS.mode);
-  check('startLevel(' + li + ') 资源列表与网格一致（10+5）', lg === 10 && lh === 5,
-        'g=' + lg + ' h=' + lh);
+  check('startLevel(' + li + ') 资源列表与网格一致（' + EXP_GOLD[li] + '+5）',
+        lg === EXP_GOLD[li] && lh === 5, 'g=' + lg + ' h=' + lh);
 }
 
 // ---- 3) 胜利钩子（CLOCK.notifyStation，§14.62） ------------------------------
@@ -135,44 +162,16 @@ check('第 5 关通关 → 进度=4（全通）', GS.levelDone && GS.levelProgre
       'prog=' + GS.levelProgress());
 GS.mode = 'random';
 
-// ---- 4) newGame 归零 levelDone ------------------------------------------------
+// ---- 4) newGame 归零 levelDone / 不重置模式元状态 -------------------------------
+//   v1.7.0（§14.62）：mode 是"元状态"——newGame 只管这一局，不重置它
+//   （2026-10-18 大王令：默认值已改为 'level'）。restart 经 newGame 同样归零 levelDone。
+GS.mode = 'level';
 GS.levelDone = true;
 GS.newGame();
 check('newGame 归零 levelDone（restart 经 newGame 同样归零）', GS.levelDone === false);
-check('newGame 后模式仍是元状态不重置（关卡模式重开仍是关卡）',
-  GS.mode === 'random' && typeof GS.startLevel === 'function');   // 默认 random 兜底在
+check('newGame 不重置 GS.mode（元状态：关卡模式重开后仍是关卡）',
+  GS.mode === 'level' && typeof GS.startLevel === 'function');
 
-// ---- 5) 终局预览区分度（v1.7.3 §14.63，levels 域）-----------------------------
-//   五关资源分布不同 ⇒ 资源连通清空区的规模不同（v1.7.1"区别只在资源分布"延伸）；
-//   v1.7.5 真链环：五关都要解出真欧拉环（大王验收口径"铁轨呈环"逐关验）
-{
-  const sigs = [];
-  for (let li = 0; li < LEVELS.length; li++) {
-    GS.startLevel(li);
-    const pv = GS.finalPreviewCells();
-    // 每关 U 都要覆盖本关全部资源（连通目标达成，逐关验）
-    const res = [...GS.goldTiles, ...GS.heartTiles];
-    check('第' + (li + 1) + '关「' + LEVELS[li].name + '」预览 U 覆盖全部资源',
-      res.every(p => pv.u[p.c + ',' + p.r]), 'miss=' + res.filter(p => !pv.u[p.c + ',' + p.r]).length);
-    // v1.7.5：真求解链解出的预览环——ok、非空、环 ⊆ U（环长在清空区里）
-    const rail = GS.finalPreviewRail();
-    check('第' + (li + 1) + '关「' + LEVELS[li].name + '」真链环解出且 ⊆ U（' + rail.path.length + ' 步）',
-      rail.ok && rail.path.length > 0 && rail.path.every(p => pv.u[p.c + ',' + p.r]),
-      'ok=' + rail.ok + ' rail=' + rail.path.length);
-    // v1.7.6 大王口径直译：环逐格经过本关全部资源格（列车采得到）
-    {
-      const onRail = {};
-      for (const p of rail.path) onRail[p.c + ',' + p.r] = true;
-      const miss = res.filter(p => !onRail[p.c + ',' + p.r]);
-      check('第' + (li + 1) + '关「' + LEVELS[li].name + '」环经过全部资源格',
-        miss.length === 0, 'miss=' + miss.length);
-    }
-    sigs.push(pv.cells.length);
-  }
-  check('五关 ∂U 规模随资源分布不同（有区分度）',
-    new Set(sigs).size >= 4, sigs.join('/'));
-  GS.startLevel(0);
-}
 
 console.log(pass + ' 通过 / ' + fail + ' 失败');
 if (fail) { console.log('失败项已列出'); process.exit(1); }

@@ -115,16 +115,6 @@ for (let round = 0; round < ROUNDS; round++) {
     TRANS.serviceCell({ c: gt.c, r: gt.r });
     check('规则5b：重置后可再次装载', GS.train.cargo === cargo2 + GS.goldValue());
 
-    // 规则 4c：金币地块不可建经济建筑
-    //   v0.6.12：未清理时它是废墟 → 先报"这里是废墟，先清理"；
-    //   清出来（空地 + 金币）之后 → 报"金币地块，不可建造"。
-    const res1 = ENG.placeEcon(gt.c, gt.r);
-    check('规则4c：未清理的金币格不可建造（视作废墟）', res1 === '这里是废墟，先清理', String(res1));
-    const gtT = GS.grid[gt.r][gt.c].t;
-    GS.grid[gt.r][gt.c].t = 'blank';
-    const res = ENG.placeEcon(gt.c, gt.r);
-    GS.grid[gt.r][gt.c].t = gtT;
-    check('规则4c2：金币地块（已清出）不可建造经济建筑', res === '金币地块，不可建造', String(res));
   }
 }
 
@@ -180,7 +170,7 @@ check('端到端：奖励倒计时走完转入收尾相位', CLOCK.isDusk());
 let steps = 0;
 while (!CLOCK.isDay() && steps < 500) { ENG.advanceTrain(0.5); steps++; }
 check('端到端：到站即收尾回到白天', CLOCK.isDay(), '推进 ' + steps + ' 次仍未到站');
-const oneLap = 3 * GS.goldValue() + CFG.STATION_BONUS;   // 3 块金币 + 站台固定 +10
+const oneLap = 3 * GS.goldValue() + CFG.STATION_BONUS;   // 3 块金币 + 站台固定 bonus（2026-10-18 起 5）
 check('端到端：一圈交付 3 块 × ' + GS.goldValue() + ' 金币 + 站台 ' + CFG.STATION_BONUS + ' = ' + oneLap,
   GS.gold - gold0 === oneLap, '实际 +' + (GS.gold - gold0));
 check('端到端：交付后车斗清零', GS.train.cargo === 0, '残留 ' + GS.train.cargo);
@@ -338,14 +328,6 @@ const isOuterRing = (c, r) => c === 0 || c === CFG.MAP_COLS - 1 || r === 0 || r 
   check('爱心7：resetLap 后爱心恢复可收（每圈重置同金币）',
     GS.grid[h0.r][h0.c].harvested === false || GS.train.hearts === 0);
 
-  // 建造拒绝
-  GS.newGame();
-  const h1 = GS.heartTiles[0];
-  check('爱心8：未清理的爱心格不可建造（视作废墟）',
-    ENG.placeEcon(h1.c, h1.r) === '这里是废墟，先清理');
-  GS.grid[h1.r][h1.c].t = 'blank';
-  check('爱心9：清出后的爱心格不可建造经济建筑',
-    ENG.placeEcon(h1.c, h1.r) === '爱心地块，不可建造');
 }
 
 // ============================================================================
@@ -371,25 +353,6 @@ const isOuterRing = (c, r) => c === 0 || c === CFG.MAP_COLS - 1 || r === 0 || r 
     GS.train.picked.length === 2 && GS.train.picked[1] === 'heart',
     JSON.stringify(GS.train.picked));
 
-  // 贴轨经济建筑每经过一次也算一次拾取（金币图标）
-  let rail0 = null, host = null;
-  for (const rc of GS.railPath) {
-    for (const [nc, nr] of GS.neighbors(rc.c, rc.r)) {
-      const cell = GS.grid[nr][nc];
-      if (cell.t === 'blank' && !cell.b && !cell.gold && !cell.heart && !GS.onRail(nc, nr)) { rail0 = rc; host = { c: nc, r: nr }; break; }
-    }
-    if (host) break;
-  }
-  if (host) {
-    const nb = GS.train.picked.length;
-    ENG.placeEcon(host.c, host.r);
-    TRANS.serviceCell({ c: rail0.c, r: rail0.r });
-    check('货堆5：贴轨经济建筑每经过一次 → picked +1 枚 gold',
-      GS.train.picked.length === nb + 1 && GS.train.picked[nb] === 'gold',
-      JSON.stringify(GS.train.picked));
-  } else {
-    check('货堆5：（本盘开局轨旁无空地，跳过）', true);
-  }
 
   const before = GS.train.picked.length;
   TRANS.deliver();
@@ -434,14 +397,15 @@ const isOuterRing = (c, r) => c === 0 || c === CFG.MAP_COLS - 1 || r === 0 || r 
   check('飘字4：两行**固定错开 20px**（金币在下、生命在上）⇒ 不重叠',
     fg.y - fh.y === 20);
   check('飘字5：文案 = 本次入账额 / 实际回血量（' + fg.text + ' / ' + fh.text + '）',
-    fg.text === '+' + got0 && got0 === 40 && fh.text === '+' + (2 * CFG.HEART_HEAL));
+    fg.text === '+' + got0 && got0 === 30 + CFG.STATION_BONUS && fh.text === '+' + (2 * CFG.HEART_HEAL));
 
   // 连续交付：同类只留最新一条 ⇒ 不会层层叠字
   GS.train.cargo = 10; GS.train.hearts = 0; GS.coreHP = 50;
   ENG.deliverAtStation();
   const gs2 = GS.floats.filter(f => f.kind === 'gold');
   check('飘字6：再交付一次 → 金币行仍只有 1 条（同类只留最新、不叠字）',
-    gs2.length === 1 && gs2[0].text === '+20', JSON.stringify(gs2.map(f => f.text)));
+    gs2.length === 1 && gs2[0].text === '+' + (10 + CFG.STATION_BONUS),
+    JSON.stringify(gs2.map(f => f.text)));
   check('飘字6b：新一轮生命行为 0 ⇒ 旧的已清、新的不生成',
     GS.floats.filter(f => f.kind === 'heal').length === 0);
 
@@ -459,13 +423,13 @@ const isOuterRing = (c, r) => c === 0 || c === CFG.MAP_COLS - 1 || r === 0 || r 
 }
 
 // ============================================================================
-// v1.6.23 建筑卡（铸币所 / 加油站）+ 金币默认价值 5 → 10
+// v1.6.23 建筑卡（铸币所 / 加油站）+ 金币默认价值（2026-10-18 大王令：GOLD_RATE 10→5）
 // ============================================================================
 {
   // ① 金币默认价值
   GS.newGame();
-  check('建筑1：金币默认价值 = CFG.GOLD_RATE = 10（大王令 5→10）',
-    CFG.GOLD_RATE === 10 && GS.goldValue() === 10, 'goldValue=' + GS.goldValue());
+  check('建筑1：金币默认价值 = CFG.GOLD_RATE = 5（2026-10-18 大王令 10→5）',
+    CFG.GOLD_RATE === 5 && GS.goldValue() === 5, 'goldValue=' + GS.goldValue());
 
   // ② 铸币所：任意空地可建 + 全场加值**叠加**
   const free = [];
@@ -476,10 +440,12 @@ const isOuterRing = (c, r) => c === 0 || c === CFG.MAP_COLS - 1 || r === 0 || r 
     TOWERS.isFreeSpot(free[0].c, free[0].r) === GS.isFreeSpot(free[0].c, free[0].r) &&
     GS.isFreeSpot(free[0].c, free[0].r) === true);
   check('建筑3：铸币所落位成功', ENG.placeBuilding(free[0].c, free[0].r, 'mint') === true);
-  check('建筑4：一座铸币所 → 金币价值 10+5=15', GS.goldValue() === 10 + CFG.MINT_BONUS,
+  check('建筑4：一座铸币所 → 金币价值 ' + CFG.GOLD_RATE + '+' + CFG.MINT_BONUS,
+    GS.goldValue() === CFG.GOLD_RATE + CFG.MINT_BONUS,
     'goldValue=' + GS.goldValue());
   ENG.placeBuilding(free[1].c, free[1].r, 'mint');
-  check('建筑5：两座铸币所**叠加** → 金币价值 20', GS.goldValue() === 10 + 2 * CFG.MINT_BONUS,
+  check('建筑5：两座铸币所**叠加** → 金币价值 ' + (CFG.GOLD_RATE + 2 * CFG.MINT_BONUS),
+    GS.goldValue() === CFG.GOLD_RATE + 2 * CFG.MINT_BONUS,
     'goldValue=' + GS.goldValue());
   {
     const gt = GS.goldTiles[0], b0 = GS.train.cargo;
@@ -673,65 +639,6 @@ const isOuterRing = (c, r) => c === 0 || c === CFG.MAP_COLS - 1 || r === 0 || r 
   GS.newGame();
 }
 
-// ============================================================================
-// v1.7.3 终局预览推演（规格 §14.63 大王令"链接所有金币、爱心的最大地图"）
-//   口径：镇中心 + 全部资源格 → MST 走廊 → 块状膨胀 → 外轮廓 ∂U。
-//   验：①资源全被 U 覆盖（推演目标达成）②U 4 连通 ③∂U ⊆ U ④对齐真链
-//   （推演 U 灌进 grid → recomputeRails → 环 ⊆ U），备份/还原法不污染后续断言。
-// ============================================================================
-{
-  // 规则套件不载 levels.js（分层最小集）—— 手工摆固定资源（四角 + 上下中轴），
-  //  曼哈顿远距、确定性；grid 标记同步（finalPreviewCells 只读两张列表）
-  GS.newGame();
-  GS.goldTiles = [{ c: 0, r: 0 }, { c: 8, r: 0 }, { c: 0, r: 12 }, { c: 8, r: 12 }];
-  GS.heartTiles = [{ c: 4, r: 0 }, { c: 4, r: 12 }];
-  for (const p of GS.goldTiles) GS.grid[p.r][p.c].gold = true;
-  for (const p of GS.heartTiles) GS.grid[p.r][p.c].heart = true;
-  const pv = GS.finalPreviewCells();
-  check('[FP] ∂U 非空且 ⊆ U', pv.cells.length > 0 &&
-    pv.cells.every(p => pv.u[p.c + ',' + p.r]), 'cells=' + pv.cells.length);
-  const res = [...GS.goldTiles, ...GS.heartTiles];
-  check('[FP] U 覆盖全部资源格（10 金 + 5 爱全在清空区）',
-    res.every(p => pv.u[p.c + ',' + p.r]),
-    'miss=' + res.filter(p => !pv.u[p.c + ',' + p.r]).length);
-  // U 4 连通（从镇中心 BFS，全 u 可达）
-  {
-    const seen = new Set([GS.core.c + ',' + GS.core.r]);
-    const q = [[GS.core.c, GS.core.r]];
-    while (q.length) {
-      const [c, r] = q.pop();
-      for (const [dc, dr] of [[1,0],[-1,0],[0,1],[0,-1]]) {
-        const k = (c + dc) + ',' + (r + dr);
-        if (pv.u[k] && !seen.has(k)) { seen.add(k); q.push([c + dc, r + dr]); }
-      }
-    }
-    check('[FP] U 4 连通（走廊从镇中心可达每一格）',
-      seen.size === Object.keys(pv.u).length, seen.size + ' vs ' + Object.keys(pv.u).length);
-  }
-  // v1.7.5 真链环：finalPreviewRail 内部完成"灌 U → 真求解链 → 还原"，
-  //   验：ok / 环 ⊆ U / 缓存同引用 / 局内铁轨未被预览计算污染
-  {
-    const railLenBefore = GS.railPath.length;
-    const rail = GS.finalPreviewRail();
-    check('[FP] 真链环：ok 且环 ⊆ U（步数 ' + rail.path.length + '）',
-      rail.ok && rail.path.every(p => pv.u[p.c + ',' + p.r]),
-      'rail=' + rail.path.length);
-    // v1.7.6 大王口径直译：连通资源 = 环逐格经过全部资源格（列车跑在轨上才采得到）
-    {
-      const onRail = {};
-      for (const p of rail.path) onRail[p.c + ',' + p.r] = true;
-      const miss = res.filter(p => !onRail[p.c + ',' + p.r]);
-      check('[FP] 环经过全部资源格（连通资源）', miss.length === 0,
-        'miss=' + miss.length);
-    }
-    check('[FP] 真链环：缓存命中（二次调用同引用）', GS.finalPreviewRail() === rail);
-    check('[FP] 局内铁轨未被预览计算污染',
-      GS.railPath.length === railLenBefore && railLenBefore > 0,
-      'before=' + railLenBefore + ' after=' + GS.railPath.length);
-  }
-  // 五关区分度断言在 test_levels.js（levels 域，[FP-LV]）
-  GS.newGame();
-}
 
 console.log('\n' + '='.repeat(64));
 console.log(pass + ' 通过 / ' + fail + ' 失败');

@@ -109,8 +109,8 @@ check('[20] 塔不攻击：射程内外怪均不掉血', GS.foes[0].hp === 100 &
 check('[21] 塔攻击冷却不再进入', b.cd === 0 || b.cd === undefined,
   'cd=' + b.cd);
 check('[22] 塔不产生攻击连线（旧连线仍衰减）', TOWERS.beams.length === 0);
-check('[23] 塔攻击循环已退役（__towerAtk_retired 留档）',
-  typeof TOWERS.__towerAtk_retired === 'function' && typeof TOWERS.update === 'function');
+check('[23] 塔攻击循环已退役（__towerAtk_retired 已随退役记录移除）',
+  typeof TOWERS.__towerAtk_retired === 'undefined' && typeof TOWERS.update === 'function');
 GS.foes.length = 0; TOWERS.beams.length = 0;
 // [24] 合成闪光仍衰减（v1.4.2 后 TOWERS.update 唯一的塔侧职责）
 b.flash = 0.4;
@@ -195,12 +195,14 @@ check('[39] 第二波共 24+12×2=48 只：首批 8 进场 + 队列 40',
   'n=' + GS.foes.length + ' pending=' + FOES.pending);
 check('[40] 第二波 coreHP 仍继承', GS.coreHP === 41);
 
-// [41] 站台额外 +10 -----------------------------------------------------------------
+// [41] 站台额外金币（CFG.STATION_BONUS，2026-10-18 大王令 10→5） -----------------
 GS.train.cargo = 0;
 const got = TRANS.deliver();
-check('[41] 空车斗到站也拿站台 +10', got === CFG.STATION_BONUS && GS.gold >= CFG.STATION_BONUS);
+check('[41] 空车斗到站也拿站台 +' + CFG.STATION_BONUS,
+  got === CFG.STATION_BONUS && GS.gold >= CFG.STATION_BONUS);
 GS.train.cargo = 7;
-check('[42] cargo+站台 = 17', TRANS.deliver() === 7 + CFG.STATION_BONUS);
+check('[42] cargo + 站台 = ' + (7 + CFG.STATION_BONUS),
+  TRANS.deliver() === 7 + CFG.STATION_BONUS);
 
 // [43-44] 重开清场 -----------------------------------------------------------------
 GS.gameOver = true;
@@ -398,6 +400,11 @@ check('[72] 去重：形状尺寸家族/英雄元素/建筑种类不重复', (fu
     : c.kind === 'hero' ? 'h:' + c.elem : 'b:' + c.bkey);
   return new Set(sigs).size === sigs.length;
 })());
+// [72b] 2026-10-18 大王令：本局首次三选一保底 ≥1 张清理形状卡（"至少有 1 个废墟清理区域"）
+//   offer1 紧接 ENG.restart() 之后发出 ⇒ 即本局首轮，必含形状卡。
+check('[72b] 首次三选一保底 1 张清理形状卡（2026-10-18 大王令）',
+  offer1.some(c => c.kind === 'shape'),
+  'kinds=' + offer1.map(c => c.kind).join(','));
 
 // [73] 形状卡满 3 张 → 不再出形状卡（顺延英雄；建筑仍按概率出现）
 GS.deck = [{ kind: 'shape', id: 1, name: '2×2', cells: [[0,0],[1,0],[0,1],[1,1]] },

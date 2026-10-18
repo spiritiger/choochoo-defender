@@ -32,8 +32,8 @@ TRANS.picked = function (kind) {
 };
 
 // 到站交付：车斗一次性并入金币，清零。返回本次交付额。
-//   v1.3-rc 拍板 ④："站台一定提供 10 金币" = **额外 +10**（cargo 之外再送），
-//   保三选一退役后即使空圈也有进账。数量来源 CFG.STATION_BONUS。
+//   v1.3-rc 拍板 ④："站台一定提供金币" = **额外**（cargo 之外再送），保三选一退役后
+//   即使空圈也有进账。数量来源 CFG.STATION_BONUS（2026-10-18 大王令 10→5）。
 //   v1.6.22：爱心也在这里交付 —— 车上攒了 h 枚就回 h×CFG.HEART_HEAL 点血
 //   （**封顶 coreMaxHP**，不会超过初始血量上限）；爱心计数清零，地块由 resetLap 重置。
 TRANS.deliver = function () {
@@ -81,14 +81,6 @@ TRANS.serviceCell = function (cell) {
     g.flash = 0.35;
     GS.train.hearts = (GS.train.hearts || 0) + 1;
     TRANS.picked('heart');         // v1.6.25：屁股货堆 +1 枚爱心图标
-  }
-  var n = GS.neighbors(cell.c, cell.r);
-  for (var i = 0; i < n.length; i++) {
-    var b = GS.buildingAt(n[i][0], n[i][1]);
-    if (!b || b.type !== 'econ') continue;
-    TRANS.load(b.rate);            // 同上：车斗累积
-    TRANS.picked('gold');          // v1.6.25：经济建筑每经过一次也算一次拾取
-    b.flash = 0.35;
   }
 };
 

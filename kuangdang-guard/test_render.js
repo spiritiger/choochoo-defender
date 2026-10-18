@@ -76,57 +76,120 @@ REND.coin = (ctx, x, y) => rec.push({ k: 'gold', w: ctx.world(x, y) });
 REND.heart = (ctx, x, y) => rec.push({ k: 'heart', w: ctx.world(x, y) });
 
 const BAG = ['gold', 'gold', 'gold', 'gold', 'heart', 'heart'];   // 4 金 2 心
-function drawAt(index) {
+function drawAt(index, frac) {
   GS.train.picked = BAG.slice();
   GS.train.index = index;
+  GS.train.frac = frac || 0;
   rec.length = 0;
   REND.draw(makeCtx(), L, null, null);
   return rec.slice(-BAG.length);
 }
 const head = () => ENG.trainPos();
-const fwd = () => { const a = ENG.trainAngle(); return { x: Math.cos(a), y: Math.sin(a) }; };
 
 // ============================================================================
-// [R1] 屁股货堆的**堆叠方向恒为屏幕上方**（v1.6.29 大王实报"车头朝左时朝下了"）
-//   病因：整堆曾画在车头的旋转系里，"上"跟着车头转。修法 = 挪到 ctx.restore() 之后。
-//   ⚠️ 谁再把这段挪回车头的 save/translate/rotate 块内，本组用例立刻红。
-//   初始 12 格环上的朝向：i0/i1=+x(东) i2~i5=+y(南) i6/i7=−x(西) i8~i11=−y(北)。
+// [R1] v1.8g 方案 B：资源堆**刚性挂在车尾** —— 每枚资源按"车体局部坐标"
+//   （沿尾巴方向的距离 back、侧向偏移 side）定位：世界坐标 = 车头 − 前进·back + 侧向·side。
+//   ⇒ ①每枚都在车尾侧（back>0）；②同一枚在**四种朝向下**局部坐标一致（刚性、不随车转歪）；
+//     ③金币/爱心两条平行拖尾侧向错开 ∓PK_SEP；④同类沿尾巴方向逐枚递增 PK_STEP。
+//   ⚠️ 旧口径（v1.6.29~1.8f：屏幕坐标系 + 堆叠恒朝屏幕上方）已废弃 —— 那正是"金币与车头
+//     距离忽长忽短"的病根（车头换向时同一枚到车头的距离在 18.9↔28.3px 摆动 ≈50%）。
+//   环上朝向取**直线段中点**（整数下标格 = 拐角顶点，行进角 45°）：ed0/1=东、ed3=南、ed6/7=西、ed10=北。
 // ============================================================================
-const HEADING = [[0, '朝右(E)'], [6, '朝左(W)'], [2, '朝下(S)'], [8, '朝上(N)']];
-for (const [idx, name] of HEADING) {
-  const r = drawAt(idx);
-  const g = r.filter(x => x.k === 'gold'), h = r.filter(x => x.k === 'heart');
-  check('[R1] ' + name + ' 金币列逐枚朝屏幕上方（世界 y 单调递减）',
-    g.every((v, i) => i === 0 || v.w.y < g[i - 1].w.y - 0.5), g.map(x => x.w.y.toFixed(1)).join('>'));
-  check('[R1] ' + name + ' 爱心列逐枚朝屏幕上方',
-    h.every((v, i) => i === 0 || v.w.y < h[i - 1].w.y - 0.5), h.map(x => x.w.y.toFixed(1)).join('>'));
-  check('[R1] ' + name + ' 每列内部 x 恒定（竖直列）',
-    new Set(g.map(x => x.w.x.toFixed(3))).size === 1 &&
-    new Set(h.map(x => x.w.x.toFixed(3))).size === 1);
-  check('[R1] ' + name + ' 两列屏幕左右并排（同索引等高、x 不同）',
-    Math.abs(g[0].w.y - h[0].w.y) < 1e-9 && g[0].w.x !== h[0].w.x);
+const HEADING = [[1, 0.25, '朝右(E)'], [6, 0.75, '朝左(W)'], [3, 0.5, '朝下(S)'], [10, 0.5, '朝上(N)']];
+const PKD = 16 * REND.TRAIN_SCALE, PKSEP = 4.75, PKSTEP = 3.6;   // PK_D 系数 v1.8i：17→16（车尾外沿下限）
+const localSig = [];
+for (const [idx, fr, name] of HEADING) {
+  const r = drawAt(idx, fr);
   const h0 = head();
+  const a = ENG.trainAngle();
+  const ux = Math.cos(a), uy = Math.sin(a);          // 前进方向
+  const px = -uy, py = ux;                            // 侧向（车头朝右时指向屏幕下方）
+  const loc = r.map(x => {
+    const dx = x.w.x - h0.x, dy = x.w.y - h0.y;
+    return { k: x.k, back: dx * (-ux) + dy * (-uy), side: dx * px + dy * py };
+  });
+  localSig.push(loc);
+  const g = loc.filter(v => v.k === 'gold'), h = loc.filter(v => v.k === 'heart');
+  check('[R1] ' + name + ' 资源全在车尾侧（沿尾巴方向距离 > 0）',
+    loc.every(v => v.back > 0), loc.map(v => v.back.toFixed(1)).join(','));
+  check('[R1] ' + name + ' 金币拖尾侧向偏移恒 = ' + (-PKSEP),
+    g.every(v => Math.abs(v.side - (-PKSEP)) < 1e-9), g.map(v => v.side.toFixed(2)).join(','));
+  check('[R1] ' + name + ' 爱心拖尾侧向偏移恒 = ' + (PKSEP),
+    h.every(v => Math.abs(v.side - PKSEP) < 1e-9), h.map(v => v.side.toFixed(2)).join(','));
+  check('[R1] ' + name + ' 同类逐枚沿尾巴方向递增 PK_STEP（"一枚压一枚"）',
+    g.every((v, i) => i === 0 || Math.abs((v.back - g[i - 1].back) - PKSTEP) < 1e-9) &&
+    h.every((v, i) => i === 0 || Math.abs((v.back - h[i - 1].back) - PKSTEP) < 1e-9));
+  check('[R1] ' + name + ' 首枚距车头沿尾轴退 PK_D',
+    Math.abs(g[0].back - PKD) < 1e-9 && Math.abs(h[0].back - PKD) < 1e-9,
+    'back=' + g[0].back.toFixed(3) + '/' + h[0].back.toFixed(3));
   const maxD = Math.max(...r.map(x => Math.hypot(x.w.x - h0.x, x.w.y - h0.y)));
   check('[R1] ' + name + ' 堆挂在车上不脱钩（离车头 < 50px）', maxD < 50, 'maxD=' + maxD.toFixed(1));
-  if (idx === 0 || idx === 6) {
-    const f = fwd();
-    check('[R1] ' + name + ' 整堆落在车尾侧（·前进方向 ≤ 0）',
-      r.every(x => (x.w.x - h0.x) * f.x + (x.w.y - h0.y) * f.y <= 0.01));
+}
+{ // 刚性：四种朝向下每枚资源的"车体局部坐标"逐枚一致（不随车头转向而变）
+  const ref = localSig[0];
+  let maxDev = 0;
+  for (const cur of localSig) for (let i = 0; i < cur.length; i++) {
+    if (cur[i].k !== ref[i].k) maxDev = 1e9;
+    maxDev = Math.max(maxDev, Math.abs(cur[i].back - ref[i].back), Math.abs(cur[i].side - ref[i].side));
   }
+  check('[R1] 四种朝向下每枚资源的"车体局部坐标"逐枚一致（刚性挂车尾）',
+    maxDev < 1e-9, 'maxDev=' + maxDev.toFixed(6));
 }
 
-// [R2] 车朝右时货堆锚点 = 车头屁股（尾巴方向退 PK_D，金右/心左）——
-//   v1.6.27 原值 15.5/25；v1.6.74 火车放大（TRAIN_SCALE=1.15）⇒ 锚点随车头
-//   半长外移，断言改按公式跟缩放系数（PK_D=20.25×s，金 = −PK_D+4.75、
-//   心 = −PK_D−4.75），车再缩放不用改这里。
+// [R2] 车朝右时**首枚** = 车头屁股（朝右直线段中点 idx1/frac0.25，行进角 0 ⇒ 前进=+x、侧向=+y）：
+//   金首枚 (head.x − PK_D, head.y − PK_SEP)、心首枚 (head.x − PK_D, head.y + PK_SEP)。
+//   ⚠️ v1.8g 方案 B：沿**尾巴方向**退 PK_D（不再是旧屏幕系的 "−PK_D±PK_SEP 左右并排"）。
+//   PK_D = 16×TRAIN_SCALE（v1.8i 大王令"再往前调一点"：系数 17→16，已近下限），车再缩放不用改这里。
 {
-  const r = drawAt(0), h0 = head();
-  const gx = r.filter(x => x.k === 'gold')[0].w.x;
-  const hx = r.filter(x => x.k === 'heart')[0].w.x;
-  const PKD = 20.25 * REND.TRAIN_SCALE;
-  check('[R2] 朝右时锚点跟车尾（金列 head.x−(PK_D−4.75) / 心列 head.x−(PK_D+4.75)）',
-    Math.abs(gx - (h0.x - (PKD - 4.75))) < 1e-9 && Math.abs(hx - (h0.x - (PKD + 4.75))) < 1e-9,
-    'Δ金=' + (gx - h0.x).toFixed(2) + ' Δ心=' + (hx - h0.x).toFixed(2));
+  const r = drawAt(1, 0.25), h0 = head();
+  const g0 = r.filter(x => x.k === 'gold')[0].w;
+  const h1 = r.filter(x => x.k === 'heart')[0].w;
+  check('[R2] 朝右时首枚跟车尾（金=(head.x−PK_D, head.y−PK_SEP) / 心=(head.x−PK_D, head.y+PK_SEP)）',
+    Math.abs(g0.x - (h0.x - PKD)) < 1e-9 && Math.abs(g0.y - (h0.y - PKSEP)) < 1e-9 &&
+    Math.abs(h1.x - (h0.x - PKD)) < 1e-9 && Math.abs(h1.y - (h0.y + PKSEP)) < 1e-9,
+    '金Δ=(' + (g0.x - h0.x).toFixed(2) + ',' + (g0.y - h0.y).toFixed(2) + ') 心Δ=(' +
+      (h1.x - h0.x).toFixed(2) + ',' + (h1.y - h0.y).toFixed(2) + ')');
+}
+
+// [R12] 转弯平滑（v1.8f）+ 资源堆刚性（v1.8g）：圆角路径下**行进角连续**（无 90° 跳变），
+//   且每枚资源到车头的距离**沿全环恒定**。旧口径：行进角是轨段阶梯角（拐角瞬间跳 90°）；
+//   资源堆的屏幕系偏移不随车头转 ⇒ 同一枚到车头距离在 18.9↔28.3px 摆动（"忽长忽短"）。
+{
+  const n = GS.railPath.length;
+  const step = n / 800;                              // 名义弧长步长（格/采样）
+  let maxJump = 0, prevAng = null, prevP = null, maxStep = 0;
+  for (let s = 0; s <= n + 1e-9; s += step) {
+    const pt = ENG.railPoint(s);
+    if (prevAng !== null) {
+      let d = pt.ang - prevAng;
+      while (d > Math.PI) d -= 2 * Math.PI;
+      while (d < -Math.PI) d += 2 * Math.PI;
+      maxJump = Math.max(maxJump, Math.abs(d));
+    }
+    if (prevP) maxStep = Math.max(maxStep, Math.hypot(pt.c - prevP.c, pt.r - prevP.r));
+    prevAng = pt.ang; prevP = pt;
+  }
+  check('[R12] 走一圈行进角连续（单步角差 < 10°，旧阶梯实现为 90°）',
+    maxJump < 10 * Math.PI / 180, 'maxJump=' + (maxJump * 180 / Math.PI).toFixed(2) + '°');
+  check('[R12] 走一圈位置连续（单步位移 ≤ 1.2×名义步长，无跳变/断口）',
+    maxStep <= 1.2 * step, 'maxStep=' + maxStep.toFixed(4) + ' 名义=' + step.toFixed(4));
+
+  // 每枚资源到车头的距离须**与朝向/位置无关**（刚性挂车尾的根本保证）——全环逐格采样比对：
+  //   参考值 = idx0 各枚距离，其余 idx 逐枚比对（顺序稳定：金×4 后 心×2）。
+  const ref = (() => {
+    const r = drawAt(0, 0.5), h0 = head();
+    return r.map(x => Math.hypot(x.w.x - h0.x, x.w.y - h0.y));
+  })();
+  let maxErr = 0;
+  for (let idx = 0; idx < n; idx++) {
+    const r = drawAt(idx, 0.5), h0 = head();
+    for (let i = 0; i < r.length; i++) {
+      const d = Math.hypot(r[i].w.x - h0.x, r[i].w.y - h0.y);
+      maxErr = Math.max(maxErr, Math.abs(d - ref[i]));
+    }
+  }
+  check('[R12] 每枚资源到车头距离沿全环恒定（刚性挂车尾 ⇒ 无"忽长忽短"）',
+    maxErr < 1e-6, 'maxErr=' + maxErr.toFixed(6));
 }
 
 // [R3] 粒度口径（v1.6.27 大王三条）：金币/爱心**分开成列**、计数**按总数合并**
@@ -258,32 +321,6 @@ for (const [idx, name] of HEADING) {
   check('[R5] v1.6.91 特效闸：纯收车 boostFx=false 速度线零绘制 / 闸开正常出线（stroke 0 vs ' + strokesOn + '>0）',
     strokes === 0 && strokesOn > 0, 'off=' + strokes + ' on=' + strokesOn);
 
-  // v1.7.3 终局预览（§14.63）：UI.finalPreview 开 → 主 draw 走 finalPreview 绘制
-  //   路径不抛（沙箱无 ui.js —— 手动塞 UI 桩；CLOCK 真载入，白天态）；关 → 早退
-  sandbox.UI = { finalPreview: true };
-  sandbox.CLOCK.phase = 'day';
-  err = '';
-  try { REND.draw(makeCtx(), L, null, null); } catch (e) { err = (e && e.message) || 'throw'; }
-  check('[R9] 终局预览开（白天）draw 不抛异常', !err, err);
-  // v1.7.4 画法二改：fillRect 次数 == |U|（走廊区极淡填充），轨道双线 lineTo>0
-  let fills = 0, lines = 0, strokes2 = 0;
-  const pctx = makeCtx();
-  pctx.fillRect = () => { fills++; };
-  pctx.lineTo = () => { lines++; };
-  pctx.stroke = () => { strokes2++; };
-  try { REND.finalPreview(pctx, L); } catch (e) {}
-  const pvU = Object.keys(GS.finalPreviewCells().u).length;
-  check('[R9] 终局预览走廊填充（fillRect ' + fills + ' == |U| ' + pvU + '）',
-    fills === pvU && pvU > 0, 'fills=' + fills + ' |U|=' + pvU);
-  check('[R9] 透明真轨贴片（lineTo ' + lines + '>0 且逐格 stroke ' + strokes2 + '>1）',
-    lines > 0 && strokes2 > 1, 'lines=' + lines + ' stroke=' + strokes2);
-  sandbox.UI.finalPreview = false;
-  fills = 0;
-  const pctx2 = makeCtx();
-  pctx2.fillRect = () => { fills++; };
-  try { REND.finalPreview(pctx2, L); } catch (e) {}
-  check('[R9] 终局预览关 → 零绘制', fills === 0, 'fills=' + fills);
-  delete sandbox.UI;
 }
 
 // ============================================================================
