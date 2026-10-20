@@ -1,13 +1,13 @@
 // ============================================================================
-// 塔型 / 词条 / 军工厂 回归（v1.6.34/35 新建）
+// 塔型 / 词条 / 辅助建筑 回归（v1.6.34/35 新建；v1.8u 十三令 [T6] 改猛攻坊/疾速坊）
 //
 //   ▍覆盖：
-//     [T1] TOWERS.TYPES 四塔型数值（方案 A：等 DPS 包络，2026-10-13 大王拍板）
+//     [T1] TOWERS.TYPES 四塔型数值（v1.8j 车厢改版 + v1.8k/l 微调：预期 DPS 口径）
 //     [T2] AFFIXES 20 条（每塔型 5 条，name/desc/land 齐全）
 //     [T3] 附着 API：每塔上限 1 条 / 塔型匹配 / 只能装塔上
-//     [T4] 车厢战斗按塔型取伤害/间隔/特效（arrow 基准 · cannon AOE · magic 中毒 · ice 减速）
+//     [T4] 车厢战斗按塔型取伤害/间隔/特效（v1.8j：机枪基准 · 火炮溅射 · 闪电单体 · 冰环环绕）
 //     [T5] 词条钩子（确定性条目：散射/易伤/地雷/烈焰/霜痕/击退/磁拉）
-//     [T6] 军工厂加成（1 座 20%、相邻 50%、远离 40%）+ 战斗乘区
+//     [T6] 辅助建筑加成（v1.8u 十三令：猛攻坊左右 +100%/座、疾速坊上下 +100%/座）+ 战斗乘区
 //     [T7] 经验系统（need 10/20/30 · add · consume）
 //     [T8] 词条三选一发牌（3 张互异、已装的不出现）
 //   ▍沙箱：state 之后的逻辑模块全载（无 DOM / 无 CLOCK / 无 RND）。
@@ -45,10 +45,13 @@ GS.newGame();
 function mkFoe(c, r, hp) {
   return { c: c, r: r, hp: hp || 100, maxHp: hp || 100, speed: 0.2, cd: 0,
            slow: 0, burn: 0, poison: 0, slowHard: 0, freeze: 0, mine: 0, zoneSlow: 0,
-           vuln: 0, vulnPct: 0, vulnT: 0, lock: null, lockT: 0, bumpCd: 0, hitFlash: 0 };
+           vulnA: 0, vulnAT: 0, vulnM: 0, lock: null, lockT: 0, bumpCd: 0, hitFlash: 0 };
 }
 function wagonPos0() { return ENG.wagonPos(0); }
-function fireOnce() { ENG.wagonCombat(0.0001); }   // 一帧推进（wcd 从 0 起打一发）
+function fireOnce() {   // 一帧推进（wcd 从 0 起打一发）+ 弹丸飞完（v1.8n 弹丸化）
+  ENG.wagonCombat(0.0001);
+  for (var i = 0; i < 600 && GS.bullets.length; i++) ENG.bulletUpdate(0.016);
+}
 
 // 开局盘面里"真空地"只有内区 2 格（12 格环 + 镇中心占掉 3×5）——词条/战斗用例要更多
 // 空地放塔，这里把废墟清成空地凑数（跳过轨格与建筑；不动资源标记以外的语义）。
@@ -66,27 +69,30 @@ function ensureFree(n) {
 }
 
 // ============================================================================
-// [T1] 四塔型数值（方案 A）
+// [T1] 四塔型数值（v1.8j 车厢改版 + v1.8k/l 微调：预期 DPS 口径）
 // ============================================================================
 {
   const T = TOWERS.TYPES;
   check('[T1] 四塔型齐：arrow/cannon/magic/ice',
     TOWERS.ELEMS.length === 4 && T.arrow && T.cannon && T.magic && T.ice);
-  check('[T1] 方案 A：箭=基准（×1.0 / 1.2s / 4.5 格 / 单体 / 无特效）',
-    T.arrow.dmgMul === 1.0 && T.arrow.interval === 1.2 && T.arrow.range === 4.5 &&
-    T.arrow.targets === 1 && T.arrow.effect === 'none');
-  check('[T1] 方案 A：炮=AOE（×2.5 / 3.0s / 6.3 格 / aoe / 灼烧）',
-    T.cannon.dmgMul === 2.5 && T.cannon.interval === 3.0 && T.cannon.range === 6.3 &&
-    T.cannon.targets === 'aoe' && T.cannon.effect === 'burn');
-  check('[T1] 方案 A：魔法（×2.0 / 2.4s / 5.4 格 / 单体 / 中毒）',
-    T.magic.dmgMul === 2.0 && T.magic.interval === 2.4 && T.magic.range === 5.4 &&
-    T.magic.effect === 'poison');
-  check('[T1] 方案 A：寒冰（×0.8 / 1.0s / 3.6 格 / 单体 / 减速）',
-    T.ice.dmgMul === 0.8 && T.ice.interval === 1.0 && T.ice.range === 3.6 &&
-    T.ice.effect === 'slow');
-  check('[T1] DPS 包络：四型 伤害×攻速 全部 ≈0.833（±0.05）',
-    [T.arrow, T.cannon, T.magic, T.ice].every(t =>
-      Math.abs(t.dmgMul / t.interval - 0.833) < 0.05));
+  check('[T1] 机枪（4/发=1/3 基数 / 0.4s / 4.5 格 / 单体 / 无特效）',
+    Math.abs(T.arrow.dmgMul - 1 / 3) < 1e-9 && T.arrow.interval === 0.4 &&
+    T.arrow.range === 4.5 &&
+    T.arrow.targets === 1 && T.arrow.effect === 'none' && T.arrow.dmgType === 'phys');
+  check('[T1] 火炮（15/发=×1.25 基数 / 3.0s / 4.5 格 / 溅射 1.3 / 无特效）',
+    T.cannon.dmgMul === 1.25 && T.cannon.interval === 3.0 && T.cannon.range === 4.5 &&
+    T.cannon.targets === 'aoe' && T.cannon.splash === 1.3 && T.cannon.effect === 'none');
+  check('[T1] 闪电（×2.0 / 2.4s / 4.5 格 / 单体 / 无特效）',
+    T.magic.dmgMul === 2.0 && T.magic.interval === 2.4 && T.magic.range === 4.5 &&
+    T.magic.targets === 1 && T.magic.effect === 'none' && T.magic.dmgType === 'magic');
+  check('[T1] 冰环（6.4/发=8/15 基数 / 2.0s / 2.2 格 / 环绕 AOE / 减速）',
+    Math.abs(T.ice.dmgMul - 8 / 15) < 1e-9 && T.ice.interval === 2.0 && T.ice.range === 2.2 &&
+    T.ice.targets === 'ring' && T.ice.effect === 'slow');
+  check('[T1] 预期 DPS（v1.8l，E[N]：火炮 2 / 冰环 2.5 / 单体 1）：机枪 10 · 火炮 10 · 冰环 8 · 闪电 10',
+    Math.abs(T.arrow.dmgMul / T.arrow.interval * 12 - 10) < 0.01 &&
+    Math.abs(T.cannon.dmgMul / T.cannon.interval * 12 * 2 - 10) < 0.01 &&
+    Math.abs(T.ice.dmgMul / T.ice.interval * 12 * 2.5 - 8) < 0.01 &&
+    Math.abs(T.magic.dmgMul / T.magic.interval * 12 - 10) < 0.01);
 }
 
 // ============================================================================
@@ -145,37 +151,38 @@ function ensureFree(n) {
     if (GS.isFreeSpot(c, r)) free.push({ c, r });
   const pos = wagonPos0();
 
-  // arrow：基准伤害 12×star（v1.6.79 固定基数，§14.55），无特效
+  // arrow（机枪）：1/3×基数 = 4/发（v1.8k 小步快刀），无特效
   const twA = TOWERS.placeAt(free[0].c, free[0].r, 'arrow', 1);
   const fA = mkFoe(pos.c, pos.r);
   GS.foes = [fA];
   fireOnce();
-  check('[T4] 箭塔 1 星 = 基准一发 12（固定基数）、无特效',
-    Math.abs(fA.hp - 88) < 1e-6 && !fA.slow && !fA.burn && !fA.poison, 'hp=' + fA.hp);
+  check('[T4] 机枪 1 星 = 1/3×基数 4/发、无特效',
+    Math.abs(fA.hp - 96) < 1e-6 && !fA.slow && !fA.burn && !fA.poison, 'hp=' + fA.hp);
 
-  // ice：×0.8 = 9.6，且挂减速
+  // ice（冰环）：8/15×基数 = 6.4，环绕自身 AOE 全体命中，且挂减速（v1.8l 预期 DPS=8）
   const twI = TOWERS.placeAt(free[1].c, free[1].r, 'ice', 1);
   const fI = mkFoe(pos.c, pos.r);
   GS.foes = [fI];
   fireOnce();
-  check('[T4] 寒冰 1 星 = 9.6/发 且挂减速 1.5s',
-    Math.abs(fI.hp - 90.4) < 1e-6 && Math.abs(fI.slow - 1.5) < 1e-6, 'hp=' + fI.hp + ' slow=' + fI.slow);
+  check('[T4] 冰环 1 星 = 6.4/发 且挂减速 1.5s',
+    Math.abs(fI.hp - 93.6) < 1e-6 && Math.abs(fI.slow - 1.5) < 1e-6, 'hp=' + fI.hp + ' slow=' + fI.slow);
 
-  // magic：×2.0 = 24，且挂中毒
+  // magic（闪电）：×2.0 = 24，纯单体魔法（v1.8j 去中毒）
   const twM = TOWERS.placeAt(free[2].c, free[2].r, 'magic', 1);
   const fM = mkFoe(pos.c, pos.r);
   GS.foes = [fM];
   fireOnce();
-  check('[T4] 魔法 1 星 = 24/发 且挂中毒 4s',
-    Math.abs(fM.hp - 76) < 1e-6 && Math.abs(fM.poison - 4) < 1e-6, 'hp=' + fM.hp);
+  check('[T4] 闪电 1 星 = 24/发、无特效（中毒已移除）',
+    Math.abs(fM.hp - 76) < 1e-6 && !fM.poison, 'hp=' + fM.hp + ' poison=' + fM.poison);
 
-  // cannon：×2.5 = 30，AOE 3×3 两只都掉血
+  // cannon（火炮）：×1.25 = 15，命中点溅射半径 1.3 圆内两只都掉血（v1.8l 预期 DPS=10）
   TOWERS.placeAt(free[3].c, free[3].r, 'cannon', 1);
   const fC1 = mkFoe(pos.c, pos.r), fC2 = mkFoe(pos.c + 0.5, pos.r);
   GS.foes = [fC1, fC2];
   fireOnce();
-  check('[T4] 炮塔 1 星 = 30/发 且 3×3 AOE 两只同掉',
-    Math.abs(fC1.hp - 70) < 1e-6 && Math.abs(fC2.hp - 70) < 1e-6, fC1.hp + '/' + fC2.hp);
+  check('[T4] 火炮 1 星 = 15/发 且溅射圈(半径1.3)两只同掉、无灼烧',
+    Math.abs(fC1.hp - 85) < 1e-6 && Math.abs(fC2.hp - 85) < 1e-6 && !fC1.burn,
+    fC1.hp + '/' + fC2.hp);
 }
 
 // ============================================================================
@@ -189,16 +196,16 @@ function ensureFree(n) {
     if (GS.isFreeSpot(c, r)) free.push({ c, r });
   const pos = wagonPos0();
 
-  // a3 撕裂标记：命中叠易伤（全局获得 ⇒ 所有箭塔车厢都带）
+  // a3 撕裂标记：命中叠易伤（全局获得 ⇒ 所有机枪车厢都带）
   GS.playerAffixes = { a3: 1 };
   TOWERS.placeAt(free[0].c, free[0].r, 'arrow', 1);
   const f3 = mkFoe(pos.c, pos.r);
   GS.foes = [f3];
   fireOnce();
-  check('[T5] a3 撕裂标记：命中叠 1 层易伤（+15%）',
-    f3.vuln === 1 && f3.vulnPct === 0.15, 'vuln=' + f3.vuln);
+  check('[T5] a3 撕裂标记：命中叠 1 层易伤（+20%，vulnA 槽）',
+    f3.vulnA === 1 && f3.vulnAT === 3, 'vulnA=' + f3.vulnA);
 
-  // a1 散射箭 + a3 并存（v1.6.36：同塔型多词条同时生效）：主 100% + 另 2 只 60%，
+  // a1 散射箭 + a3 并存（v1.6.36：同塔型多词条同时生效）：主 100% + 另 2 只 30%，
   //   且三只都被叠易伤（a1 的散射目标也算"命中"）
   GS.playerAffixes = { a1: 1, a3: 1 };
   const tw = TOWERS.placeAt(free[1].c, free[1].r, 'arrow', 1);
@@ -207,12 +214,12 @@ function ensureFree(n) {
   GS.foes = [m1, m2, m3];
   fireOnce();
   const hpSorted = [m1.hp, m2.hp, m3.hp].sort(function (p, q) { return p - q; });
-  check('[T5] a1 散射箭：三只同帧掉血（100%/60%/60%）',
-    Math.abs(hpSorted[0] - 88) < 1e-6 && Math.abs(hpSorted[1] - 92.8) < 1e-6 &&
-    Math.abs(hpSorted[2] - 92.8) < 1e-6, hpSorted.join('/'));
+  check('[T5] a1 散射箭：三只同帧掉血（100%/30%/30%）',
+    Math.abs(hpSorted[0] - 96) < 1e-6 && Math.abs(hpSorted[1] - 98.8) < 1e-6 &&
+    Math.abs(hpSorted[2] - 98.8) < 1e-6, hpSorted.join('/'));
   check('[T5] 多词条并存：a1+a3 同持 ⇒ 三只全部叠上易伤',
-    m1.vuln === 1 && m2.vuln === 1 && m3.vuln === 1,
-    m1.vuln + '/' + m2.vuln + '/' + m3.vuln);
+    m1.vulnA === 1 && m2.vulnA === 1 && m3.vulnA === 1,
+    m1.vulnA + '/' + m2.vulnA + '/' + m3.vulnA);
 
   // c1 布雷 / c4 烈焰 / i3 霜痕：命中后地面物出现
   GS.playerAffixes = { c1: 1 };
@@ -227,7 +234,10 @@ function ensureFree(n) {
   check('[T5] c4 烈焰燃油：爆炸区留灼烧地带', GS.fireZones.length === 1);
   GS.playerAffixes = { i3: 1 };
   const twI2 = TOWERS.placeAt(free[3].c, free[3].r, 'ice', 1);
-  GS.foes = [mkFoe(pos.c, pos.r)];
+  // v1.8j 冰环 = 以**车厢自身**为圆心的环绕 AOE：怪要放在本节车厢（最后一节）的位置上，
+  //   放 wagonPos(0) 距冰环车厢约 5 格弧长，超出 2.2 射程就不挨打了。
+  const wpI = ENG.wagonPos(GS.towers.length - 1);
+  GS.foes = [mkFoe(wpI.c, wpI.r)];
   fireOnce();
   check('[T5] i3 霜痕路径：受击格留减速地面', GS.frostZones.length === 1);
 
@@ -239,14 +249,90 @@ function ensureFree(n) {
   GS.foes = [fk];
   fireOnce();
   check('[T5] c2 冲击震退：怪被推离原位', Math.abs(fk.c - pos.c) + Math.abs(fk.r - pos.r) > 0.2);
+  // m4 极化磁场（v1.8o 改口径：拉向最近的其他怪，纯聚怪）——摆两只怪，
+  //   被击的那只向另一只靠 1 格：两者间距 2.0 → 1.0（谁被击都一样，断言对称）。
   GS.playerAffixes = { m4: 1 };
   const twP = TOWERS.placeAt(free[5].c, free[5].r, 'magic', 1);
-  const fp = mkFoe(pos.c, pos.r);
-  GS.foes = [fp];
+  const fp = mkFoe(pos.c, pos.r), fq = mkFoe(pos.c + 2, pos.r);
+  GS.foes = [fp, fq];
   fireOnce();
-  check('[T5] m4 极化磁场：怪被拉向镇中心',
-    Math.abs(fp.c - GS.core.c) + Math.abs(fp.r - GS.core.r) <
-    Math.abs(pos.c - GS.core.c) + Math.abs(pos.r - GS.core.r) || fp.c !== pos.c);
+  const dPull = Math.hypot(fp.c - fq.c, fp.r - fq.r);
+  check('[T5] m4 极化磁场：被击怪拉向最近的其他怪（间距 2→1，纯聚怪）',
+    Math.abs(dPull - 1) < 0.05, 'd=' + dPull.toFixed(3));
+}
+
+// ============================================================================
+// [T5b] v1.8o：a3 × m2 拆独立易伤槽（规格 §14.76）——并存时各叠各的层、
+//   各自封顶互不压制。v1.8q 严格收口（§14.78）：消费只认对应车厢——vulnA 只对
+//   机枪来源伤害生效、vulnM 只对闪电来源伤害生效，其他车厢/车头不吃。
+//   直接驱动 affixOnHit/applyHits（不经索敌，避免落点/目标选择的不确定性）。
+// ============================================================================
+{
+  ENG.restart();
+  GS.playerAffixes = { a3: 1, m2: 1 };
+  const tA = { elem: 'arrow', star: 1 }, tM = { elem: 'magic', star: 1 };
+  const TA = TOWERS.TYPES.arrow, TM = TOWERS.TYPES.magic;
+  const fX = mkFoe(5, 5);
+  GS.foes = [fX];
+  ENG.affixOnHit(tA, fX, 4, 4, TA, 1);    // a3 → vulnA
+  ENG.affixOnHit(tM, fX, 24, 24, TM, 1);  // m2 → vulnM
+  check('[T5b] a3+m2 并存：vulnA / vulnM 各叠 1 层互不干扰',
+    fX.vulnA === 1 && fX.vulnM === 1, 'A=' + fX.vulnA + ' M=' + fX.vulnM);
+  for (let k = 0; k < 4; k++) ENG.affixOnHit(tA, fX, 4, 4, TA, 1);    // a3 顶到 3 层
+  for (let k = 0; k < 3; k++) ENG.affixOnHit(tM, fX, 24, 24, TM, 1);  // m2 顶到 2 层（v1.8r）
+  check('[T5b] 各自封顶互不压制：vulnA=3 / vulnM=2（旧版共槽会互踩）',
+    fX.vulnA === 3 && fX.vulnM === 2, 'A=' + fX.vulnA + ' M=' + fX.vulnM);
+  const hp0 = fX.hp;
+  ENG.applyHits(tA, TA, [{ f: fX, mul: 1 }], 10, 1);
+  check('[T5b] 严格收口：机枪打吃满 vulnA（10 → 16），不吃 vulnM',
+    Math.abs((hp0 - fX.hp) - 16) < 1e-9, 'hd=' + (hp0 - fX.hp).toFixed(4));
+  const hp1 = fX.hp;
+  ENG.applyHits(tM, TM, [{ f: fX, mul: 1 }], 10, 1);
+  check('[T5b] 严格收口：闪电打吃满 vulnM（10 → 16），不吃 vulnA',
+    Math.abs((hp1 - fX.hp) - 16) < 1e-9, 'hd=' + (hp1 - fX.hp).toFixed(4));
+  const hp2 = fX.hp;
+  ENG.applyHits({ elem: 'ice', star: 1 }, TOWERS.TYPES.ice, [{ f: fX, mul: 1 }], 10, 1);
+  check('[T5b] 严格收口：其他车厢不吃任何易伤（10 → 10）',
+    Math.abs((hp2 - fX.hp) - 10) < 1e-9, 'hd=' + (hp2 - fX.hp).toFixed(4));
+}
+
+// ============================================================================
+// [T5c] v1.8p：m3 能量溢出改动态——溢出 = 0.5 × 过量伤（击杀这一击打穿的富余量，
+//   击穿帧 _snapOverkill 快照；规格 §14.77）。大王例：伤害 100、剩余血 20 → 溢出 40。
+// ============================================================================
+{
+  ENG.restart();
+  GS.playerAffixes = { m3: 1 };
+  const tM3 = { elem: 'magic', star: 1 };
+  const fK = mkFoe(5, 5, 30);    // 待宰怪：hp30
+  const fN = mkFoe(6, 5, 100);   // 邻居（3×3 内，距离 1）
+  const fF = mkFoe(8, 5, 100);   // 远邻（3×3 外，距离 3）
+  GS.foes = [fK, fN, fF];
+  ENG.applyHits(tM3, TOWERS.TYPES.magic, [{ f: fK, mul: 1 }], 100, 1);
+  check('[T5c] 击穿快照：hp30 吃 100 伤 → hp=-70、过量=70',
+    fK.hp === -70 && fK.overkill === 70, 'hp=' + fK.hp + ' ok=' + fK.overkill);
+  ENG.onFoeDeath(fK, 1);         // 清尸钩子：3×3 内 fN 吃 0.5×70=35，fF 不吃
+  check('[T5c] 溢出 = 0.5×过量：邻居 100→65，3×3 外不动',
+    fN.hp === 65 && fF.hp === 100, 'fN=' + fN.hp + ' fF=' + fF.hp);
+  ENG.applyHits(tM3, TOWERS.TYPES.magic, [{ f: fK, mul: 1 }], 50, 1);
+  check('[T5c] 补刀不刷新快照：过量仍 70（防把补刀全额算成过量）',
+    fK.overkill === 70, 'ok=' + fK.overkill);
+  const fD = mkFoe(5, 5, 30);    // 无击穿快照的怪（DoT/旁路杀场景：overkill=0）
+  GS.foes = [fD, fN];
+  ENG.onFoeDeath(fD, 1);
+  check('[T5c] 无击穿快照（DoT/旁路杀）→ 不爆', fN.hp === 65, 'fN=' + fN.hp);
+  // v1.8q 严格收口：只有闪电车厢来源的击穿才爆——机枪/车头击穿不爆
+  const fA = mkFoe(5, 5, 30), fB = mkFoe(6, 5, 100);
+  GS.foes = [fA, fB];
+  ENG.applyHits({ elem: 'arrow', star: 1 }, TOWERS.TYPES.arrow, [{ f: fA, mul: 1 }], 100, 1);
+  check('[T5c] 来源快照：机枪击穿 → overkill=70 / src=arrow',
+    fA.overkill === 70 && fA.overkillSrc === 'arrow', 'src=' + fA.overkillSrc);
+  ENG.onFoeDeath(fA, 1);
+  check('[T5c] 严格收口：机枪来源击穿不爆溢出', fB.hp === 100, 'fB=' + fB.hp);
+  fB.overkill = 70; fB.overkillSrc = 'train';
+  GS.foes = [fB, fN];
+  ENG.onFoeDeath(fB, 1);
+  check('[T5c] 严格收口：车头来源击穿不爆溢出', fN.hp === 65, 'fN=' + fN.hp);
 }
 
 // ============================================================================
@@ -271,76 +357,109 @@ function ensureFree(n) {
   check('[T5a] affixOf：未获得的词条恒 false（先 hasAffix 后塔型过滤）',
     ENG.affixOf(twCa, 'm1') === false);
 
-  // 战斗链验证 ①：箭塔车厢开火不布雷（跨塔被过滤）。twCa 压在冷却里防同帧开火污染。
+  // 战斗链验证 ①：机枪车厢开火不布雷（跨塔被过滤）。twCa 压在冷却里防同帧开火污染。
   GS.mines.length = 0;
   twCa.wcd = 1; twAr.wcd = 0;
   GS.foes = [mkFoe(pos.c, pos.r)];
   fireOnce();
-  check('[T5a] c1 在箭塔车厢不生效：开火后零布雷', GS.mines.length === 0,
+  check('[T5a] c1 在机枪车厢不生效：开火后零布雷', GS.mines.length === 0,
     'mines=' + GS.mines.length);
 
-  // 战斗链验证 ②（正向对照）：cannon 车厢同词条照常布雷
+  // 战斗链验证 ②（正向对照）：火炮车厢同词条照常布雷
   twAr.wcd = 1; twCa.wcd = 0;
   GS.foes = [mkFoe(pos.c, pos.r)];
   fireOnce();
-  check('[T5a] c1 在炮塔车厢照常生效：开火后留 1 颗雷', GS.mines.length === 1,
+  check('[T5a] c1 在火炮车厢照常生效：开火后留 1 颗雷', GS.mines.length === 1,
     'mines=' + GS.mines.length);
   GS.playerAffixes = {};
 }
 
 // ============================================================================
-// [T6] 军工厂加成
+// [T6] 辅助建筑加成（v1.8u 十三令 §14.84：猛攻坊左右攻击 / 疾速坊上下攻速，
+//   原军工厂全局乘区退役）
 // ============================================================================
 {
   ENG.restart();
   ensureFree(6);
-  check('[T6] 无厂 = 0%', GS.wagonAtkBonus() === 0);
-  GS.buildings.push({ type: 'factory', c: 1, r: 1, flash: 0 });
-  check('[T6] 1 座 = +20%', Math.abs(GS.wagonAtkBonus() - 0.20) < 1e-9);
-  GS.buildings.push({ type: 'factory', c: 2, r: 1, flash: 0 });   // 相邻（曼哈顿 1）
-  check('[T6] 两座相邻 = 50%（各 20% + 相邻 10%）', Math.abs(GS.wagonAtkBonus() - 0.50) < 1e-9,
-    'bonus=' + GS.wagonAtkBonus());
-  GS.buildings = GS.buildings.filter(b => b.type !== 'factory');
-  GS.buildings.push({ type: 'factory', c: 1, r: 1, flash: 0 });
-  GS.buildings.push({ type: 'factory', c: 7, r: 9, flash: 0 });   // 远离
-  check('[T6] 两座远离 = 40%（无相邻加成）', Math.abs(GS.wagonAtkBonus() - 0.40) < 1e-9);
-  check('[T6] factoryShare（生效反馈）：远离厂标 +20%、相邻厂标 +30%',
-    Math.abs(GS.factoryShare({ type: 'factory', c: 1, r: 1 }) - 0.20) < 1e-9 &&
-    Math.abs(GS.factoryShare({ type: 'factory', c: 2, r: 1 }) - 0.30) < 1e-9,
-    'far=' + GS.factoryShare({ type: 'factory', c: 1, r: 1 }) +
-    ' adj=' + GS.factoryShare({ type: 'factory', c: 2, r: 1 }));
+  check('[T6] 无坊 = 攻 0% / 速 0%', GS.atkBoostAt(3, 5) === 0 && GS.aspBoostAt(3, 5) === 0);
+  // —— 猛攻坊：同行左右邻格（b.r===r && |b.c−c|===1）——
+  GS.buildings.push({ type: 'atk', c: 2, r: 5, flash: 0 });
+  check('[T6] 猛攻坊左邻 1 座 = +100%', Math.abs(GS.atkBoostAt(3, 5) - 1.0) < 1e-9,
+    'atk=' + GS.atkBoostAt(3, 5));
+  GS.buildings.push({ type: 'atk', c: 4, r: 5, flash: 0 });
+  check('[T6] 左右各 1 座 = +200%（求和非连乘）', Math.abs(GS.atkBoostAt(3, 5) - 2.0) < 1e-9,
+    'atk=' + GS.atkBoostAt(3, 5));
+  check('[T6] 猛攻坊斜角/隔格不算（斜角(3,6)=0、隔两格(0,5)=0）',
+    GS.atkBoostAt(3, 6) === 0 && GS.atkBoostAt(0, 5) === 0);
+  GS.buildings = GS.buildings.filter(b => b.type !== 'atk');
+  // —— 疾速坊：同列上下邻格（b.c===c && |b.r−r|===1）——
+  GS.buildings.push({ type: 'asp', c: 3, r: 4, flash: 0 });
+  check('[T6] 疾速坊上邻 1 座 = +100%', Math.abs(GS.aspBoostAt(3, 5) - 1.0) < 1e-9,
+    'asp=' + GS.aspBoostAt(3, 5));
+  GS.buildings.push({ type: 'asp', c: 3, r: 6, flash: 0 });
+  check('[T6] 上下各 1 座 = +200%（求和非连乘）', Math.abs(GS.aspBoostAt(3, 5) - 2.0) < 1e-9,
+    'asp=' + GS.aspBoostAt(3, 5));
+  check('[T6] 疾速坊同行不算（(4,5) = 0）', GS.aspBoostAt(4, 5) === 0);
+  GS.buildings = GS.buildings.filter(b => b.type !== 'asp');
 
-  // 战斗乘区：只留 1 座厂 ⇒ 箭塔一发 12 × 1.2 = 14.4
+  // 战斗乘区：坊贴**车厢固定格**（t.c/t.r，非行驶投影）——猛攻坊 ⇒ 伤害 ×2、
+  //   疾速坊 ⇒ 间隔 ÷2（+100% 攻速；三座即 ÷4 = −75%，大王锚点）
   const free = [];
   for (let r = 0; r < CFG.MAP_ROWS; r++) for (let c = 0; c < CFG.MAP_COLS; c++)
     if (GS.isFreeSpot(c, r)) free.push({ c, r });
-  GS.buildings = [GS.core, { type: 'factory', c: 1, r: 1, flash: 0 }];
   TOWERS.placeAt(free[0].c, free[0].r, 'arrow', 1);
-  const pos = wagonPos0();
-  const fW = mkFoe(pos.c, pos.r);
+  const ac = free[0].c + 1 < CFG.MAP_COLS ? free[0].c + 1 : free[0].c - 1;   // 邻格（越界取另一侧）
+  const ar = free[0].r + 1 < CFG.MAP_ROWS ? free[0].r + 1 : free[0].r - 1;
+  GS.buildings = [GS.core, { type: 'atk', c: ac, r: free[0].r, flash: 0 }];
+  const posA = wagonPos0();
+  const fW = mkFoe(posA.c, posA.r);
   GS.foes = [fW];
   fireOnce();
-  check('[T6] 战斗乘区：1 座军工厂 ⇒ 箭塔 12 → 14.4', Math.abs(fW.hp - 85.6) < 1e-6, 'hp=' + fW.hp);
+  check('[T6] 战斗乘区：猛攻坊邻格 ⇒ 机枪 4 → 8', Math.abs(fW.hp - 92) < 1e-6, 'hp=' + fW.hp);
+  check('[T6] 生效连线查询：坊对车厢固定格贡献 = +100%',
+    Math.abs(GS.atkBoostAt(free[0].c, free[0].r) - 1.0) < 1e-9);
+  GS.towers[0].wcd = 0;   // 重置冷却，疾速坊单发验证
+  GS.buildings = [GS.core, { type: 'asp', c: free[0].c, r: ar, flash: 0 }];
+  const posS = wagonPos0();
+  GS.foes = [mkFoe(posS.c, posS.r)];
+  fireOnce();
+  check('[T6] 战斗乘区：疾速坊邻格 ⇒ 机枪间隔 ÷2（+100% 攻速）',
+    Math.abs(GS.towers[0].wcd - TOWERS.TYPES.arrow.interval / 2) < 1e-9,
+    'wcd=' + GS.towers[0].wcd);
 }
 
 // ============================================================================
-// [T7] 经验系统
+// [T7] 经验系统（v1.8u 四拍板 §14.83：等级曲线 3500+300×(L-1)、25 级封顶；
+//   波次均分 killGain = WAVE_EXP[波]/怪数 —— FOES.wave=0 时 count(0)=24，仅查可用性）
 // ============================================================================
 {
   ENG.restart();
   ensureFree(6);
-  check('[T7] 初始：exp 0 / need 10 / 无待发牌',
-    GS.exp === 0 && EXP.need() === 10 && !GS.expPending);
-  EXP.add(9);
-  check('[T7] 9 杀不满（阈值 10）', GS.exp === 9 && !GS.expPending);
+  check('[T7] 初始：exp 0 / need 3500（L1→L2）/ 无待发牌',
+    GS.exp === 0 && EXP.need() === 3500 && !GS.expPending);
+  EXP.add(3499);
+  check('[T7] 攒 3499 不满（阈值 3500）', GS.exp === 3499 && !GS.expPending);
   EXP.add(1);
-  check('[T7] 10 杀 → 待发牌 1、已得 1、阈值升 20',
-    GS.expPending === 1 && GS.expTaken === 1 && EXP.need() === 20);
-  EXP.add(20);
-  check('[T7] 再攒 20 → 待发牌 2、阈值升 30',
-    GS.expPending === 2 && GS.expTaken === 2 && EXP.need() === 30);
+  check('[T7] 攒满 3500 → 待发牌 1、已得 1（升 L2）、阈值升 3800',
+    GS.expPending === 1 && GS.expTaken === 1 && EXP.need() === 3800);
+  EXP.add(3800);
+  check('[T7] 再攒 3800 → 待发牌 2、阈值升 4100',
+    GS.expPending === 2 && GS.expTaken === 2 && EXP.need() === 4100);
   check('[T7] consume 取走一次', EXP.consume() === true && GS.expPending === 1);
-  check('[T7] progress 口径', EXP.progress().need === 30);
+  check('[T7] progress 口径', EXP.progress().need === 4100);
+  check('[T7] killGain = 波总额/怪数（w0 表底 2500 / count(0)=24）',
+    Math.abs(EXP.killGain() - 2500 / FOES.CFG.count(0)) < 1e-9 &&
+    CFG.waveExp(1) === 2500 && CFG.waveExp(10) === 110500 && CFG.waveExp(11) === 110500);
+  { // 25 级封顶：expTaken=24（L25）→ need=Infinity 永不满、progress 满条
+    var savedTaken = GS.expTaken, savedExp = GS.exp, savedPend = GS.expPending;
+    GS.expTaken = 24; GS.exp = 99999;
+    check('[T7] 25 级封顶：need=Infinity、progress 满条、add 不再发牌',
+      EXP.need() === Infinity && EXP.progress().cur === 1 && EXP.progress().need === 1,
+      'need=' + EXP.need());
+    EXP.add(5000);
+    check('[T7] 封顶后 add 不再发牌（pending 不涨）', GS.expTaken === 24 && GS.expPending === 1);
+    GS.expTaken = savedTaken; GS.exp = savedExp; GS.expPending = savedPend;
+  }
 }
 
 // ============================================================================
@@ -372,6 +491,6 @@ function ensureFree(n) {
 }
 
 console.log('\n' + '='.repeat(64));
-console.log('塔型/词条/军工厂：' + pass + ' 通过 / ' + fail + ' 失败');
+console.log('塔型/词条/辅助建筑：' + pass + ' 通过 / ' + fail + ' 失败');
 console.log('='.repeat(64));
 if (fail) { console.log(failures.join('\n')); process.exit(1); }

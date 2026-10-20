@@ -91,6 +91,7 @@ GS.newGame = function () {
   //   ⚠️ 状态放 GS（加载序在前）⇒ 新局直接重置，不依赖 exp.js 是否已加载。
   GS.exp = 0; GS.expTaken = 0; GS.expPending = 0;
   GS.mines = []; GS.fireZones = []; GS.frostZones = [];   // 地雷 c1 / 烈焰 c4 / 霜痕 i3
+  GS.bullets = [];                                        // 车厢弹丸（v1.8n：机枪/火炮/闪电追踪弹）
   // v1.6.36 大王令"词条选中即全场生效，不需要装备"：**全局词条集合**（id → 1）。
   //   选中即 gainAffix 进这里，对场上所有对应塔型的车厢生效；不进牌库、不落塔。
   GS.playerAffixes = {};
@@ -2859,9 +2860,10 @@ GS.importMap = function (text) {
         var t = { type: 'tower', elem: ts[3], star: +ts[4], cd: 0, c: c, r: r, flash: 0,
                   affix: ts[5] || null, wcd: 0, streak: 0, lastT: null, chargeT: 0 };
         cell.b = t; towers.push(t);
-      } else if (ch === 'M' || ch === 'F' || ch === 'A') {
+      } else if (ch === 'M' || ch === 'F' || ch === 'A' || ch === 'S') {
         cell.t = 'blank';
-        var bt = (ch === 'M') ? 'mint' : (ch === 'F') ? 'gas' : 'factory';
+        // v1.8u 十三令（§14.84）：A=猛攻坊 / S=疾速坊；旧地图 'A'（军工厂）静默迁移为猛攻坊
+        var bt = (ch === 'M') ? 'mint' : (ch === 'F') ? 'gas' : (ch === 'A') ? 'atk' : 'asp';
         var bl = { type: bt, c: c, r: r, flash: 0 };
         cell.b = bl; buildings.push(bl);
       } else if (ch !== '#') {
@@ -2918,6 +2920,7 @@ GS.importMap = function (text) {
   GS.gameOver = false;
   GS.fx = []; GS.floats = []; GS.undoClean = null;
   GS.mines = []; GS.fireZones = []; GS.frostZones = [];
+  GS.bullets = [];                                        // 车厢弹丸（v1.8n）
   GS.nextSpawns = nextSpawns;
   FOES.wave = wave; FOES.active = false; FOES.pending = 0; FOES.spawnCd = 0;
   FOES.spawnQueue = []; FOES.waveSpawns = null; FOES.fadeSpawns = null;

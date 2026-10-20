@@ -56,7 +56,7 @@
     // 原始帧时长（真实秒）：镜头过渡用它，与游戏倍速无关。
     var rawDt = Math.min(0.05, (now - last) / 1000);
     // 倍速（v1.6.2）：真实帧时长 × CLOCK.timeScale，再钳 0.05 防大跳帧。
-    // 60fps 下 ×3 = 每帧 0.05 恰好达上限，三档全速有效；掉帧时游戏只慢不炸。
+    // 60fps 下 ×2 = 每帧 0.033（v1.8u 五令干掉 ×3 后两档全速有效）；掉帧时游戏只慢不炸。
     var dt = Math.min(0.05, rawDt * CLOCK.timeScale);
     last = now;
     // v1.6.38+39 作战拉远：夜晚 ⇒ battleLayout（真缩小 41→34 + 全画布居中）+ footer 隐藏；

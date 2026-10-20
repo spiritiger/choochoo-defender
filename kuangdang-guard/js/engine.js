@@ -177,8 +177,8 @@ ENG.undoShape = function () {
 //     "不可铺轨 / 不可再建"判定；
 //   · **不触发 recomputeRails**：落点必不在轨上（isFreeSpot 排了铁轨格），环形状不受影响
 //     —— 与塔放置同一口径（TOWERS.placeAt 也不重算）。
-//   · 效果是**查询式**、不是落位时写死：铸币所见 GS.goldValue()、加油站见 GS.gasCoverAt()，
-//     所以多座叠加/拆除都自动成立。
+//   · 效果是**查询式**、不是落位时写死：铸币所见 GS.goldValue(c,r)（v1.8u 带格，
+//     §14.82）、加油站见 GS.gasCoverAt()，所以多座叠加/拆除都自动成立。
 ENG.placeBuilding = function (c, r, bkey) {
   if (!CFG.inBounds(c, r)) return '越界';
   if (!GS.isFreeSpot(c, r)) return '只能建在空地（非轨/非金币/非爱心/无建筑）';
@@ -213,11 +213,20 @@ ENG.update = function (dt) {
   }
   // 粒子衰减（v1.6.43）：死亡碎屑/爆炸火光随模拟走 —— 暂停（GS.paused）时一起冻住
   if (typeof ENG.updateFx === 'function') ENG.updateFx(dt);
-  if (typeof CLOCK !== 'undefined') CLOCK.tick(dt);
+  // v1.8u 十五令（§14.86，大王令）：奖励时间/dusk 收尾 = **全局时间快进** ——
+  //   dt × (1+boost) 作用于"游戏推进"两端：CLOCK 相位/倒计时 + trainFlow 列车
+  //   推进/拾取/交付；**战斗链不快进**（TOWERS/FOES/弹丸/车头撞按常速，大王令
+  //   "全局游戏时间快进并不需要战斗相关的东西"）。快进用上一帧 boost（连续帧
+  //   下平滑等价，差 ~1 帧无感）；boost 爬升本身用常速 dt（防自我加速）。
+  //   trainSpeedMul 回归纯加油站口径（boost 不再进速度系数，避免与 dt 快进算两次）。
+  var dtFast = dt * (1 + (ENG.boost || 0));
+  if (typeof CLOCK !== 'undefined') CLOCK.tick(dtFast);
   // dusk 加速回站（v1.3.1，规格 §13.4 第 3 条）+ 奖励时间加速（2026-10-11 大王令）：
-  //   dusk 收尾且场上无怪 → boost 每秒 +0.9 封顶 2（速度系数 1+boost，最高 3×）；
-  //   奖励时间 → 同款加速、**上限提升 50%**（封顶 3，最高 4×）——"清得越快跑得越久"
-  //   的奖励窗口再添速度收益（跑圈收金币更快）；其余相位归零。
+  //   dusk 收尾且场上无怪 → boost 每秒 +0.9 封顶 3（dt 快进 4×，dtFast 承担）；
+  //   奖励时间 → 同款快进同款上限（封顶 3，最高 4× 快进）——"清得越快跑得越久"
+  //   的奖励窗口整体快进（跑圈收金币/倒计时同步加速，战斗链除外，§14.86）；
+  //   其余相位归零。v1.8u 十八令（§14.89）：收车段**不降档**——奖励时间转 dusk
+  //   时 boost 维持原速继续（reward→dusk 无缝衔接），overtime 纯收车同样爬到 3。
   // v1.6.91（规格 §14.59，大王两令定稿）：加特效闸 ENG.boostFx —— 只在"奖励时间"
   //   及"本波享受过奖励时间的后续收车段"为 true；overtime 纯收车（从未进奖励时间）
   //   无特效。波内痕迹 = ENG.rewardFx（reward=true 时置位，白天相位重置）。
@@ -226,7 +235,7 @@ ENG.update = function (dt) {
   if (typeof CLOCK !== 'undefined') {
     if (CLOCK.reward) { boostCap = 3; boostFx = true; ENG.rewardFx = true; }
     else if (CLOCK.isDusk() && (!GS.foes || GS.foes.length === 0)) {
-      boostCap = 2; boostFx = !!ENG.rewardFx;    // 奖励过来的收车：特效保留
+      boostCap = 3; boostFx = !!ENG.rewardFx;    // v1.8u 十八令 §14.89：收车不降档（同 3）
     }
     if (CLOCK.phase === 'day') ENG.rewardFx = false;   // 每波白天重置痕迹
   }
@@ -245,10 +254,12 @@ ENG.update = function (dt) {
   ENG.trainCombat(dt);
   // 车厢独立战斗（v1.4.1）：与车头同帧序（FOES 后），尸体下一帧清，无碍
   ENG.wagonCombat(dt);
+  // 车厢弹丸（v1.8n）：开火帧生成、追踪飞行、命中帧结算 —— 挂在 wagonCombat 后同帧首飞
+  ENG.bulletUpdate(dt);
   // v1.6 求解后台化：夜晚挂起的求解结果，回到建造阶段（白天）立即落位。
   //   落位后下一帧 parkAtStation 把车头对齐新站台 —— 夜晚绝不换环（防 train.index 越界）。
   if (window.SOLVER_ASYNC) SOLVER_ASYNC.tryFlush();
-  ENG.trainFlow(dt);
+  ENG.trainFlow(dtFast);   // v1.8u 十五令 §14.86：列车推进/拾取/交付随全局快进
 };
 
 // ============================================================================
@@ -284,14 +295,14 @@ ENG.TRAIN_COMBAT = {
   dmg: function (n) { return 8 + 4 * n; },
   RATE: 1.0,           // 塔式攻击间隔秒
   RANGE: 4.5,          // 塔式射程（格，欧氏距离）⚠️ v1.4.3d 大王令：2.5×1.5=3.75；v1.6.8 大王令 2026-10-09：3.75→4.5（车厢同步）
-  BUMP_RANGE: 1.2,     // 撞击判定半径（格，车头中心到怪中心）
+  BUMP_RANGE: 0.8,     // 撞击判定半径（格，车头中心到怪中心）—— v1.8k：1.2→0.8 贴合车头体量（车头占格面积≈2 ⇒ r=√(2/π)≈0.8）
   BUMP_GAP: 0.8,       // 同一只怪的撞击冷却秒
   // v1.6.63 大王令"降低车厢撞击伤害、大幅提升击退"：撞击从**杀伤手段**转型**控制手段**——
   //   伤害减半（塔式不变），换来击退（v1.6.63 时 2.5 格；**v1.6.75 大王令降为 1 格**
   //   ——位移太大看着假；0.3 格/s 下 1 格 = 3.3s 额外行程）。方向口径与 c2 一致："远离镇中心"。
   //   ▍v1.6.74 大王令"伤害再降低一点"：0.5 → 0.35（w1 6→4.2、w10 24→16.8）。
   //     击退 2.5 格不动（后又于 v1.6.75 降为 1）——撞击进一步纯控制化。
-  BUMP_DMG_MUL: 0.35,  // 撞击伤害系数：dmg×0.35（dmg=8+4×建筑数：2 座=5.6、10 座=16.8）
+  BUMP_DMG_MUL: 0.25,  // 撞击伤害系数：dmg×0.25（dmg=8+4×建筑数：2 座=4、10 座=12；v1.8k：0.35→0.25，撞击进一步纯控制化）
   BUMP_KNOCKBACK: 1,   // 撞击击退格数（v1.6.75 大王令：2.5 → 1——位移太大，1 格与 c2 同距）
   BUMP_HITSTOP: 0.09   // v1.6.74 撞击顿帧（秒，≈5~6 帧）；▍v1.6.80 口径改为**怪定身**：
                        //   逐怪挂 fo.stun——只顿被撞的敌方单位，游戏/列车照常（§14.56）
@@ -328,7 +339,10 @@ ENG.trainCombat = function (dt) {
     //   ▍v1.6.80 大王令：顿的是**敌方单位**不是游戏（§14.56）——逐怪挂 fo.stun
     //     （0.09s 停走停打），hitStop 全场静止机制退役；_knockback 自动读 f.stun
     //     把滑动演出延迟到顿完后接力。
+    var preBump = fo.hp;
     fo.hp -= dmg * ENG.TRAIN_COMBAT.BUMP_DMG_MUL;
+    ENG._snapOverkill(fo, preBump, 'train');   // v1.8p/q：撞击击穿快照（来源车头）
+    ENG.dmgFloat(fo, dmg * ENG.TRAIN_COMBAT.BUMP_DMG_MUL, preBump > 0 && fo.hp <= 0);   // v1.8s：撞击伤害/击杀飘字
     fo.bumpCd = ENG.TRAIN_COMBAT.BUMP_GAP;
     fo.hitFlash = 0.3;
     fo.stun = ENG.TRAIN_COMBAT.BUMP_HITSTOP;
@@ -349,7 +363,10 @@ ENG.trainCombat = function (dt) {
     if (dCore < bestD) { bestD = dCore; best = fe; }
   }
   if (!best) return;
+  var preShot = best.hp;
   best.hp -= dmg;
+  ENG._snapOverkill(best, preShot, 'train');   // v1.8p/q：车头炮击快照（来源车头）
+  ENG.dmgFloat(best, dmg, preShot > 0 && best.hp <= 0);   // v1.8s：车头炮击伤害/击杀飘字
   best.hitFlash = 0.25;
   ENG.trainAtkCd = ENG.TRAIN_COMBAT.RATE;
   // 攻击连线：浅紫（车斗同色系），rgb 模板给 renderer 拼淡出 alpha
@@ -359,14 +376,16 @@ ENG.trainCombat = function (dt) {
 };
 
 // ============================================================================
-// 车厢战斗（v1.4.1，规格 §14.2；v1.6.34 塔型化；**v1.6.36 词条全局化**）
+// 车厢战斗（v1.4.1，规格 §14.2；v1.6.34 塔型化；**v1.8j 车厢改版**）
 //   —— 大王拍板：车厢是**独立作战单位**。
 //   · 车厢 = GS.towers 的镜像投影：每座塔派生一节同塔型同星车厢
 //     （塔合成升星 → 车厢跟着变强；塔移除 → 车厢消失，无需独立维护列表）；
 //   · 第 i 节位置 = 车头弧长位置后退 (i+1)×GAP 格，railPath 环形取模；
-//   · 每节独立炮位：自己射程内挑离镇中心最近的怪；伤害 / 间隔 / 射程 / 目标数
-//     **按塔型取**（`TOWERS.TYPES`，方案 A 等 DPS 包络），基础伤害 = `12×star` 固定基数（v1.6.79，§14.55）；
-//   · 塔型基础特效：炮=灼烧 / 魔法=中毒 / 寒冰=减速 / 箭=无；
+//   · 每节独立炮位：伤害 / 间隔 / 射程 / 目标数**按塔型取**（`TOWERS.TYPES`），
+//     基础伤害 = `12×star` 固定基数（v1.6.79，§14.55）；
+//     ▍v1.8j 四型：机枪=快速单体物理 / 火炮=慢速溅射物理（命中点半径 splash 圆）/
+//       冰环=近距离以自身为圆心的环绕 AOE 魔法（+减速） / 闪电=慢速单体魔法；
+//   · 塔型基础特效：只剩冰环=减速（i 系词条依赖）；灼烧随 v1.8k、中毒随 v1.8j 退役；
 //   · ▍词条（v1.6.36 大王令"选中即全场生效"；▍v1.6.78 A 案收口为
 //     **按塔型过滤**：`ENG.affixOf(t, id)` = hasAffix 且词条归属塔型 === t.elem）
 //     —— 同塔型多条词条**并存**（各次三选一独立获得），对**所有**对应塔型的车厢生效；
@@ -383,21 +402,27 @@ ENG.WAGON = {
   // ▍v1.6.79 大王令（规格 §14.55）：车厢**不再随波次成长**、也不随建筑数——
   //   固定基数 12（=原 wave1 基准 8+4×1，开局手感不变；第二参数 wave 废弃）。
   //   成长只来自：①车厢数量（每节独立开火，数量×输出）、②星级 ×star、
-  //   ③词条/军工乘区（i5/c5/军工厂，wagonCombat 后段照旧相乘）。
+  //   ③词条/猛攻坊乘区（i5/c5/猛攻坊，wagonCombat 后段照旧相乘）。
   //   车头公式（v1.6.77 8+4×摆放建筑数）不动——车头看建设、车厢看数量×星级×词条。
 };
 
 // 词条数值常量（调优只动这里）
+//   ▍v1.8m 词条调平（大王令：每条伤害/乘区词条 ≈ +60% 增幅，乘法叠加 = 指数成长；
+//     纯控制 7 条 a2/c1/c2/m4/i1/i2/i3 豁免不动；a5/c4/m3 现值已达线不动）：
+//     a3 0.15→0.20 · a4 0.3→0.6 · c3 2.3→1.65 · c5 CHARGE 3→6（火炮 3s 间隔下
+//     每 3 发蓄 1 发，+79% 微超）· m1 60/40→40/20 · m2 0.10→0.12 ·
+//     m5 0.08/0.4→0.075/0.375（间隔 ×0.625）· i4 射程 ×1.3→+0.6 格 · i5 1.5→1.6
 ENG.AFFIX = {
-  V3_PCT: 0.15, V3_MAX: 3, V3_TTL: 3,      // a3 撕裂标记：+15%/层，≤3 层，3s
-  V5_PCT: 0.10, V5_MAX: 5,                 // m2 融穿：+10%/层，≤5 层（永久，用 V5_TTL 表示"很久"）
-  V5_TTL: 999,
-  MINE_TTL: 8, MINE_SLOW: 1.5, MINE_MUL: 0.3,   // c1 布雷
-  FIRE_TTL: 3, FIRE_DPS: 0.3,              // c4 烈焰燃油（每秒 0.3×dmg）
-  FROST_TTL: 4, FROST_SLOW: 0.5,           // i3 霜痕（覆盖 0.5s，乘子见 foes 移动）
-  A5_EVERY: 8, A5_MUL: 0.5,                // a5 箭雨
-  M5_STEP: 0.08, M5_MAX: 0.4,              // m5 超频：每击 −8%，最多 −40%
-  C5_CHARGE: 3, C5_MUL: 1.5                // c5 蓄势：静默 3s → 半径/伤害 ×1.5
+  V3_PCT: 0.20, V3_MAX: 3, V3_TTL: 3,      // a3 撕裂标记：+20%/层，≤3 层，3s（满层 +60%）
+  V5_PCT: 0.30, V5_MAX: 2,                 // m2 融穿：+30%/层，≤2 层（永久到该怪死亡；满层 +60%）
+                                           //   v1.8r：5×12%→2×30% —— 满层等值，但闪电 2.4s/击
+                                           //   叠满 12s 太慢（怪射程内只挨 3-5 击，吃不满），改 2 击 4.8s 叠满
+  MINE_TTL: 8, MINE_SLOW: 1.5, MINE_MUL: 0.3,   // c1 布雷（控制类，v1.8m 豁免）
+  FIRE_TTL: 3, FIRE_DPS: 0.3,              // c4 烈焰燃油（每秒 0.3×dmg；v1.8m 中位 ~+60%，不动）
+  FROST_TTL: 4, FROST_SLOW: 0.5,           // i3 霜痕（覆盖 0.5s，乘子见 foes 移动；控制类豁免）
+  A5_EVERY: 8, A5_MUL: 0.5,                // a5 箭雨（v1.8m：10 怪口径 +62%，不动）
+  M5_STEP: 0.075, M5_MAX: 0.375,           // m5 超频：每击 −7.5%，最多 −37.5%（间隔 ×0.625 ⇒ DPS +60%）
+  C5_CHARGE: 6, C5_MUL: 1.5                // c5 蓄势：静默 6s → 半径/伤害 ×1.5（火炮 3s 一发 ⇒ 每 3 发蓄 1 发）
 };
 
 // ---- 圆角轨道路径（v1.8f 平滑转弯，大王令"转弯不平滑"）-------------------------
@@ -486,7 +511,7 @@ ENG.wagonCombat = function (dt) {
     var T = (typeof TOWERS !== 'undefined') ? TOWERS.TYPES[t.elem] : null;
     var range = (T ? T.range : ENG.WAGON.RANGE);
     var interval = (T ? T.interval : ENG.WAGON.RATE);
-    if (H('i4')) range *= 1.3;                           // 极寒禁锢：射程 +30%
+    if (H('i4')) range += 0.6;                           // 极寒禁锢：射程 +0.6 格（2.2→2.8，v1.8m）
     if (t.wcd > 0) { t.wcd -= dt; t.chargeT = (t.chargeT || 0) + dt; continue; }
     var pos = ENG.wagonPos(i);
     if (!pos) continue;
@@ -503,51 +528,60 @@ ENG.wagonCombat = function (dt) {
     if (!best) { t.chargeT = (t.chargeT || 0) + dt; continue; }   // 没目标：蓄势累计（c5）
 
     // v1.6.79（§14.55）：车厢伤害 = 12×star 固定基数（不随波次/建筑数），塔型倍率/
-    //   军工厂/词条乘区在后段照旧相乘。wave 实参废弃（变量保留喂 affixOnHit 签名）。
+    //   猛攻坊/词条乘区在后段照旧相乘。wave 实参废弃（变量保留喂 affixOnHit 签名）。
     var dmg = ENG.WAGON.dmg(t.star) * (T ? T.dmgMul : 1);
-    dmg *= (1 + (GS.wagonAtkBonus ? GS.wagonAtkBonus() : 0));   // 军工厂加成（v1.6.35，全局乘区）
-    if (H('i5') && (best.slow > 0 || best.freeze > 0)) dmg *= 1.5;        // 冷血追击
+    // 猛攻坊加成（v1.8u 十三令，§14.84）：同行**左右邻格**每座 +100%，求和非连乘，
+    //   查询式乘区（用车厢固定格 t.c/t.r 判定，非移动投影；原军工厂全局乘区退役）。
+    dmg *= (1 + (GS.atkBoostAt ? GS.atkBoostAt(t.c, t.r) : 0));
+    if (H('i5') && (best.slow > 0 || best.freeze > 0)) dmg *= 1.6;        // 冷血追击（v1.8m：1.5→1.6）
     var boosted = false;
     if (H('c5') && (t.chargeT || 0) >= ENG.AFFIX.C5_CHARGE) { dmg *= ENG.AFFIX.C5_MUL; boosted = true; }
 
-    // ---- 命中集合：单体 / AOE（cannon）/ 散射（a1）/ 弹射（m1）----
-    var hits = [{ f: best, mul: 1 }];
-    if (T && T.targets === 'aoe') {
-      var radius = H('c3') ? 2 : 1;                      // 弹头分裂：5×5
-      if (boosted) radius = Math.max(radius, Math.ceil(radius * 1.5));
+    // ---- 命中集合（v1.8n 弹丸化）：冰环即时结算（无弹）；火炮/机枪/闪电改
+    //   "开火帧生成追踪弹 → 命中帧结算"——伤害/乘区仍在开火帧算好随弹携带，
+    //   易伤/特效（affixOnHit）按命中帧怪状态判定。散射 a1 / 弹射 m1 = 额外目标各一颗弹。
+    var hits, shots;   // hits = 冰环即时名单；shots = 弹丸名单 [{ f, mul }]
+    if (T && T.targets === 'ring') {
+      // 冰环（v1.8j）：以**车厢自身**为圆心、射程为半径，环内全体吃范围魔法伤害。
+      //   能进这段 = 射程内必有怪（上面 best 已按同一 range 筛过），hits 非空。
       hits = [];
-      for (var k = 0; k < foes.length; k++) {
-        var fo2 = foes[k];
-        if (Math.max(Math.abs(fo2.c - best.c), Math.abs(fo2.r - best.r)) <= radius) hits.push({ f: fo2, mul: 1 });
+      for (var kr = 0; kr < foes.length; kr++) {
+        var fr2 = foes[kr];
+        var rdx = fr2.c - pos.c, rdy = fr2.r - pos.r;
+        if (rdx * rdx + rdy * rdy <= range * range) hits.push({ f: fr2, mul: 1 });
       }
-      // v1.6.43 爆炸视觉（E）：命中格中心炸一圈，半径跟实际 AOE 范围走
-      //   （3×3→1.5 格、c3 5×5→2.5 格、c5 蓄势再放大 ⇒ "炸得更大"看得见）
-      if (typeof ENG.explosionFx === 'function') ENG.explosionFx(best.c, best.r, radius + 0.5);
+      if (typeof ENG.iceRingFx === 'function') ENG.iceRingFx(pos.c, pos.r, range);
+      ENG.applyHits(t, T, hits, dmg, wave);
+    } else if (T && T.targets === 'aoe') {
+      // 火炮（v1.8j 收敛）：追踪炮弹飞向目标，命中帧以命中点为圆心溅射——
+      //   半径判定（c3 → 1.65 / c5 ×1.5）随命中帧走（见 ENG.bulletHit），视觉爆炸圈同步。
+      shots = [{ f: best, mul: 1 }];
     } else {
-      if (H('a1')) {                                     // 散射箭：最近的另 2 只（60%）
+      // 机枪 / 闪电：追踪弹；a1 散射 = 另 2 只各 30%、m1 弹射 = 另 2 只 40%/20%（v1.8m）
+      shots = [{ f: best, mul: 1 }];
+      if (H('a1')) {
         var o1 = ENG._nearestFoes(foes, best, 2);
-        for (var q1 = 0; q1 < o1.length; q1++) hits.push({ f: o1[q1], mul: 0.6 });
+        for (var q1 = 0; q1 < o1.length; q1++) shots.push({ f: o1[q1], mul: 0.3 });
       }
-      if (H('m1')) {                                     // 电弧弹射：另 2 只（60% / 40%）
+      if (H('m1')) {
         var o2 = ENG._nearestFoes(foes, best, 2);
-        if (o2[0]) hits.push({ f: o2[0], mul: 0.6 });
-        if (o2[1]) hits.push({ f: o2[1], mul: 0.4 });
+        if (o2[0]) shots.push({ f: o2[0], mul: 0.4 });
+        if (o2[1]) shots.push({ f: o2[1], mul: 0.2 });
       }
     }
+    if (shots) for (var sb = 0; sb < shots.length; sb++)
+      ENG.spawnBullet(t, T, pos, shots[sb].f, dmg, shots[sb].mul, boosted, wave);
 
-    // ---- 结算 ----
-    for (var h = 0; h < hits.length; h++) {
-      var hf = hits[h].f, hd = dmg * hits[h].mul;
-      if (hf.vuln > 0) hd *= (1 + (hf.vulnPct || ENG.AFFIX.V3_PCT) * hf.vuln);   // 易伤
-      hf.hp -= hd;
-      hf.hitFlash = 0.25;
-      ENG.affixOnHit(t, hf, hd, dmg, T, wave);
-    }
-    // a5 箭雨：每第 8 次攻击，对全场降一次（0.5×dmg）
+    // a5 箭雨：每第 8 次攻击，对全场降一次（0.5×dmg）——开火帧结算（视觉即时，无弹）
     if (H('a5')) {
       t.a5n = (t.a5n || 0) + 1;
       if (t.a5n % ENG.AFFIX.A5_EVERY === 0) {
-        for (var r5 = 0; r5 < foes.length; r5++) { foes[r5].hp -= dmg * ENG.AFFIX.A5_MUL; foes[r5].hitFlash = 0.2; }
+        for (var r5 = 0; r5 < foes.length; r5++) {
+          var preR5 = foes[r5].hp;   // v1.8p：箭雨是整段直伤，击穿同样快照过量
+          foes[r5].hp -= dmg * ENG.AFFIX.A5_MUL;
+          ENG._snapOverkill(foes[r5], preR5, t.elem);   // 来源=机枪车厢（a5 是机枪词条）
+          foes[r5].hitFlash = 0.2;
+        }
       }
     }
     // ---- 冷却（m5 超频：连击同目标加速）----
@@ -558,12 +592,12 @@ ENG.wagonCombat = function (dt) {
       t.lastT = best;
       iv *= (1 - (t.m5s || 0));
     }
+    // 疾速坊攻速（v1.8u 十三令，§14.84）：同列**上下邻格**每座 +100%，间隔 ÷(1+加成)
+    //   （+300% ⇒ ÷4 = 间隔 −75%，大王锚点）；在 m5 之后相除，两乘区独立可交换。
+    if (GS.aspBoostAt) iv /= (1 + GS.aspBoostAt(t.c, t.r));
     t.wcd = iv;
     t.chargeT = 0;
-    if (typeof TOWERS !== 'undefined') {
-      TOWERS.beams.push({ ac: pos.c, ar: pos.r, bc: best.c, br: best.r,
-                          t: 0.12, rgb: ENG.wagonRgb(T ? T.id : t.elem) });
-    }
+    // v1.8n 弹丸化：车厢不再画瞬时连线（TOWERS.beams 只剩车头 trainCombat 用）
   }
 };
 
@@ -582,6 +616,85 @@ ENG._nearestFoes = function (foes, ref, n) {
   return out;
 };
 
+// ============================================================================
+// 车厢弹丸（v1.8n，§15 待办立项"车厢弹丸化表现"）：
+//   · 机枪 / 火炮 / 闪电改**真飞行弹丸**——开火帧在 wagonCombat 生成（伤害/军工/
+//     词条乘区当帧算好随弹携带），追踪目标怪飞，命中帧才结算掉血；
+//   · 冰环不走弹（开火帧即时结算 + iceRingFx 扩散环，原样）；
+//   · 追踪口径：每帧朝目标怪**当前位置**飞（被击退/磁拉也会跟过去），
+//     步进 ≥ 剩距 or 距离 ≤ HIT_R 判命中；
+//   · 目标死亡：对象被清尸后字段仍在（引用不空）⇒ 弹丸飞到最后位置——
+//     火炮照样炸圈（溅射活怪）、单体/散射/弹射弹消散不结算；
+//   · TOWERS.beams 车厢侧退役（只剩车头 trainCombat 的连线）。
+ENG.BULLET = {
+  SPEED: { arrow: 12, cannon: 5, magic: 8 },   // 格/s：机枪快弹 / 火炮慢炮弹 / 闪电中速
+  HIT_R: 0.3                                   // 命中阈值（格）
+};
+ENG.spawnBullet = function (t, T, from, target, dmg, mul, boosted, wave) {
+  if (!GS.bullets) GS.bullets = [];
+  GS.bullets.push({ kind: t.elem, c: from.c, r: from.r, target: target,
+                    t: t, T: T, dmg: dmg, mul: mul, boosted: boosted, wave: wave });
+};
+ENG.bulletUpdate = function (dt) {
+  var bs = GS.bullets; if (!bs || !bs.length) return;
+  for (var i = bs.length - 1; i >= 0; i--) {
+    var b = bs[i], tg = b.target;
+    if (!tg) { bs.splice(i, 1); continue; }                  // 无目标（异常）直接消
+    var dx = tg.c - b.c, dy = tg.r - b.r, d = Math.sqrt(dx * dx + dy * dy) || 0;
+    var sp = ENG.BULLET.SPEED[b.kind]; if (sp === undefined) sp = 6;   // 未知塔型兜底（T=null 哨兵/老存档）
+    var step = sp * dt;
+    if (d <= Math.max(step, ENG.BULLET.HIT_R)) { ENG.bulletHit(b); bs.splice(i, 1); continue; }
+    b.c += dx / d * step; b.r += dy / d * step;
+  }
+};
+// 命中帧结算：火炮以命中点为圆心溅射（c3/c5 半径在此判定）+ 爆炸圈；其余单体（目标已死则消散）。
+//   易伤/词条钩子走 ENG.applyHits（与冰环共用一份结算，别处别再写）。
+ENG.bulletHit = function (b) {
+  var t = b.t, T = b.T, tg = b.target, hx = tg.c, hy = tg.r;
+  if (T && T.targets === 'aoe') {
+    var H = function (id) { return ENG.affixOf(t, id); };
+    var radius = H('c3') ? 1.65 : (T.splash || 1.3);
+    if (b.boosted) radius *= 1.5;
+    var hits = [];
+    for (var k = 0; k < GS.foes.length; k++) {
+      var fo = GS.foes[k], sdx = fo.c - hx, sdy = fo.r - hy;
+      if (sdx * sdx + sdy * sdy <= radius * radius) hits.push({ f: fo, mul: 1 });
+    }
+    if (typeof ENG.explosionFx === 'function') ENG.explosionFx(hx, hy, radius + 0.3);
+    ENG.applyHits(t, T, hits, b.dmg, b.wave);
+  } else {
+    if (tg.hp <= 0) return;                                  // 单体：目标已死，弹丸消散
+    ENG.applyHits(t, T, [{ f: tg, mul: b.mul }], b.dmg, b.wave);
+  }
+};
+// 过量击杀快照（v1.8p m3，规格 §14.77）：整段直接伤害把怪打到 hp≤0 时，记录击穿
+//   富余量（= 本段伤害超出剩余血的部分）到 f.overkill，供 onFoeDeath 算动态溢出。
+//   只在**首次击穿**时记——hp 已 ≤0 的补刀不再刷新（防把补刀全额误算成过量）。
+//   不记的口径：DoT（c4 火区每帧微量）、旁路伤（a4 影锁传递、m3 溢出本身、箭雨以外
+//   的词条直伤）——只有"整段直接命中"才有过量。
+ENG._snapOverkill = function (f, preHp, src) {
+  if (preHp > 0 && f.hp <= 0) { f.overkill = -f.hp; f.overkillSrc = src; }
+};
+// 结算唯一入口：易伤加成 → 扣血 → hitFlash → affixOnHit（v1.8n 从 wagonCombat 抽出，
+//   冰环（开火帧）与弹丸（命中帧）共用）。
+ENG.applyHits = function (t, T, hits, dmg, wave) {
+  for (var h = 0; h < hits.length; h++) {
+    var hf = hits[h].f, hd = dmg * hits[h].mul;
+    // 易伤双槽（v1.8o 拆分）+ 严格收口（v1.8q，大王总纲"词条只对对应车厢生效"）：
+    //   vulnA（a3 机枪叠）只对机枪来源伤害生效、vulnM（m2 闪电叠）只对闪电来源伤害生效
+    //   ——旧版任何车厢打都吃（闪电叠融穿机枪受益），辅助定位退役、改纯自益。
+    //   车头撞击/塔式不走 applyHits（自带扣血），天然不吃。
+    if (t.elem === 'arrow' && hf.vulnA) hd *= 1 + hf.vulnA * ENG.AFFIX.V3_PCT;
+    if (t.elem === 'magic' && hf.vulnM) hd *= 1 + hf.vulnM * ENG.AFFIX.V5_PCT;
+    var preHp = hf.hp;
+    hf.hp -= hd;
+    ENG._snapOverkill(hf, preHp, t.elem);   // v1.8p/q：击穿快照过量伤 + 记来源车厢塔型
+    hf.hitFlash = 0.25;
+    ENG.dmgFloat(hf, hd, preHp > 0 && hf.hp <= 0);   // v1.8s：伤害/击杀飘字（旁路伤不飘）
+    ENG.affixOnHit(t, hf, hd, dmg, T, wave);
+  }
+};
+
 // 命中钩子：塔型基础特效 + 已获得词条的"命中时"效果。**唯一入口**，别在别处再写一份。
 //   ▍v1.6.36：词条全局化 ⇒ 逐条 `GS.hasAffix` 查（同塔型多条词条并存，各自独立判定）。
 //   ▍v1.6.78 A 案：查询改走 `ENG.affixOf(t, ·)` —— 按塔型过滤（规格 §14.54）。
@@ -591,28 +704,26 @@ ENG.affixOnHit = function (t, f, hd, dmg, T, wave) {
   var H = function (id) { return ENG.affixOf(t, id); },
       A = ENG.AFFIX;
 
-  // —— 塔型基础特效（箭=无 / 炮=灼烧 / 魔法=中毒 / 寒冰=减速）——
-  if (T) {
-    if (T.effect === 'burn') f.burn = 2;
-    else if (T.effect === 'poison') f.poison = 4;
-    else if (T.effect === 'slow') f.slow = 1.5 + (H('i4') ? 0.5 : 0);
-  }
+  // —— 塔型基础特效（只剩冰环=减速；火炮灼烧随 v1.8k、闪电中毒随 v1.8j 退役）——
+  if (T && T.effect === 'slow') f.slow = 1.5 + (H('i4') ? 0.5 : 0);
   if (H('a2') && Math.random() < 0.15) f.slowHard = 1.5;                        // 钉刺
   if (H('a3')) {                                                                // 撕裂标记
-    f.vuln = Math.min(A.V3_MAX, (f.vuln || 0) + 1); f.vulnPct = A.V3_PCT; f.vulnT = A.V3_TTL;
+    // v1.8o 拆双槽：a3 写 vulnA（≤3 层，vulnAT 3s 衰减），不再与 m2 的 vulnM 互踩
+    f.vulnA = Math.min(A.V3_MAX, (f.vulnA || 0) + 1); f.vulnAT = A.V3_TTL;
   }
   if (H('a4')) {                                                                // 影锁共鸣
     var near = ENG._nearestFoes(GS.foes, f, 1)[0];
     if (near) { f.lock = near; f.lockT = 3; }
-    if (f.lock && f.lockT > 0 && hd > 0) f.lock.hp -= hd * 0.3;
+    if (f.lock && f.lockT > 0 && hd > 0) f.lock.hp -= hd * 0.6;   // v1.8m：传递 30%→60%（+60% 线）
   }
   if (H('c1')) GS.mines.push({ c: Math.round(f.c), r: Math.round(f.r), t: A.MINE_TTL });   // 哑弹布雷
   if (H('c2')) ENG._knockback(f);                                               // 冲击震退
   if (H('c4')) GS.fireZones.push({ c: Math.round(f.c), r: Math.round(f.r), t: A.FIRE_TTL, dps: A.FIRE_DPS * dmg });  // 烈焰燃油
   if (H('m2')) {                                                                // 融穿
-    f.vuln = Math.min(A.V5_MAX, (f.vuln || 0) + 1); f.vulnPct = A.V5_PCT; f.vulnT = A.V5_TTL;
+    // v1.8o 拆双槽：m2 写 vulnM（≤2 层，永久；v1.8r 5×12%→2×30% 提速爬升），不再与 a3 的 vulnA 互踩
+    f.vulnM = Math.min(A.V5_MAX, (f.vulnM || 0) + 1);
   }
-  if (H('m4')) ENG._pullToCore(f);                                              // 极化磁场
+  if (H('m4')) ENG._pullToFoe(f);                                               // 极化磁场（v1.8o：聚怪，见 _pullToFoe）
   if (H('i1') && f.slow > 0 && Math.random() < 0.2) f.freeze = 1.5;             // 深层冻结
   if (H('i2') && f.slow > 0) ENG._slowAround(f, 1.5);                           // 寒流破裂
   if (H('i3')) GS.frostZones.push({ c: Math.round(f.c), r: Math.round(f.r), t: A.FROST_TTL });  // 霜痕路径
@@ -643,10 +754,13 @@ ENG.bumpFx = function (fo) {
                  r0: lay.cell * 0.35, r1: lay.cell * 1.2, life: 0, ttl: 0.3,
                  color: '255,245,230', lw: 2.5 }]);
 };
-// 朝镇中心拉 1 格 —— m4
-ENG._pullToCore = function (f) {
-  var core = GS.core;
-  var dx = core.c - f.c, dy = core.r - f.r;
+// 朝**最近的其他怪**拉 1 格 —— m4（v1.8o 大王令改口径：原"拉向镇中心"等于帮怪赶路
+//   1 格/击，聚怪收益要配 AOE 才兑现；改为纯聚怪——被击怪向怪群靠拢，不改变其到镇中心的进度）。
+//   场上没有别的怪时无事可聚（早退）。坐标夹在地图内，与 _knockback 同口径。
+ENG._pullToFoe = function (f) {
+  var near = ENG._nearestFoes(GS.foes, f, 1)[0];
+  if (!near) return;
+  var dx = near.c - f.c, dy = near.r - f.r;
   var len = Math.sqrt(dx * dx + dy * dy) || 1;
   f.c = Math.max(0, Math.min(CFG.MAP_COLS - 1, f.c + dx / len));
   f.r = Math.max(0, Math.min(CFG.MAP_ROWS - 1, f.r + dy / len));
@@ -738,7 +852,7 @@ ENG.deathFx = function (f) {
   ENG.spawnFx(list);
 };
 // 爆炸（E）：橙色火光 + 黄亮心 + 冲击环 + 6 粒火星。c/r = 命中格（浮点），
-//   rad = 格半径（cannon 3×3 → 1.5、c3 5×5 → 2.5，c5 蓄势再放大 ⇒ 炸得大圈也大）。
+//   rad = 格半径（cannon 溅射 v1.8j：splash 1.3 → 1.6、c3 → 2.6，c5 蓄势再放大 ⇒ 炸得大圈也大）。
 ENG.explosionFx = function (c, r, rad) {
   var lay = ENG.fxLay(); if (!lay) return;
   var x = CFG.ccx(lay, c), y = CFG.ccy(lay, r), R = rad * lay.cell;
@@ -754,18 +868,42 @@ ENG.explosionFx = function (c, r, rad) {
   }
   ENG.spawnFx(list);
 };
+// 冰环（v1.8j）：冰车厢开火时以自身为圆心炸开一圈淡蓝冰环 + 4 粒冰晶。
+//   c/r = 车厢当前格（浮点），rad = 实际伤害半径（= 塔型射程，格）——环到哪伤到哪。
+ENG.iceRingFx = function (c, r, rad) {
+  var lay = ENG.fxLay(); if (!lay) return;
+  var x = CFG.ccx(lay, c), y = CFG.ccy(lay, r), R = rad * lay.cell;
+  var list = [
+    { kind: 'puff', x: x, y: y, r0: R * 0.2, r1: R * 0.55, life: 0, ttl: 0.2, color: '190,235,255' },
+    { kind: 'ring', x: x, y: y, r0: R * 0.35, r1: R * 1.05, life: 0, ttl: 0.35, color: '110,198,255', lw: 3 }
+  ];
+  for (var i = 0; i < 4; i++) {
+    var a = (i / 4) * 6.283 + 0.8, sp = lay.cell * 2.5;
+    list.push({ kind: 'spark', x: x, y: y, vx: Math.cos(a) * sp, vy: Math.sin(a) * sp,
+                life: 0, ttl: 0.3, size: lay.cell * 0.08, color: '160,220,255' });
+  }
+  ENG.spawnFx(list);
+};
 
-// 怪死亡钩子（foes.js 清尸时调）—— m3 能量溢出：击杀时 3×3 内其他怪吃 0.5×dmg
-//   ▍v1.6.36：词条全局化 ⇒ 查 `GS.hasAffix('m3')`（不再看某座塔装没装）
-//   ▍v1.6.78 A 案特例：m3 **维持全局查询**——本钩子无归属塔（毒/烧等 DOT 击杀
-//     来源不可得，要过滤需全伤害链记 source，工程量大），规格 §14.54 待办标注。
+// 怪死亡钩子（foes.js 清尸时调）—— m3 能量溢出：击杀时 3×3 内其他怪吃 0.5×过量伤
+//   ▍v1.6.78 A 案特例 → **v1.8q 销账**：旧无归属塔（DoT 击杀来源不可得）维持全局查询，
+//     规格 §14.54 待办标注；v1.8p 过量快照落地后来源可记（overkillSrc），据大王总纲
+//     "词条只对对应车厢生效"收口为**只认闪电车厢来源的击穿**（§14.78）。
 //   ▍v1.6.43：死亡特效（B）挂在最前 —— 必须在 m3 早退之前，否则无 m3 时没特效
 ENG.onFoeDeath = function (f, wave) {
   if (typeof ENG.deathFx === 'function') ENG.deathFx(f);
   if (!(typeof GS.hasAffix === 'function' && GS.hasAffix('m3'))) return;
-  var dmg = 0.5 * ENG.WAGON.dmg(1) * 2;   // v1.6.79：12 恒定（0.5×12×2；不再随波次，§14.55）
+  // v1.8q（大王总纲"词条只对对应车厢生效"，规格 §14.78）：**只有闪电车厢来源的击穿**
+  //   才爆溢出（overkillSrc 由 _snapOverkill 在击穿帧记下伤害来源）——车头撞击/炮击、
+  //   机枪箭雨、其他车厢的过量不再触发。§14.54 遗留待办（m3 全局查询未收口）就此销账。
+  // v1.8p：溢出 = 0.5 × **过量伤害**（击杀这一击打穿的富余量）——固定 12 退役，回归
+  //   DIY 原描述"过量击杀伤害"。无快照 = 0 ⇒ 不爆：DoT 烧死（c4 火区）、a4 传递杀、
+  //   m3 溢出连锁杀（防无限连锁）都不再触发。
+  if (f.overkillSrc !== 'magic') return;
+  var dmg = 0.5 * (f.overkill || 0);
+  if (dmg <= 0) return;
   var foes = GS.foes;
-  for (i = 0; i < foes.length; i++) {
+  for (var i = 0; i < foes.length; i++) {
     var g = foes[i];
     if (g === f) continue;
     if (Math.max(Math.abs(g.c - f.c), Math.abs(g.r - f.r)) <= 1) { g.hp -= dmg; g.hitFlash = 0.2; }
@@ -815,17 +953,23 @@ ENG.advanceTrain = function (dt) {
   }
 };
 
-// 列车速度系数（v1.6.23 大王拍板）：
-//   · boost 加速中（清怪后的奖励时间 / dusk 收尾回站，见 ENG.update）→ **加油站不生效**，
-//     系数 = 1 + boost（沿革 v1.3.1/v2026-10-11）；
-//   · 平时 → 系数 = 1 + 覆盖**车头所在格**的加油站座数（求和、非连乘：两座 = 3×）；
-//   · 车头格取整数格（GS.railCell(train.index)）—— 3×3 判定按车头格算，车厢跟随车头。
+// ---- 加油站提速（v1.6.23 查询式 · v1.8u 十二令 2026-10-20 改回初版）--------------
+//   【十二令 大王令「改回初版」】火车在加油站（3×3）覆盖的轨道上行驶时速度
+//   +100%/座、可叠加（两座 = 3×、三座 = 4×，无上限），离开覆盖格立即回落（无尾巴）。
+//   v1.8t~v1.8u 三令的「跨格触发独立实例 buff（每层 20%、上限 3 层、1.5s 尾巴）」
+//   整机制退役（gasBuffs / updateGasBuffs / gasBuffSum / GAS_BUFF_* 一并拆除）。
 ENG.trainSpeedMul = function () {
-  if ((ENG.boost || 0) > 0) return 1 + ENG.boost;
   var cell = GS.railCell(GS.train.index);
   if (!cell) return 1;
-  return 1 + GS.gasCoverAt(cell.c, cell.r);
+  return 1 + GS.gasCoverAt(cell.c, cell.r);   // 每座 +1（=+100%），求和非连乘
 };
+
+// 列车速度系数（v1.6.23 大王拍板；v1.8u 十二令改回初版查询式，§14.81）：
+//   · **全程生效**（v1.8u 十五令 §14.86 改版）：boost 短路退役——奖励时间/dusk 收尾
+//     的加速改由全局时间快进承担（dtFast = dt×(1+boost)，见 ENG.update），boost 不再
+//     进速度系数；加油站与快进自然相乘（峰值 4× 快进 × 3× 双座 = 12× 体感）；
+//   · 平时 → 系数 = 1 + 覆盖**车头所在格**的加油站座数（每座 +100%、求和非连乘、
+//     无上限）——查询式即时生效/即时回落，无尾巴。实现见上方 ENG.trainSpeedMul。
 
 // ---- 交付飘字（v1.6.32 大王令"我需要交付的时候飘字，包括生命和金币"）--------------
 //   纯表现：队列 `GS.floats`（`{kind:'gold'|'heal', text, x, y, t, ttl}`），
@@ -855,7 +999,16 @@ ENG.spawnFloat = function (kind, text, x, y) {
 // 交付瞬间生成两行。gold = 本次入账金币（已含站台 +10）；heal = **实际**回血量
 //   （TRANS.deliver 落下的封顶后真值；满血时为 0 ⇒ 不飘生命行）。
 ENG.spawnDeliverFloats = function (gold, heal) {
-  GS.floats = [];                       // ① 一次交付 = 一次播报：清掉上一圈的残留，防混读
+  // ① 一次交付 = 一次播报：清掉上一圈的**交付行**（gold/heal）残留，防混读；
+  //    v1.8s 起战斗伤害/击杀飘字（dmg/kill）与交付不同源，保留不清（战斗是持续事件，
+  //    交付是整圈一次，互不干扰——列车到站瞬间正打的伤害数字不被抹掉）。
+  if (!GS.floats) GS.floats = [];
+  var keepD = [];
+  for (var i = 0; i < GS.floats.length; i++) {
+    var fk = GS.floats[i].kind;
+    if (fk !== 'gold' && fk !== 'heal') keepD.push(GS.floats[i]);
+  }
+  GS.floats = keepD;
   var sl = (typeof STATION !== 'undefined' && STATION.slot) ? STATION.slot() : null;
   var lay = (typeof LAY !== 'undefined' && LAY) ? LAY : CFG.layout();
   var cx, cy;
@@ -865,6 +1018,33 @@ ENG.spawnDeliverFloats = function (gold, heal) {
   } else return;                                          // 纯逻辑沙箱（无布局）→ 不生成
   if (gold > 0) ENG.spawnFloat('gold', '+' + Math.floor(gold), cx, cy + ENG.FLOAT_DY_GOLD);
   if (heal > 0) ENG.spawnFloat('heal', '+' + Math.round(heal), cx, cy + ENG.FLOAT_DY_HEAL);
+};
+
+// ---- 伤害/击杀飘字（v1.8s 大王令 C，特效盘点清单销账）---------------------------
+//   口径：
+//   · 只飘「整段直接命中」：applyHits 主命中（车厢/冰环/火炮溅射）+ 车头撞击/塔式
+//     —— a5 箭雨、DoT（火区每帧微量）、a4 影锁传递、m3 溢出等旁路伤**不飘**（防糊屏）；
+//   · 数值 = hd（易伤乘区叠加后的**实扣血量**，玩家看到的即真实掉血）；
+//   · 击杀金色：本段伤害把怪打到 hp≤0（首次击穿，preHp>0）⇒ kind 'kill'（金、放大）；
+//     否则 'dmg'（白）。已死怪的补刀不报击杀（preHp≤0）；
+//   · 同怪节流：f.dmgFloatT 冷却内的新命中不飘（机枪 0.4s/发 + 多节同帧齐射时只留
+//     首条，避免数字叠成一片）；**击杀无视节流必报**（死亡瞬间必须给玩家反馈）；
+//   · 锚点 = 命中瞬间怪的像素位（LAY 换算，上移 14px 让出怪本体）；纯逻辑沙箱
+//     （无 LAY）不生成——与交付飘字同一退化口径。
+ENG.DMG_FLOAT_TTL = 0.75;    // 比交付飘字（1.15s）短：战斗高频，长寿命会叠成一片
+ENG.DMG_FLOAT_CD = 0.3;      // 同怪节流冷却（秒）
+ENG.dmgFloat = function (f, hd, killed) {
+  if (!(typeof LAY !== 'undefined' && LAY)) return;    // 纯逻辑沙箱 / 无布局：跳过
+  if (!killed && (f.dmgFloatT || 0) > 0) return;       // 节流：冷却中不飘（击杀必报）
+  f.dmgFloatT = ENG.DMG_FLOAT_CD;
+  if (!GS.floats) GS.floats = [];
+  GS.floats.push({
+    kind: killed ? 'kill' : 'dmg',
+    text: String(Math.max(1, Math.round(hd))),
+    x: CFG.ccx(LAY, f.c),
+    y: CFG.ccy(LAY, f.r) - 14,
+    t: 0, ttl: ENG.DMG_FLOAT_TTL
+  });
 };
 
 // 到站交付（规则 6）：车斗金币一次性入账 → 金币/爱心地块重置

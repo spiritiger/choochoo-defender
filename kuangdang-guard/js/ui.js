@@ -13,7 +13,7 @@ UI.init = function (canvas) {
   UI.btnSummon = document.getElementById('btnSummon');
   UI.btnDepart = document.getElementById('btnDepart');
   UI.btnUndo = document.getElementById('btnUndo');   // v1.4.5：撤销最近一次形状卡清理
-  UI.btnSpeed = document.getElementById('btnSpeed'); // v1.6.2：全局倍速 ×1/×2/×3 循环
+  UI.btnSpeed = document.getElementById('btnSpeed'); // v1.6.2：全局倍速 ×1/×2 循环（v1.8u 五令干掉 ×3）
   // 【v1.6.39 退役】UI.status = getElementById('status') 随提示行一并删除
   UI.overOverlay = document.getElementById('overOverlay');
   UI.overWave = document.getElementById('overWave');
@@ -149,10 +149,14 @@ UI.onDown = function (e) {
   var cell = UI.cellFromEvent(e);
   if (!cell) return;
   var b = GS.grid[cell.r][cell.c].b;
-  if (!b || b.type !== 'tower') return;
+  if (!b || b.type === 'core') return;   // 镇中心不可拖（非卡牌建筑）
   // setPointerCapture：按住拖出画布也能收到 move/up（否则拖快了会"甩丢"指针）
   try { UI.canvas.setPointerCapture(e.pointerId); } catch (err) {}
-  UI.drag = { kind: 'tower', tower: b, px: p.mx, py: p.my };
+  // v1.8u 十四令（§14.85）+ 十七令（§14.88）：建筑（mint/gas/atk/asp）= 自由拖动
+  //   （空地移动 / 交换 / 拖出画布下场变卡，见 UI.settleBuildingMove）；
+  //   塔（tower）= 移动 / 交换 / 同名同星合成（保留），不可下场（见 UI.settleTowerMove）
+  if (b.type === 'tower') UI.drag = { kind: 'tower', tower: b, px: p.mx, py: p.my };
+  else UI.drag = { kind: 'bmove', building: b, px: p.mx, py: p.my };
   UI.setStatus('');
 };
 
@@ -190,19 +194,17 @@ UI.onMove = function (e) {
 //   牌库卡的拖拽在 pointerdown 时转嫁给 document，见 UI.startDeckDrag）----------
 UI.onUp = function (e) {
   UI.trainSel = null;   // v1.6.13：长按查射程松手即消失（先于拖塔结算，两手势互不干扰）
-  if (!UI.drag || UI.drag.kind !== 'tower') return;
+  if (!UI.drag) return;
   var drag = UI.drag;
+  if (drag.kind !== 'tower' && drag.kind !== 'bmove') return;
   UI.drag = null;
   var cell = UI.cellFromEvent(e);
-  // 拖塔合成：释放在同名同星塔上 → 合成（v1.4 产物元素继承）；否则弹回
-  if (!cell) return;                                   // 拖出画布 = 弹回
-  var dst = GS.grid[cell.r][cell.c].b;
-  if (TOWERS.canMerge(drag.tower, dst)) {
-    var res = TOWERS.merge(drag.tower, dst);
-    UI.setStatus(res === true ? '合成成功！' : res);
-  } else if (dst && dst.type === 'tower' && dst !== drag.tower) {
-    UI.setStatus('需要同名同星的塔才能合成');
-  }
+  // v1.8u 十四令：场上建筑拖动结算（移动 / 交换 / 下场 / 弹回）
+  if (drag.kind === 'bmove') { UI.settleBuildingMove(drag, cell); return; }
+  // v1.8u 十七令（§14.88）：拖塔 = 移动 / 交换 / 合成（保留）/ 弹回；**不可下场**
+  //   （星级长在塔上，下场即丢失）——拖出画布弹回并提示原因。
+  if (!cell) { UI.setStatus('塔不能拖下场（会失去星级），已弹回'); return; }
+  UI.settleTowerMove(drag, cell);
 };
 
 UI.onCancel = function () { UI.drag = null; UI.trainSel = null; };   // 指针被打断（来电等）= 弹回/环消失，不结算
@@ -302,9 +304,11 @@ UI.cardLabel = function (card) {
 //     只有尺寸差别（尺寸全在 css/style.css 的 .pcard / .oc 里，**全卡统一字号**）。
 //   ▍顶部"形状样式"：
 //     形状卡 = mini 方格网格（清理范围）；塔卡 = **六边形**（塔的形状语言）；
-//     建筑卡 = 有范围的画**范围图**（加油站 3×3 / 军工厂十字，中间建筑、周围范围——
-//     v1.6.35 大王令"用 3×3 的地块，中间是建筑，周围一圈是效果范围"），
-//     无范围的（铸币所）仍画方块；词条卡 = **菱形**（塔型色）。
+//     建筑卡 = 有范围的画**范围图**（加油站 3×3 / 铸币所 3×3 / 猛攻坊横条 / 疾速坊竖条，
+//     中间建筑、周围范围——v1.6.35 大王令"用 3×3 的地块，中间是建筑，周围一圈是效果
+//     范围"；v1.8u 十三令起两坊按方向只亮一行/一列），
+//     铸币所 v1.8u 三拍板起同样画 3×3 范围图（金系，大王令"卡牌样式参考加油站"）；
+//     词条卡 = **菱形**（塔型色）。
 UI.fillCardDom = function (el, card, isOffer) {
   var pre = isOffer ? 'o' : 'p';
   var name = '', desc = '';
@@ -336,19 +340,24 @@ UI.fillCardDom = function (el, card, isOffer) {
       grid.appendChild(dot);
     }
     el.appendChild(grid);
-  } else if (card.kind === 'building' && (card.bkey === 'gas' || card.bkey === 'factory')) {
-    // 建筑范围图（v1.6.35）：3×3 地块，中心 = 建筑本色，周围 = 范围淡色。
-    //   加油站 = 3×3 全亮；军工厂 = 十字（四角隐藏）。与拖放时的场上范围预览同构。
+  } else if (card.kind === 'building') {
+    // 建筑范围图（v1.6.35；v1.8u 三拍板铸币所并入；v1.8u 十三令改向性）：3×3 地块，
+    //   中心 = 建筑本色，周围 = 范围淡色。加油站 = 3×3 全亮（蓝）；铸币所 = 3×3 全亮
+    //   （金，效果对象是金币格）；猛攻坊 = 只亮中间行（横条，左右邻格语义）；
+    //   疾速坊 = 只亮中间列（竖条，上下邻格语义）。与拖放时的场上范围预览同构。
     var grid2 = document.createElement('div');
     grid2.className = pre + '-range';
     grid2.style.gridTemplateColumns = 'repeat(3, auto)';
-    var bcol = (card.bkey === 'gas') ? '#5ec8f0' : '#7e57c2';
-    var rcol = (card.bkey === 'gas') ? 'rgba(94,200,240,0.38)' : 'rgba(126,87,194,0.45)';
+    var bcol = (card.bkey === 'gas') ? '#5ec8f0' : (card.bkey === 'mint') ? '#f0b429'
+             : (card.bkey === 'atk') ? '#c9503f' : '#3dbd9e';
+    var rcol = (card.bkey === 'gas') ? 'rgba(94,200,240,0.38)'
+             : (card.bkey === 'mint') ? 'rgba(240,180,41,0.35)'
+             : (card.bkey === 'atk') ? 'rgba(224,86,63,0.45)' : 'rgba(61,189,158,0.45)';
     for (var rr2 = 0; rr2 < 3; rr2++) for (var cc2 = 0; cc2 < 3; cc2++) {
       var dot2 = document.createElement('i');
       var isC = (rr2 === 1 && cc2 === 1);
-      var inCross = (rr2 === 1 || cc2 === 1);
-      if (card.bkey === 'factory' && !isC && !inCross) dot2.style.visibility = 'hidden';
+      if (card.bkey === 'atk' && rr2 !== 1) dot2.style.visibility = 'hidden';   // 横条：上下行隐藏
+      if (card.bkey === 'asp' && cc2 !== 1) dot2.style.visibility = 'hidden';   // 竖条：左右列隐藏
       dot2.style.background = isC ? bcol : rcol;
       grid2.appendChild(dot2);
     }
@@ -365,8 +374,7 @@ UI.fillCardDom = function (el, card, isOffer) {
             ? (REND.C.tower[AFFIXES.get(card.aid).tower] || '#c58cff') : '#c58cff';
       cls = 'art-dia';
     } else {
-      col = (card.bkey === 'mint') ? REND.C.gold
-          : (card.bkey === 'factory') ? '#7e57c2' : '#5ec8f0';
+      col = '#5ec8f0';                               // 兜底（"辅助"类），建筑卡已全走上方范围图
       cls = 'art-sq';
     }
     glyph.className = cls;
@@ -382,7 +390,7 @@ UI.fillCardDom = function (el, card, isOffer) {
   else if (card.kind === 'affix') nameEl.style.color = (typeof AFFIXES !== 'undefined' && AFFIXES.get(card.aid))
             ? (REND.C.tower[AFFIXES.get(card.aid).tower] || '#c58cff') : '#c58cff';
   else if (card.kind === 'building') nameEl.style.color = (card.bkey === 'mint') ? REND.C.gold
-          : (card.bkey === 'factory') ? '#a98ede' : '#5ec8f0';
+          : (card.bkey === 'atk') ? '#ff8a76' : (card.bkey === 'asp') ? '#5fd4b4' : '#5ec8f0';
   el.appendChild(nameEl);
   // ③ 下面：描述
   var descEl = document.createElement('div');
@@ -618,6 +626,8 @@ UI.settleHero = function (drag, cell) {
 
 // v1.6.23 建筑卡落位（铸币所 / 加油站）：拖到**任意空地**松手 → 建成；非法落点卡收回。
 //   校验与落位都在 ENG.placeBuilding（判据 = GS.isFreeSpot，与抽塔同一条）。
+//   v1.8u 十四令（§14.85）：建筑**没有合成升级** —— 卡拖到已有建筑格照旧拒绝收回，
+//   建筑只有"座数"语义没有等级；位置调整走下方 UI.settleBuildingMove。
 UI.settleBuilding = function (drag, cell) {
   var bi = GS.BUILDING_INFO[drag.bkey] || { name: drag.bkey };
   if (!cell) {
@@ -635,9 +645,103 @@ UI.settleBuilding = function (drag, cell) {
   GS.deck.splice(drag.cardIdx, 1);
   if (typeof LOG !== 'undefined') LOG.add('buildBuilding', { bkey: drag.bkey, at: cell.c + ',' + cell.r });
   UI.setStatus('建筑·' + bi.name + ' 已建成' + (drag.bkey === 'mint'
-    ? '（金币价值 ' + GS.goldValue() + '）' : drag.bkey === 'gas'
-    ? '（3×3 内提速）' : '（车厢攻击 +' + Math.round(GS.wagonAtkBonus() * 100) + '%）'));
+    ? '（覆盖金币拾取 +' + CFG.MINT_BONUS + ' 枚）' : drag.bkey === 'gas'
+    ? '（3×3 内提速）' : drag.bkey === 'atk'
+    ? '（左右车厢攻击 +100%）' : '（上下车厢攻速 +100%）'));
   UI.renderDeck();
+};
+
+// v1.8u 十四令（§14.85，大王令）：**场上建筑自由拖动** —— 按住建筑（mint/gas/atk/
+//   asp）拖动：① 松手在空地 = **移动**；② 松手在另一建筑上 = **交换位置**；
+//   ③ 松手在画布外 = **下场变回建筑卡**（进牌库尾部，随时可再拖回场上）；
+//   ④ 松手在非法格（轨/金币/爱心/废墟/塔/镇中心）= 弹回原位。
+//   ⚠️ 大王令"所有的建筑不再能合成升级"：建筑只有座数没有等级，交换 ≠ 升级；
+//   效果全部查询式（gasCoverAt/atkBoostAt 等），坐标一改加成自动跟着走。
+//   镇中心 core 不可拖、不可被换（它是终点站，不是卡牌建筑）。
+UI.settleBuildingMove = function (drag, cell) {
+  var b = drag.building;
+  var from = b.c + ',' + b.r;
+  var nm = GS.BUILDING_INFO[b.type] ? GS.BUILDING_INFO[b.type].name : b.type;
+  if (!cell) {                                          // ③ 下场 → 牌库尾部变卡
+    GS.grid[b.r][b.c].b = null;
+    GS.buildings.splice(GS.buildings.indexOf(b), 1);
+    GS.deck.push(GS.pickBuildingCard(b.type));
+    UI.setStatus('建筑·' + nm + ' 已下场（变回卡牌，可再拖回）');
+    if (typeof LOG !== 'undefined') LOG.add('buildRecall', { bkey: b.type, at: from });
+    UI.renderDeck();
+    return;
+  }
+  if (cell.c === b.c && cell.r === b.r) return;         // 原位松手 = 无事
+  var dst = GS.grid[cell.r][cell.c].b;
+  if (!dst && GS.isFreeSpot(cell.c, cell.r)) {          // ① 移动到空地
+    GS.grid[b.r][b.c].b = null;
+    GS.grid[cell.r][cell.c].b = b;
+    b.c = cell.c; b.r = cell.r;
+    UI.setStatus('建筑·' + nm + ' 已移动');
+    if (typeof LOG !== 'undefined') LOG.add('buildMove', { bkey: b.type, from: from, to: cell.c + ',' + cell.r });
+    return;
+  }
+  // ② 与另一建筑/塔交换（v1.8u 十七令 §14.88 放开塔：塔 ⇄ 建筑双向可换）
+  if (dst && dst.type !== 'core') {
+    var to = cell.c + ',' + cell.r;
+    GS.grid[b.r][b.c].b = dst;
+    GS.grid[cell.r][cell.c].b = b;
+    dst.c = b.c; dst.r = b.r;
+    b.c = cell.c; b.r = cell.r;
+    var dnm = dst.type === 'tower' ? '塔·' + TOWERS.typeName(dst.elem)
+                                   : GS.BUILDING_INFO[dst.type].name;
+    UI.setStatus(dnm + ' ⇄ ' + nm + '，已交换位置');
+    if (typeof LOG !== 'undefined') LOG.add('buildSwap', {
+      a: dst.type === 'tower' ? 'tower:' + dst.elem : dst.type,
+      b: b.type, from: from, to: to });
+    return;
+  }
+  // ④ 弹回原位（数据没动过，无需还原）
+  UI.setStatus(dst ? '镇中心不能换位' : '只能移到空地（轨/金币/爱心格不行）');
+};
+
+// ---- 场上塔拖动结算（v1.8u 十七令 §14.88）：移动 / 交换 / 合成（保留）/ 弹回 -----
+//   大王拍板「移动+交换」：塔也自由拖动，但**不可下场**——星级长在塔上，下场即丢。
+//   判定序：① 同名同星塔 = 合成（v1.4 语义保留，优先判定）② 空地 = 移动
+//   ③ 建筑/异类塔上 = 交换（与建筑拖动同口径，双向）④ 其余弹回。
+//   猛攻坊/疾速坊等加成均为查询式按塔格坐标计算（§14.84），塔挪格自动跟随，
+//   零额外结算；词条 affix / 冷却 cd 挂在塔对象上，随对象整体搬家。
+UI.settleTowerMove = function (drag, cell) {
+  if (!cell) return;                                       // 拖出画布 = 不可下场，无事（onUp 已提示）
+  var t = drag.tower;
+  if (cell.c === t.c && cell.r === t.r) return;            // 原位松手 = 无事
+  var from = t.c + ',' + t.r;
+  var dst = GS.grid[cell.r][cell.c].b;
+  if (dst && TOWERS.canMerge(t, dst)) {                    // ① 合成（保留，优先）
+    var res = TOWERS.merge(t, dst);
+    UI.setStatus(res === true ? '合成成功！' : res);
+    return;
+  }
+  if (!dst && GS.isFreeSpot(cell.c, cell.r)) {             // ② 移动到空地
+    GS.grid[t.r][t.c].b = null;
+    GS.grid[cell.r][cell.c].b = t;
+    t.c = cell.c; t.r = cell.r;
+    UI.setStatus('塔·' + TOWERS.typeName(t.elem) + ' 已移动');
+    if (typeof LOG !== 'undefined') LOG.add('buildMove',
+      { bkey: 'tower:' + t.elem, from: from, to: cell.c + ',' + cell.r });
+    return;
+  }
+  if (dst && dst.type !== 'core') {                        // ③ 建筑/异类塔 = 交换
+    var to = cell.c + ',' + cell.r;
+    GS.grid[t.r][t.c].b = dst;
+    GS.grid[cell.r][cell.c].b = t;
+    dst.c = t.c; dst.r = t.r;
+    t.c = cell.c; t.r = cell.r;
+    var dnm = dst.type === 'tower' ? '塔·' + TOWERS.typeName(dst.elem)
+                                   : GS.BUILDING_INFO[dst.type].name;
+    UI.setStatus(dnm + ' ⇄ 塔·' + TOWERS.typeName(t.elem) + '，已交换位置');
+    if (typeof LOG !== 'undefined') LOG.add('buildSwap', {
+      a: dst.type === 'tower' ? 'tower:' + dst.elem : dst.type,
+      b: 'tower:' + t.elem, from: from, to: to });
+    return;
+  }
+  // ④ 弹回（数据没动过，无需还原）—— 只剩 core / 非空地两路
+  UI.setStatus(dst ? '镇中心不能换位' : '只能移到空地（轨/金币/爱心格不行）');
 };
 
 // ---- 开波（原「发车」）-----------------------------------------------------------
@@ -756,10 +860,11 @@ UI.exportMap = function () {
       if (cell.t === 'rubble') ch = '#';
       if (cell.b) {
         var bt = cell.b.type;
-        // v1.6.23：M=铸币所 / F=加油站；v1.6.35：A=军工厂（沿用 E=经济建筑、T=塔）
+        // v1.6.23：M=铸币所 / F=加油站；v1.8u 十三令：A=猛攻坊 / S=疾速坊
+        //   （沿用 E=经济建筑(退役)、T=塔；军工厂字符 A 语义随 §14.84 迁移为猛攻坊）
         ch = (bt === 'core') ? 'C' : (bt === 'tower') ? 'T'
            : (bt === 'mint') ? 'M' : (bt === 'gas') ? 'F'
-           : (bt === 'factory') ? 'A' : 'E';
+           : (bt === 'atk') ? 'A' : (bt === 'asp') ? 'S' : 'E';
       }
       // v0.6.12：金币格初始埋在废墟里（t='rubble'）→ 小写 g；清出来后才大写 G。
       else if (cell.gold) ch = (cell.t === 'rubble') ? 'g' : 'G';
@@ -771,7 +876,7 @@ UI.exportMap = function () {
   }
   var rail = GS.railPath || [];
   var lines = ['KDG-MAP v1 ' + new Date().toISOString()];
-  lines.push('图例: #废墟 .空地 C镇中心 E经济建筑 T塔 M铸币所 F加油站 A军工厂 G金币地块(已清出) g金币地块(仍在废墟中) H爱心地块(已清出) h爱心地块(仍在废墟中)');
+  lines.push('图例: #废墟 .空地 C镇中心 E经济建筑 T塔 M铸币所 F加油站 A猛攻坊 S疾速坊 G金币地块(已清出) g金币地块(仍在废墟中) H爱心地块(已清出) h爱心地块(仍在废墟中)');
   Array.prototype.push.apply(lines, rows);
   // rail(N) 的 N = 步数（序列长度），不是去重格数 —— 见函数头说明
   lines.push('rail(' + rail.length + '): ' + rail.map(function (p) { return p.c + ',' + p.r; }).join(' '));

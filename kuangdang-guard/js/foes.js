@@ -50,16 +50,20 @@ FOES.CFG = {
   //       ③hp 更陡（斜率 6→8；起点 6→4 反向回调，保"w1 一刀"口径不变：
   //         hp(1)=12=车头一刀、hp(2)=20∈(16,32] 两刀、hp(10)=84≤96 两刀）
   //       ④移速降一点（封顶 0.7→0.6，起点 0.35→0.28，斜率 0.025→0.02）
-  //       ⑤dmg 2→1（泄漏怪单次威胁减半，与数量翻倍对冲）
-  count: function (w) { return 24 + 12 * w; },                    // 怪数量（v1.6.14：再翻倍，12+6w → 24+12w）
-  hp:    function (w) { return 4 + 8 * w; },                      // 单怪血量（v1.6.14：斜率 6→8 更陡，起点 6→4 保 w1 一刀）
+  //   ⑤dmg 2→1（泄漏怪单次威胁减半，与数量翻倍对冲）
+  //   ⚠️ v1.8k（2026-10-19 大王令）：hp 4+8w → **8w**——w1=8 恰被车头开局一炮
+  //      （塔式 8+4×0 建筑数）一刀收掉；v1.4.14"w1 一刀/w2+ 两刀"条件式口径退役
+  //      （车头锚点 v1.6.77 已换建筑数，两刀与否取决于建筑数，不再是恒等式）。
+  count: function (w) { return 8 + 6 * (w - 1); },                // 怪数量（v1.8u 十一令 2026-10-20 大王令：24+12w → 8+6(w−1)，w1=8 只起、每波 +6；沿革 v1.6.14 曾再翻倍 12+6w→24+12w）
+  hp:    function (w) { return 8 * w; },                          // 单怪血量（v1.8k：4+8w→8w，w1=8=车头开局一刀）
   speed: function (w) { return 0.3; },                            // 格/秒（v1.6.59 大王令"提速拉开分散"：0.2→0.3 +50%——批间距=速度×批间隔3s 由 0.6→0.9 格、±8% 抖动绝对差同步 +50%，怪才分得开；仍恒定不随 wave 增长（v1.6.19 大王令保持）；沿革 v1.6.19~58 恒 0.2、v1.6.18 曾 0.2+0.01w、v1.6.17 曾 0.22+0.015w、v1.6.14 曾 0.28+0.02w、v1.3.2 曾整体减半）
   gap:   function (w) { return Math.max(0.8, 1.6 - 0.1 * (w - 1)); }, // 逐只间隔秒（v1.6.16 起无消费者，留作历史参数与批数推导参考）
   // v1.6.16（大王令"固定批数和时间"）+ v1.6.20（大王令"缩短至 15s 或以内"）：
   //   **批数与批间隔全部定常**——每波恒 BURSTS 批、批间隔恒 BURST_GAP ⇒
   //   总刷怪时长 = (BURSTS-1)×BURST_GAP = 15s（≤15s 达标，与 wave 无关）；
-  //   每批数量 = ceil(count/BURSTS) 随波次增长（w1 每批 6 只 → w10 每批 24 只），
-  //   压力全压在"批更挤"上。count=12(2+w) 恒被 6 整除 ⇒ 每批 = 2w+4 恒满额。
+  //   每批数量 = ceil(count/BURSTS) 随波次增长（w1 每批 2 只 → w10 每批 11 只），
+  //   压力全压在"批更挤"上。v1.8u 十一令起 count=6w+2 不再恒被 6 整除 ⇒ 实际放批数
+  //   随 count 收缩（尾批由 min(·, pending) 收口，下方防御分支转正）。
   BURSTS: 6,                                           // 每波固定批数
   BURST_GAP: 3.0,                                      // 固定批间隔秒（总时长 5×3.0 = 15s；沿革 v1.6.16 曾 3.6=18s）
   // 刷怪位置偏置（v1.3.3，见文件头）—— 调优只动这里
@@ -173,14 +177,17 @@ FOES.spawnOne = function () {
   // 车厢特效状态计时（v1.4 起：engine 挂 / 这里衰减）。v1.6.34 词条扩容：
   //   slow 普通减速(×0.7) / slowHard 钉刺强减速(×0.15) / freeze 冻结(×0.1)
   //   / mine 地雷减速(×0.3) / zoneSlow 霜痕地带(×0.6，由 i3 霜痕给)
-  f.slow = 0; f.burn = 0; f.poison = 0;
+  f.slow = 0;   // burn/poison 计时字段随 v1.8k DoT 退役（塔型特效只剩 slow）
   f.slowHard = 0; f.freeze = 0; f.mine = 0; f.zoneSlow = 0;
-  // 易伤层（a3 撕裂标记 / m2 融穿）：vuln 层数 / vulnPct 每层增伤 / vulnT 计时
-  f.vuln = 0; f.vulnPct = 0; f.vulnT = 0;
+  // 易伤双槽（v1.8o 拆分，规格 §14.76）：a3 撕裂 → vulnA 层数 / vulnAT 计时（3s 衰减）；
+  //   m2 融穿 → vulnM 层数（永久到该怪死亡）。旧版共用 vuln/vulnPct 时两词条互踩。
+  f.vulnA = 0; f.vulnAT = 0; f.vulnM = 0;
+  f.overkill = 0; f.overkillSrc = null;   // 过量击杀快照（v1.8p m3）：击穿帧由 ENG._snapOverkill 写入（v1.8q 带来源塔型）
   // 影锁（a4）：lock 指向被链的另一只怪，lockT 剩余秒
   f.lock = null; f.lockT = 0;
   f.bumpCd = 0;         // 被车头撞击的独立冷却（v1.3.1，engine.js 用）
   f.hitFlash = 0;       // 被塔打中的闪白（renderer 用）
+  f.dmgFloatT = 0;      // 伤害飘字节流冷却（v1.8s，engine.dmgFloat 用）
   GS.foes.push(f);
 };
 
@@ -207,7 +214,7 @@ FOES.startWave = function () {
     var sr = Math.floor(Math.random() * (sh + 1));
     var st = FOES.spawnQueue[sh]; FOES.spawnQueue[sh] = FOES.spawnQueue[sr]; FOES.spawnQueue[sr] = st;
   }
-  var per = Math.ceil(FOES.CFG.count(FOES.wave) / FOES.CFG.BURSTS);  // 每批 = 2w+4 恒整除
+  var per = Math.ceil(FOES.CFG.count(FOES.wave) / FOES.CFG.BURSTS);  // 每批 = ceil(count/6)（v1.8u 十一令起 count=6w+2 不恒整除，尾批靠 min 收口）
   var first = Math.min(per, FOES.CFG.count(FOES.wave));
   for (var bi = 0; bi < first; bi++) FOES.spawnOne();     // 首批立即进场
   FOES.pending = Math.max(0, FOES.CFG.count(FOES.wave) - first);
@@ -229,7 +236,7 @@ FOES.update = function (dt) {
     if (FOES.fadeSpawns.t <= 0) FOES.fadeSpawns = null;
   }
   // 节奏刷怪（v1.4.13 逐只 → v1.6.14 成批 → v1.6.16 固定批数+固定时长）：
-  //   pending > 0 时倒计时，到点放一批（= ceil(count/BURSTS)，恒 2w+4）。
+  //   pending > 0 时倒计时，到点放一批（= ceil(count/BURSTS)，尾批由 pending 收口）。
   //   必须排在下方 `!GS.foes.length 早退` 之前 —— 队列消化期间场上可能空无一只。
   if (FOES.active && FOES.pending > 0) {
     FOES.spawnCd -= dt;
@@ -257,26 +264,26 @@ FOES.update = function (dt) {
   for (var i = GS.foes.length - 1; i >= 0; i--) {
     var f = GS.foes[i];
     if (f.hitFlash > 0) f.hitFlash -= dt;
+    if (f.dmgFloatT > 0) f.dmgFloatT -= dt;   // 伤害飘字节流冷却（v1.8s）
     // 击退滑动演出衰减（v1.6.74，规格 §14.50）：_knockback 挂的 kbAnim 走完即清。
     //   ⚠️ 纯表现：逻辑坐标已在 _knockback 里立即落到目标，这里只推动画进度，
     //   renderer.js 读它画插值偏移。死亡清尸无需处理（怪没了动画自然消失）。
     if (f.kbAnim) { f.kbAnim.t += dt; if (f.kbAnim.t >= f.kbAnim.dur) f.kbAnim = null; }
-    // 车厢特效状态衰减（v1.4，规格 §14.2；v1.6.34 词条扩容）：slow / burn·poison 计时并扣血。
-    //   DOT 在这里结算（engine 只负责"命中时挂状态"），死亡仍走下方清尸。
+    // 车厢特效状态衰减（v1.4，规格 §14.2；v1.6.34 词条扩容）：slow 系计时。
+    //   ⚠️ burn/poison DoT（3/2 hp·s）随 v1.8k 退役——塔型特效只剩 slow，唯二挂点已清
+    //   （c4 烈焰燃油是地带直伤，不依赖 DoT，保留）。
     if (f.slow > 0) f.slow -= dt;
     if (f.slowHard > 0) f.slowHard -= dt;
     if (f.freeze > 0) f.freeze -= dt;
     if (f.stun > 0) f.stun -= dt;   // v1.6.80 撞击定身（§14.56）：顿敌方单位不顿游戏
     if (f.mine > 0) f.mine -= dt;
     if (f.zoneSlow > 0) f.zoneSlow -= dt;
-    if (f.vulnT > 0) { f.vulnT -= dt; if (f.vulnT <= 0) { f.vuln = 0; f.vulnPct = 0; } }
+    if (f.vulnAT > 0) { f.vulnAT -= dt; if (f.vulnAT <= 0) f.vulnA = 0; }   // a3 易伤超时清层；m2 vulnM 永久不衰减（v1.8o）
     if (f.lockT > 0) { f.lockT -= dt; if (f.lockT <= 0) f.lock = null; }
-    if (f.burn > 0) { f.burn -= dt; f.hp -= 3 * dt; }
-    if (f.poison > 0) { f.poison -= dt; f.hp -= 2 * dt; }
     // 塔的伤害结算后 hp<=0 → 死亡移除（塔/车头模块只扣血不删怪，尸体在这里清）
     if (f.hp <= 0) {
       GS.foes.splice(i, 1);
-      if (typeof EXP !== 'undefined') EXP.add(1);                  // v1.6.34：击杀 1 只 +1 经验
+      if (typeof EXP !== 'undefined') EXP.add(EXP.killGain());      // v1.8u 四拍板 §14.83：波次均分（波总额/本波怪数）；旧「击杀 +1」退役
       if (typeof ENG !== 'undefined') ENG.onFoeDeath(f, FOES.wave); // v1.6.34：m3 能量溢出
       continue;
     }

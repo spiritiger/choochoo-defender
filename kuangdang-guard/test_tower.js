@@ -122,15 +122,13 @@ check('[24] 合成闪光衰减保留', b.flash < 0.4, 'flash=' + b.flash);
 GS.newGame(); GS.gold = 200;
 check('[27] 新局怪清空、波次归零', GS.foes.length === 0 && FOES.wave === 0 && GS.coreHP === CFG.CORE_HP);
 FOES.startWave();
-check('[28] 第 1 波共 24+12×1=36 只：首批 6 立即进场 + 队列 30',
-  GS.foes.length === 6 && FOES.pending === 30,
+check('[28] 第 1 波共 8+6×(1−1)=8 只：首批 2 立即进场 + 队列 6（v1.8u 十一令）',
+  GS.foes.length === 2 && FOES.pending === 6,
   'n=' + GS.foes.length + ' pending=' + FOES.pending);
-check('[28b] 怪血口径：w1 一刀（≤车头伤害）、w2+ 恒两刀（>车头伤害且 ≤2×车头伤害）',
-  FOES.CFG.hp(1) <= ENG.TRAIN_COMBAT.dmg(1) &&
-  FOES.CFG.hp(2) > ENG.TRAIN_COMBAT.dmg(2) && FOES.CFG.hp(2) <= 2 * ENG.TRAIN_COMBAT.dmg(2) &&
-  FOES.CFG.hp(10) > ENG.TRAIN_COMBAT.dmg(10) && FOES.CFG.hp(10) <= 2 * ENG.TRAIN_COMBAT.dmg(10),
-  'hp(1)=' + FOES.CFG.hp(1) + ' train(1)=' + ENG.TRAIN_COMBAT.dmg(1) +
-  ' hp(2)=' + FOES.CFG.hp(2) + ' train(2)=' + ENG.TRAIN_COMBAT.dmg(2));
+check('[28b] 怪血口径（v1.8k）：hp=8w，w1=8 恰被车头开局一炮（塔式 8+4×0 建筑数）收掉',
+  FOES.CFG.hp(1) === 8 && FOES.CFG.hp(1) === ENG.TRAIN_COMBAT.dmg(0) &&
+  FOES.CFG.hp(2) === 16 && FOES.CFG.hp(10) === 80,
+  'hp(1)=' + FOES.CFG.hp(1) + ' hp(2)=' + FOES.CFG.hp(2) + ' hp(10)=' + FOES.CFG.hp(10));
 check('[29] 波次号 = 1', FOES.wave === 1);
 FOES.pending = 0; FOES.spawnCd = 0;    // 后续用例手工摆怪，别让节奏刷怪往里塞怪（首版踩过）
 check('[30] 怪出生在地图边缘外', GS.foes.every(f => f.c < 0 || f.r < 0 || f.c > CFG.MAP_COLS - 1 || f.r > CFG.MAP_ROWS - 1));
@@ -171,12 +169,12 @@ check('[35] 失败后世界冻结', GS.foes[GS.foes.length - 1].hp === hpB);
 //    只有 restart 走 FOES.reset 归零 —— 首版在这里把波次数对错了。
 ENG.restart(); GS.gold = 200;
 ENG.startNight();                        // 开波（经 engine 接线）
-check('[36] 开波入夜：首批 6 进场 + 队列 30（第 1 波共 36 只）',
-  FOES.wave === 1 && CLOCK.isNight() && GS.foes.length === 6 && FOES.pending === 30,
+check('[36] 开波入夜：首批 2 进场 + 队列 6（第 1 波共 8 只，v1.8u 十一令）',
+  FOES.wave === 1 && CLOCK.isNight() && GS.foes.length === 2 && FOES.pending === 6,
   'wave=' + FOES.wave + ' n=' + GS.foes.length + ' pending=' + FOES.pending + ' night=' + CLOCK.isNight());
 GS.coreHP = 41;                          // 模拟第一波被打掉 19
 GS.foes.forEach(f => { f.hp = 0; });     // 塔杀光
-FOES.update(0.01);                       // 尸体清空 —— 但队列还有 4 只没放
+FOES.update(0.01);                       // 尸体清空 —— 但队列还有 6 只没放
 check('[36b] 待刷队列未清 → 波不结束、不入 dusk',
   FOES.active === true && CLOCK.isNight() && CLOCK.hasFoes === true,
   'active=' + FOES.active + ' pending=' + FOES.pending);
@@ -190,8 +188,8 @@ check('[38] coreHP 跨波继承（41 不回满）', GS.coreHP === 41);
 // dusk → 白天：收尾相位要"列车到站"才换日（tick 对 dusk 不生效 —— 死循环教训）
 check('[38b] 到站回白天', CLOCK.notifyStation() === true && CLOCK.isDay());
 ENG.startNight();                        // 第二波
-check('[39] 第二波共 24+12×2=48 只：首批 8 进场 + 队列 40',
-  GS.foes.length === 8 && FOES.pending === 40,
+check('[39] 第二波共 8+6×(2−1)=14 只：首批 3 进场 + 队列 11（v1.8u 十一令）',
+  GS.foes.length === 3 && FOES.pending === 11,
   'n=' + GS.foes.length + ' pending=' + FOES.pending);
 check('[40] 第二波 coreHP 仍继承', GS.coreHP === 41);
 
@@ -229,6 +227,11 @@ check('[45] 初始金币 30', GS.gold === 30, 'gold=' + GS.gold);
 
 ENG.restart();
 const mkFoe = (c, r, hp) => ({ c, r, hp, maxHp: hp, speed: 0.5, cd: 0, hitFlash: 0, bumpCd: 0 });
+// 车厢开火一帧 + 弹丸飞完（v1.8n 弹丸化：机枪/火炮/闪电命中在弹丸到达帧）
+const fireWagons = () => {
+  ENG.wagonCombat(0.01);
+  for (let i = 0; i < 600 && GS.bullets.length; i++) ENG.bulletUpdate(0.016);
+};
 // 车头浮点格坐标（与 ENG.trainCombat 同源插值，不依赖 LAY）
 const tHead = () => {
   const a = GS.railCell(GS.train.index), b = GS.railCell(GS.train.index + 1), f = GS.train.frac;
@@ -240,7 +243,7 @@ FOES.wave = 2;                            // 车厢伤害口径用；车头伤�
 GS.buildings.push({ type: 'fake' }, { type: 'fake' });
 
 // [46-47] 塔式攻击：射程内扣血 + 1.0s 冷却
-//   ⚠️ 怪放 2 格处：在塔式射程 2.5 内、撞击圈 1.2 外 —— 单测塔式不被撞击干扰
+//   ⚠️ 怪放 2 格处：在塔式射程 4.5 内、撞击圈 0.8 外 —— 单测塔式不被撞击干扰
 GS.foes = [mkFoe(head.c + 2, head.r, 100)];
 ENG.trainAtkCd = 0;
 ENG.trainCombat(0.01);
@@ -252,13 +255,13 @@ ENG.trainAtkCd = 0;                       // 快进冷却
 ENG.trainCombat(0.01);
 check('[47b] 冷却结束恢复攻击', GS.foes[0].hp === 100 - 2 * ENG.TRAIN_COMBAT.dmg(2));
 
-// [48-48b] 撞击式：1.2 格内贴身怪，每怪独立 0.8s 冷却；v1.6.63 伤害×0.5 + 击退 2.5 格
+// [48-48b] 撞击式：0.8 格内贴身怪（v1.8k 贴合车头体量），每怪独立 0.8s 冷却；伤害×0.25（v1.8k）+ 击退 1 格
 const bumpDmg = ENG.TRAIN_COMBAT.dmg(2) * ENG.TRAIN_COMBAT.BUMP_DMG_MUL;
 GS.foes = [mkFoe(head.c + 0.5, head.r, 100)];
 const dCore0 = Math.hypot(GS.foes[0].c - GS.core.c, GS.foes[0].r - GS.core.r);
 ENG.trainAtkCd = 5;                       // 屏蔽塔式，单测撞击
 ENG.trainCombat(0.01);
-check('[48] 撞击扣血(×0.5)挂独立冷却且击退（远离镇心）',
+check('[48] 撞击扣血(×0.25)挂独立冷却且击退（远离镇心）',
   GS.foes[0].hp === 100 - bumpDmg && GS.foes[0].bumpCd > 0 &&
   Math.hypot(GS.foes[0].c - GS.core.c, GS.foes[0].r - GS.core.r) > dCore0,
   'hp=' + GS.foes[0].hp + ' bumpCd=' + GS.foes[0].bumpCd);
@@ -282,19 +285,29 @@ FOES.active = true;
 FOES.update(0.01);
 check('[50] 车头击杀 → FOES.update 清尸', GS.foes.length === 0);
 
-// [51] dusk 加速回站：dusk 且无怪 → boost 每秒 +0.9 封顶 2；速度系数 1+boost
+// [51] dusk 加速回站：dusk 且无怪 → boost 每秒 +0.9 封顶 3（v1.8u 十八令：收车不降档）
 ENG.restart();
 CLOCK.toDusk();                           // 直接进收尾相位（场上无怪）
 ENG.boost = 0;
 ENG.update(1.0);
-check('[51] dusk 无怪 → boost 递增且封顶 2', ENG.boost > 0 && ENG.boost <= 2, 'boost=' + ENG.boost);
-// 速度系数实测：同位置同步长，boost=2 的 frac 增量 ≈ boost=0 的 3 倍
+check('[51] dusk 无怪 → boost 递增且封顶 3（十八令：收车与奖励同速）',
+  ENG.boost > 0 && ENG.boost <= 3, 'boost=' + ENG.boost);
+// 速度系数实测（v1.8u 十五令 §14.86 改版）：boost 不再进速度系数 —— 直调 trainFlow
+//   位移不随 boost 变；全局快进在 ENG.update 层（dtFast = dt×(1+boost)），
+//   boost=2 → update 帧位移 ≈ 3 倍
 CLOCK.toDusk();
 GS.train.index = 0; GS.train.frac = 0; ENG.boost = 0;
 ENG.trainFlow(0.05); const dSl1 = GS.train.frac;
 GS.train.index = 0; GS.train.frac = 0; ENG.boost = 2;
 ENG.trainFlow(0.05); const dSl2 = GS.train.frac;
-check('[51b] boost=2 → 速度 ×3', Math.abs(dSl2 / dSl1 - 3) < 0.01, 'd1=' + dSl1 + ' d2=' + dSl2);
+check('[51b] boost 不进速度系数（直调 trainFlow 位移不变）',
+  Math.abs(dSl2 - dSl1) < 1e-9, 'd1=' + dSl1 + ' d2=' + dSl2);
+GS.train.index = 0; GS.train.frac = 0; ENG.boost = 2;
+ENG.update(0.05); const dUp2 = GS.train.frac;   // dtFast = 3×0.05
+GS.train.index = 0; GS.train.frac = 0; ENG.boost = 0;
+ENG.update(0.05); const dUp1 = GS.train.frac;
+check('[51b] ENG.update 全局快进：boost=2 → 帧位移 ×3',
+  dUp1 > 0 && Math.abs(dUp2 / dUp1 - 3) < 0.01, 'd1=' + dUp1 + ' d2=' + dUp2);
 
 // [52] 非 dusk（白天）或还有怪 → boost 归零
 CLOCK.phase = 'day'; GS.foes = [mkFoe(0, 0, 10)];
@@ -428,7 +441,7 @@ GS.foes = [mkFoe(wpos0.c, wpos0.r, 100)];
 GS.foes[0].c = wpos0.c; GS.foes[0].r = wpos0.r;  // 精确落位（防 mkFoe 内部处理）
 const hpRef75 = GS.foes[0].hp;
 ENG.trainAtkCd = 5;                              // 屏蔽车头塔式
-ENG.wagonCombat(0.01);
+fireWagons();
 check('[75] 1星车厢独立打 12 伤（固定基数）', Math.abs(GS.foes[0].hp - (hpRef75 - 12)) < 1e-9,
   'hp=' + GS.foes[0].hp.toFixed(2) + ' 期望 ' + (hpRef75 - 12));
 
@@ -437,42 +450,42 @@ GS.towers[0].star = 2;
 GS.towers[0].wcd = 0;                            // [75] 攻击后进了冷却，清零再测
 GS.foes = [mkFoe(ENG.wagonPos(0).c, ENG.wagonPos(0).r, 100)];
 const hpRef76 = GS.foes[0].hp;
-ENG.wagonCombat(0.01);
+fireWagons();
 check('[76] 2星车厢打 24 伤', Math.abs(GS.foes[0].hp - (hpRef76 - 24)) < 1e-9,
   'hp=' + GS.foes[0].hp.toFixed(2));
 GS.towers[0].star = 1;
 
-// [77] 特效挂每节自己的攻击（v1.6.34 塔型化）：炮车厢命中 → burn；寒冰车厢命中 → slow
+// [77] 特效挂每节自己的攻击（塔型化）：火炮车厢命中无特效（灼烧 v1.8k 退役）；冰环车厢命中 → slow
 GS.towers[0].wcd = 0;
 GS.towers[0].elem = 'cannon';
 GS.foes = [mkFoe(ENG.wagonPos(0).c, ENG.wagonPos(0).r, 100)];
-ENG.wagonCombat(0.01);
-const burned = GS.foes[0].burn === 2 && !GS.foes[0].slow;
+fireWagons();
+const noBurn = !GS.foes[0].burn && !GS.foes[0].slow;
 GS.towers[0].wcd = 0;                            // 炮段攻击后进了冷却，冰段前清零
 GS.towers[0].elem = 'ice';
 GS.foes = [mkFoe(ENG.wagonPos(0).c, ENG.wagonPos(0).r, 100)];
-ENG.wagonCombat(0.01);
-check('[77] 特效按节归属', burned && GS.foes[0].slow === 1.5 && !GS.foes[0].burn,
-  'cannon.burn=' + burned + ' ice.slow=' + (GS.foes[0].slow === 1.5));
+fireWagons();
+check('[77] 特效按节归属：火炮无特效（灼烧退役）· 冰环挂减速', noBurn && GS.foes[0].slow === 1.5,
+  'cannon.clean=' + noBurn + ' ice.slow=' + (GS.foes[0].slow === 1.5));
 
-// [78] 塔型攻击间隔（v1.6.34 方案 A：间隔由 TOWERS.TYPES 接管）—— 寒冰最快 1.0s / 炮塔最慢 3.0s
+// [78] 塔型攻击间隔（v1.8j 车厢改版：间隔由 TOWERS.TYPES 接管）—— 冰环 2.0s / 火炮最慢 3.0s
 GS.towers[0].wcd = 0;
 GS.towers[0].elem = 'ice';
 GS.foes = [mkFoe(ENG.wagonPos(0).c, ENG.wagonPos(0).r, 100)];
-ENG.wagonCombat(0.01);
+fireWagons();
 const wcdIce = GS.towers[0].wcd;
 GS.towers[0].wcd = 0;
 GS.towers[0].elem = 'cannon';
 GS.foes = [mkFoe(ENG.wagonPos(0).c, ENG.wagonPos(0).r, 100)];
-ENG.wagonCombat(0.01);
-check('[78] 塔型间隔：寒冰 1.0s / 炮塔 3.0s',
-  Math.abs(wcdIce - 1.0) < 1e-9 && Math.abs(GS.towers[0].wcd - 3.0) < 1e-9,
+fireWagons();
+check('[78] 塔型间隔：冰环 2.0s / 火炮 3.0s',
+  Math.abs(wcdIce - 2.0) < 1e-9 && Math.abs(GS.towers[0].wcd - 3.0) < 1e-9,
   'ice=' + wcdIce + ' cannon=' + GS.towers[0].wcd);
 
-// [79] 冰车厢减速生效（v1.3.2 移速减半后的口径：speed×0.7）
+// [79] 冰环车厢减速生效（v1.3.2 移速减半后的口径：speed×0.7）
 //   ⚠️ 怪不能放车厢位正中：开局环的车厢位距核心恰 1 格，会进 REACH 攻击分支不动窝
 //   （[79] 首版 Δ=0 的教训）—— 沿"车厢→核心"反向延长 1.5 格放怪：
-//   距车厢 1.5 < 射程 2.5 ✓，距核心 ≈2.5 > REACH 1.01 ✓
+//   距车厢 1.5 < 射程 2.2（v1.8j 近距离）✓，距核心 ≈2.5 > REACH 1.01 ✓
 GS.towers[0].wcd = 0;
 GS.towers[0].elem = 'ice';
 {
@@ -482,7 +495,7 @@ GS.towers[0].elem = 'ice';
   const foeIce = mkFoe(wp79.c + vx / vl * 1.5, wp79.r + vy / vl * 1.5, 100);
   GS.foes = [foeIce];
   const dRef = Math.hypot(GS.core.c - foeIce.c, GS.core.r - foeIce.r);
-  ENG.wagonCombat(0.01);
+  fireWagons();
   FOES.active = true;
   FOES.update(1.0);
   const dIce = Math.hypot(GS.core.c - GS.foes[0].c, GS.core.r - GS.foes[0].r);
@@ -627,29 +640,40 @@ check('[99] 快照不含塔格（撤销不碰塔）',
   ENG.lastShapeApply.length === 3 && ENG.lastShapeApply.every(p => !(p.c === 5 && p.r === 6)),
   'snapN=' + ENG.lastShapeApply.length);
 
-// [93-94] v1.4.13 节奏刷怪：间隔未到不放 / 到点恰好 +1（数量↑血量↓的波次成长已由 [28][56b] 锁定）
+// [93-94] v1.4.13 节奏刷怪：间隔未到不放 / 到点放一批（数量↑血量↓的波次成长已由 [28][56b] 锁定）
 FOES.reset(); GS.foes.length = 0;
-FOES.startWave();                        // v1.6.16 第 1 波：首批 ceil(36/6)=6 立即 + pending = 30 + cd = BURST_GAP=3.6
-const n93 = GS.foes.length;              // = 6（首批）
+FOES.startWave();                        // v1.8u 十一令第 1 波：首批 ceil(8/6)=2 立即 + pending = 6 + cd = BURST_GAP=3.0
+const n93 = GS.foes.length;              // = 2（首批）
 FOES.update(FOES.CFG.BURST_GAP - 0.01);  // 批间隔差 0.01s：不该放
-check('[93] 节奏刷怪：间隔未到不放假怪', GS.foes.length === n93 && FOES.pending === 30,
+check('[93] 节奏刷怪：间隔未到不放假怪', GS.foes.length === n93 && FOES.pending === 6,
   'n=' + GS.foes.length + ' pending=' + FOES.pending);
-FOES.update(0.02);                       // 跨过批间隔：放一批（6 只）
-check('[94] 节奏刷怪：到点恰好 +6、队列 −6、cd 重置',
-  GS.foes.length === n93 + 6 && FOES.pending === 24 &&
+FOES.update(0.02);                       // 跨过批间隔：放一批（2 只，尾批由 min(pending) 收口）
+check('[94] 节奏刷怪：到点恰好 +2、队列 −2、cd 重置',
+  GS.foes.length === n93 + 2 && FOES.pending === 4 &&
   Math.abs(FOES.spawnCd - (FOES.CFG.BURST_GAP - 0.01)) < 1e-9,
   'n=' + GS.foes.length + ' pending=' + FOES.pending + ' cd=' + FOES.spawnCd.toFixed(3));
 FOES.reset(); GS.foes.length = 0;
 
-// [95-97] v1.6.2 全局倍速：循环 1→2→3→1；默认值与恢复（Node 沙箱无 sessionStorage，
-//   clock.js 内有守卫 —— 正好验证"无存储环境下不炸、功能照常"）
+// [95-97] v1.6.2 全局倍速（v1.8u 五令：干掉 ×3，只留 ×1/×2）；默认值与恢复
+//   （mock sessionStorage 验证"档位记忆 + 非法档拒绝"）
 check('[95] 倍速默认 ×1', CLOCK.timeScale === 1, 'ts=' + CLOCK.timeScale);
-check('[96] 循环 1→2→3→1',
-  CLOCK.cycleSpeed() === 2 && CLOCK.cycleSpeed() === 3 && CLOCK.cycleSpeed() === 1,
+check('[96] 循环 ×1→×2→×1（×3 退役）',
+  CLOCK.cycleSpeed() === 2 && CLOCK.cycleSpeed() === 1 && CLOCK.cycleSpeed() === 2,
   'ts=' + CLOCK.timeScale);
-CLOCK.timeScale = 3;
-check('[97] speedInit 无存储不炸且保持当前档（模拟浏览器恢复语义在 UI 层实测）',
-  (CLOCK.speedInit(), CLOCK.timeScale === 3), 'ts=' + CLOCK.timeScale);
+{ // 恢复守卫：表内档恢复；表外档（旧会话存过的 3）拒绝、保持当前档
+  const store = {};
+  sb.sessionStorage = {
+    getItem: (k) => (k in store ? store[k] : null),
+    setItem: (k, v) => { store[k] = String(v); },
+  };
+  store.kdgSpeed = '2';
+  CLOCK.timeScale = 1; CLOCK.speedInit();
+  check('[97a] 存 2 → speedInit 恢复 ×2', CLOCK.timeScale === 2, 'ts=' + CLOCK.timeScale);
+  store.kdgSpeed = '3';
+  CLOCK.speedInit();
+  check('[97b] 存 3（旧会话非法档）→ 守卫拒绝、保持当前档', CLOCK.timeScale === 2, 'ts=' + CLOCK.timeScale);
+  delete sb.sessionStorage;
+}
 CLOCK.timeScale = 1;
 
 // [120-126] v1.6.10 手牌直接合成（英雄卡拖到场上同名 1 星塔上 = 直接升星）

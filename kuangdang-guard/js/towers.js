@@ -1,11 +1,10 @@
 // ============================================================================
-// 塔模块 —— **v1.6.34 塔型替换**（大王拍板 2026-10-13：英雄卡元素 → 4 塔型）
+// 塔模块 —— **v1.8j 车厢改版**（大王拍板 2026-10-19：4 车厢重命名 + 攻击方式重定；v1.8k/l 数值微调）
+//   · 机枪（arrow）/ 火炮（cannon）/ 冰环（ice）/ 闪电（magic），数值见 TYPES 表注释；
+//   · **内部 id 仍是 arrow/cannon/magic/ice**（词条归属、存档、色板零迁移），只改展示名。
 //
-// 沿革：v1.3-rc 冰火雷毒四元素（只做数值差异）→ v1.6.34 **移植 DIY 塔防的 4 塔型**：
-//   · 箭塔 arrow / 炮塔 cannon / 魔法塔 magic / 寒冰塔 ice（数值方案 A「等 DPS 包络」）；
-//   · **字段名仍是 `elem`**（避免全库改名），只是**取值域**从 fire/ice/thunder/poison
-//     换成 arrow/cannon/magic/ice —— 现有元素特效**并入塔型**：
-//     火→炮塔灼烧、毒→魔法塔中毒、冰→寒冰塔减速、雷→箭塔高频。
+// 沿革：v1.3-rc 冰火雷毒四元素（只做数值差异）→ v1.6.34 **移植 DIY 塔防的 4 塔型**
+//   （箭塔/炮塔/魔法塔/寒冰塔，字段名仍叫 `elem`）→ v1.8j 改名定稿如上。
 //
 // 数值方案 A（**等 DPS 包络**，不动我们的平衡基准）：四种塔**只在"伤害×攻速"的乘积内取舍**
 //   （都 ≈0.833 基准/秒），靠范围 / 特效 / 射程换差异。表在 `TOWERS.TYPES`，调优只动它。
@@ -23,18 +22,26 @@
 // ============================================================================
 window.TOWERS = {};
 
-// 四塔型数值表（**方案 A：等 DPS 包络**，2026-10-13 大王拍板）
+// 四塔型数值表（**v1.8j 大王令车厢改版**：名称与攻击方式重定，等 DPS 包络基准不动）
 //   · dmgMul  伤害倍率（基准 = 12×star 固定基数，见 ENG.WAGON.dmg；v1.6.79 起不随波次）
-//   · interval 攻击间隔秒        · range 射程（格，欧氏）
-//   · targets  1 = 单体；'aoe' = 命中格 3×3 内全体（cannon）
-//   · effect   'none' | 'burn'（灼烧 2s）| 'poison'（中毒 4s）| 'slow'（减速 1.5s）
-//   ▍DPS 包络：箭 1.0/1.2=0.833 · 炮 2.5/3.0=0.833（AOE）· 魔法 2.0/2.4=0.833 · 冰 0.8/1.0=0.800
-//   ▍配色沿用旧元素色板（3 色复用 + 魔法换紫），避免与金币黄/城墙橙/怪红撞脸。
+//   · interval 攻击间隔秒        · range 射程（格，欧氏；4.5=标准距离）
+//   · dmgType 'phys' 物理 | 'magic' 魔法（展示口径；当前无抗性结算，见规格 §14.60）
+//   · targets  1 = 单体；'aoe' = 命中点溅射 splash 半径圆内全体（cannon）；
+//              'ring' = 以车厢自身为圆心、射程为半径的环内全体（ice）
+//   · effect   'none' | 'slow'（减速 1.5s）—— burn/poison 已退役（灼烧 v1.8k、中毒 v1.8j）
+//   ▍预期 DPS 口径（v1.8l 定稿，E[N]：火炮溅射 2 / 冰环 2.5 / 单体 1）：
+//     机枪 10 · 火炮 15×2/3s=10 · 冰环 6.4×2.5/2s=8（减速效用找平，压到 10 以下）· 闪电 10
+//   ▍v1.8j 拍板要点：火炮射程 6.3→4.5 回归标准、溅射 3×3 方块→半径 1.3 圆（大王报"AOE 太大"）；
+//     闪电去中毒回归纯单体爆发；冰环改近距离环绕 AOE（减速保留，i 系词条依赖它）。
+//   ▍v1.8k 微调：机枪 4 伤/0.4s（每发更小、响应更快）；火炮灼烧退役（遗留 DoT 干掉）。
+//   ▍v1.8l 调平（预期 DPS 口径）：火炮 30→15/发（预期 20→10）；冰环 9.6→6.4/发（预期 12→8）——
+//     间隔/射程/特效全不动，只降每发伤害。
+//   ▍配色沿用旧元素色板，避免与金币黄/城墙橙/怪红撞脸。
 TOWERS.TYPES = {
-  arrow:  { id: 'arrow',  name: '箭塔',   color: '#f7d94c', dmgMul: 1.0, interval: 1.2, range: 4.5, targets: 1,     effect: 'none'   },
-  cannon: { id: 'cannon', name: '炮塔',   color: '#e8563f', dmgMul: 2.5, interval: 3.0, range: 6.3, targets: 'aoe', effect: 'burn'   },
-  magic:  { id: 'magic',  name: '魔法塔', color: '#a855f7', dmgMul: 2.0, interval: 2.4, range: 5.4, targets: 1,     effect: 'poison' },
-  ice:    { id: 'ice',    name: '寒冰塔', color: '#6ec6ff', dmgMul: 0.8, interval: 1.0, range: 3.6, targets: 1,     effect: 'slow'   }
+  arrow:  { id: 'arrow',  name: '机枪', color: '#f7d94c', dmgMul: 1/3, interval: 0.4, range: 4.5, targets: 1,     dmgType: 'phys',  effect: 'none' },
+  cannon: { id: 'cannon', name: '火炮', color: '#e8563f', dmgMul: 1.25, interval: 3.0, range: 4.5, targets: 'aoe', splash: 1.3, dmgType: 'phys', effect: 'none' },
+  ice:    { id: 'ice',    name: '冰环', color: '#6ec6ff', dmgMul: 8/15, interval: 2.0, range: 2.2, targets: 'ring',             dmgType: 'magic', effect: 'slow' },
+  magic:  { id: 'magic',  name: '闪电', color: '#a855f7', dmgMul: 2.0, interval: 2.4, range: 4.5, targets: 1,     dmgType: 'magic', effect: 'none' }
 };
 
 // （2026-10-15 代码整理：TOWERS.typeOf(elem) 已删 —— 全项目 0 调用（取塔型历来
@@ -48,7 +55,8 @@ TOWERS.CFG = {
 
 // 四塔型固定顺序（随机抽取 / 渲染色板都按这个序，保证稳定）
 //   ⚠️ 名称保留 `ELEMS` 是**兼容别名**（大量旧引用读它），语义已是"塔型"。
-TOWERS.ELEMS = ['arrow', 'cannon', 'magic', 'ice'];
+//   ▍v1.8j：顺序改为大王列举序 机枪→火炮→冰环→闪电。
+TOWERS.ELEMS = ['arrow', 'cannon', 'ice', 'magic'];
 
 TOWERS.randElem = function () {
   return TOWERS.ELEMS[Math.floor(Math.random() * TOWERS.ELEMS.length)];

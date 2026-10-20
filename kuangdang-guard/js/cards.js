@@ -54,16 +54,18 @@ GS.pickHeroCard = function (elem) {
 };
 
 // ---- v1.6.23 建筑卡（铸币所 / 加油站）----
-//   · 铸币所 mint：落位后**全场**金币价值 +CFG.MINT_BONUS（多座叠加，大王拍板）；
+//   · 铸币所 mint：3×3 内被覆盖金币格拾取**枚数** +1/座（多座叠加；v1.8u 三拍板
+//     澄清「数量+1 非价值+1」，金额 = 枚数 × GOLD_RATE，见 resources.js goldValue）；
 //   · 加油站 gas ：落位后 3×3 内车头提速（每座 +1 倍速、求和；boost 加速期不生效）。
-GS.BUILDINGS = ['mint', 'gas', 'factory'];   // v1.6.35：+军工厂
+GS.BUILDINGS = ['mint', 'gas', 'atk', 'asp'];   // v1.8u 十三令：军工厂退役，+猛攻坊/疾速坊
 // ⚠️ 卡面文案（v1.6.33 大王令）：**去掉"（可叠加）"字样** —— 卡面只讲"做什么"，
-//   叠加规则是系统口径（多座叠加照旧生效，见 resources.js GS.goldValue / GS.gasCoverAt），
-//   不再往卡面堆说明。别为了"提示完整"又加回来。
+//   叠加规则是系统口径（多座叠加照旧生效，见 resources.js GS.goldValue / GS.gasCoverAt /
+//   GS.atkBoostAt / GS.aspBoostAt），不再往卡面堆说明。别为了"提示完整"又加回来。
 GS.BUILDING_INFO = {
-  mint:    { name: '铸币所', sub: '全场金币价值 +' + CFG.MINT_BONUS },
+  mint:    { name: '铸币所', sub: '覆盖金币 +' + CFG.MINT_BONUS + ' 枚（3×3）' },
   gas:     { name: '加油站', sub: '3×3 内列车提速' },
-  factory: { name: '军工厂', sub: '车厢攻击 +20%' }   // 相邻聚集 +10% 是系统口径，不上卡面
+  atk:     { name: '猛攻坊', sub: '左右车厢攻击 +100%' },
+  asp:     { name: '疾速坊', sub: '上下车厢攻速 +100%' }
 };
 GS.pickBuildingCard = function (bkey) {
   return { kind: 'building', id: ++GS._cardSeq,
@@ -94,8 +96,8 @@ GS.rollCardKind = function () {
 //      扩张断链）。"首次"按**局**计：标记 `GS.__offerSeen` 由 newGame 清零（重开/换关/
 //      切模式都重置），发过一轮即置 true，之后按概率正常发牌。
 //   去重：形状按尺寸家族 / 英雄按元素 / 建筑按种类；撞重就重抽。
-//   ⚠️ 兜底：建筑只有 2 种，若长时间撞重（重抽 >30 次）改补**英雄卡**（4 种元素，
-//      三张必不撞）——保证一定凑满 3 张，且不写"抽重就重抽整组"的循环。
+//   ⚠️ 兜底：建筑有 4 种（v1.8u 十三令起），若长时间撞重（重抽 >30 次）改补**英雄卡**
+//      （4 种元素，三张必不撞）——保证一定凑满 3 张，且不写"抽重就重抽整组"的循环。
 GS.drawCardOffer = function () {
   var cards = [], sigs = {}, guard = 0;
   var first = !GS.__offerSeen;      // 本局首次发牌：首张保底清理形状卡

@@ -232,14 +232,15 @@ check('奖励时间：收尾到站 → 回白天', CLOCK.notifyStation() === tru
 GS.newGame();
 check('开局铁轨 = 3×5 内区的 12 步小环（无十字，故步数=格数）', GS.railPath.length === 12,
   '实际 ' + GS.railPath.length + '：' + GS.railPath.map(p => p.c + ',' + p.r).join(' '));
-// ---- 奖励时间加速（2026-10-11 大王令）：boost 同款 ramp、封顶 3（最高 4×）；dusk 仍 2 ----
+// ---- 奖励时间快进（v1.8u 十五令 §14.86 改版：全局时间快进 dt×(1+boost)，战斗链除外；
+//      v1.8u 十八令 §14.89：奖励/dusk 同上限封顶 3 = 快进 4×，收车不降档）----
 GS.newGame();
 ENG.boost = 0;                            // boost 由 ENG.restart 初始化，沙箱里手动归零
 ENG.startNight();
 CLOCK.onCleared();                        // 进入奖励时间（夜内清场）
 check('奖励加速：进入奖励时间', CLOCK.reward === true && CLOCK.isNight());
 for (let s = 0; s < 7; s++) ENG.update(0.5);   // 3.5 秒：0.9/秒 ramp → 3.15 封顶到 3
-check('奖励加速：boost 封顶 3（速度系数最高 4×，比 dusk 上限高 50%）',
+check('奖励快进：boost 封顶 3（全局时间快进 4×，战斗链除外；dusk 同上限，§14.89）',
   ENG.boost === 3, 'boost=' + ENG.boost);
 check('v1.6.91 特效闸：奖励时间 boostFx=true', ENG.boostFx === true && ENG.rewardFx === true);
 CLOCK.toDusk(); GS.foes = []; ENG.boost = 0;
@@ -368,6 +369,18 @@ const isOuterRing = (c, r) => c === 0 || c === CFG.MAP_COLS - 1 || r === 0 || r 
     GS.train.picked.length === want, GS.train.picked.length + ' vs ' + want);
   TRANS.deliver();
   check('货堆8：交付后下一圈从 0 重新累积', GS.train.picked.length === 0);
+
+  // v1.8u 七令：车尾货堆图标跟枚数走 —— 铸币所覆盖格拾取 → 金币图标 2 枚
+  GS.newGame();
+  const g9 = GS.goldTiles[0];
+  const h9c = g9.c > 0 ? g9.c - 1 : g9.c + 1;
+  GS.grid[g9.r][h9c].t = 'blank';
+  check('货堆9a：金币邻格造空地可摆铸币所', ENG.placeBuilding(h9c, g9.r, 'mint') === true);
+  TRANS.serviceCell({ c: g9.c, r: g9.r });
+  check('货堆9：铸币所覆盖格拾取 → 车尾金币图标 2 枚（= 金额口径的枚数镜像）',
+    GS.train.cargo === CFG.GOLD_RATE * 2 &&
+    GS.train.picked.filter(k => k === 'gold').length === 2,
+    JSON.stringify(GS.train.picked) + ' cargo=' + GS.train.cargo);
 }
 
 // ============================================================================
@@ -440,17 +453,35 @@ const isOuterRing = (c, r) => c === 0 || c === CFG.MAP_COLS - 1 || r === 0 || r 
     TOWERS.isFreeSpot(free[0].c, free[0].r) === GS.isFreeSpot(free[0].c, free[0].r) &&
     GS.isFreeSpot(free[0].c, free[0].r) === true);
   check('建筑3：铸币所落位成功', ENG.placeBuilding(free[0].c, free[0].r, 'mint') === true);
-  check('建筑4：一座铸币所 → 金币价值 ' + CFG.GOLD_RATE + '+' + CFG.MINT_BONUS,
-    GS.goldValue() === CFG.GOLD_RATE + CFG.MINT_BONUS,
-    'goldValue=' + GS.goldValue());
+  // v1.8u（§14.82 三拍板枚数口径）：覆盖格拾取 = GOLD_RATE×(1+MINT_BONUS×座数)（1枚→2枚…）、
+  //   非覆盖格基础价（1 枚）、无参 goldValue 恒基础价
+  let far = null;
+  for (let r = 0; r < CFG.MAP_ROWS && !far; r++) for (let c = 0; c < CFG.MAP_COLS; c++)
+    if (GS.mintCoverAt(c, r) === 0) { far = { c: c, r: r }; break; }
+  check('建筑4：一座铸币所 → 覆盖格拾取 GOLD_RATE×' + (1 + CFG.MINT_BONUS) + '（1枚→2枚）、非覆盖格基础价、无参=基础价',
+    GS.goldValue(free[0].c, free[0].r) === CFG.GOLD_RATE * (1 + CFG.MINT_BONUS) &&
+    !!far && GS.goldValue(far.c, far.r) === CFG.GOLD_RATE &&
+    GS.goldValue() === CFG.GOLD_RATE,
+    '覆盖=' + GS.goldValue(free[0].c, free[0].r) + ' 非覆盖=' + (far ? GS.goldValue(far.c, far.r) : 'null'));
   ENG.placeBuilding(free[1].c, free[1].r, 'mint');
-  check('建筑5：两座铸币所**叠加** → 金币价值 ' + (CFG.GOLD_RATE + 2 * CFG.MINT_BONUS),
-    GS.goldValue() === CFG.GOLD_RATE + 2 * CFG.MINT_BONUS,
-    'goldValue=' + GS.goldValue());
+  let g2 = null;
+  for (let r = 0; r < CFG.MAP_ROWS && !g2; r++) for (let c = 0; c < CFG.MAP_COLS; c++)
+    if (GS.mintCoverAt(c, r) === 2) { g2 = { c: c, r: r }; break; }
+  check('建筑5：两座铸币所覆盖交叠格**叠加** → ' + (1 + 2 * CFG.MINT_BONUS) + ' 枚 = GOLD_RATE×' + (1 + 2 * CFG.MINT_BONUS),
+    !!g2 && GS.goldValue(g2.c, g2.r) === CFG.GOLD_RATE * (1 + 2 * CFG.MINT_BONUS),
+    '交叠=' + (g2 ? GS.goldValue(g2.c, g2.r) : 'null'));
   {
+    // v1.8u：拾取**带格**入账 —— 金币邻格造空地摆铸币所（测试权宜，规则4a 先例），
+    //   serviceCell 后车斗 = GOLD_RATE×枚数（枚数口径，RES_GAP=2 保证金币邻格无爱心）
     const gt = GS.goldTiles[0], b0 = GS.train.cargo;
+    const hc = gt.c > 0 ? gt.c - 1 : gt.c + 1;
+    GS.grid[gt.r][hc].t = 'blank';
+    check('建筑6a：金币邻格造空地可摆铸币所', ENG.placeBuilding(hc, gt.r, 'mint') === true);
     TRANS.serviceCell({ c: gt.c, r: gt.r });
-    check('建筑6：拾取金币按当前价值入账', GS.train.cargo === b0 + GS.goldValue());
+    check('建筑6：拾取金币**带格**入账（覆盖格 = ' + CFG.GOLD_RATE + '×' + (1 + CFG.MINT_BONUS) + ' 枚）',
+      GS.train.cargo === b0 + GS.goldValue(gt.c, gt.r) &&
+      GS.train.cargo === b0 + CFG.GOLD_RATE * (1 + CFG.MINT_BONUS),
+      '车斗 +' + (GS.train.cargo - b0) + ' 期望 ' + (CFG.GOLD_RATE * (1 + CFG.MINT_BONUS)));
   }
 
   // ③ 落位校验（与抽塔同一条 GS.isFreeSpot）
@@ -465,8 +496,8 @@ const isOuterRing = (c, r) => c === 0 || c === CFG.MAP_COLS - 1 || r === 0 || r 
     ENG.placeBuilding(f0[0].c, f0[0].r, 'gas') === true &&
     ENG.placeBuilding(f0[0].c, f0[0].r, 'mint') !== true);
 
-  // ④ 加油站：3×3 覆盖 + 提速求和 + boost 期不生效
-  GS.newGame();
+  // ④ 加油站：3×3 覆盖 → 车头格查询式提速（v1.8u 十二令改回初版 §14.81，buff 制退役）
+  ENG.restart();          // 归零基准（前序端到端块可能有 boost/摆位残留）
   ENG.boost = 0;
   const rail0 = GS.railPath.slice();
   const host = (function () {
@@ -481,14 +512,59 @@ const isOuterRing = (c, r) => c === 0 || c === CFG.MAP_COLS - 1 || r === 0 || r 
   if (host) {
     ENG.placeBuilding(host.cell.c, host.cell.r, 'gas');
     GS.train.index = rail0.indexOf(host.hit);
-    check('建筑11：车头进入 3×3 → 速度翻倍（系数 2）', ENG.trainSpeedMul() === 2, 'mul=' + ENG.trainSpeedMul());
+    // v1.8u 十二令查询式回归：车头在覆盖格即提速（每座 +100%），无需跨格触发
+    check('建筑11：查询式回归——车头在覆盖格即提速（1 座 = 2×）',
+      ENG.trainSpeedMul() === 2, 'mul=' + ENG.trainSpeedMul());
     ENG.boost = 2;
-    check('建筑12：boost 加速期间加油站不生效（系数 = 1+boost，不叠加）',
-      ENG.trainSpeedMul() === 3, 'mul=' + ENG.trainSpeedMul());
+    check('建筑12：boost 不再短路（v1.8u 十五令 §14.86：boost 走 dt 快进，系数仍读覆盖）',
+      ENG.trainSpeedMul() === 2, 'mul=' + ENG.trainSpeedMul());
     ENG.boost = 0;
-    check('建筑13：覆盖计数求和（系数 = 1 + 覆盖座数）',
-      ENG.trainSpeedMul() === 1 + GS.gasCoverAt(host.hit.c, host.hit.r));
+    check('建筑13：系数直读覆盖座数（1 + gasCoverAt）',
+      ENG.trainSpeedMul() === 1 + GS.gasCoverAt(host.hit.c, host.hit.r),
+      'mul=' + ENG.trainSpeedMul());
   }
+
+// ============================================================================
+// [GB] 加油站提速（v1.8u 十二令改回初版 §14.81：查询式 +100%/座、可叠加、无尾巴）
+// ============================================================================
+{
+  ENG.restart();          // 归零基准
+  ENG.boost = 0;
+  const rail = GS.railPath.slice();
+  const spot = (function () {
+    for (let r = 0; r < CFG.MAP_ROWS; r++) for (let c = 0; c < CFG.MAP_COLS; c++) {
+      if (!GS.isFreeSpot(c, r)) continue;
+      const hit = rail.find(p => Math.max(Math.abs(p.c - c), Math.abs(p.r - r)) <= CFG.GAS_RANGE);
+      if (hit) return { cell: { c: c, r: r }, hit: hit, idx: rail.indexOf(hit) };
+    }
+    return null;
+  })();
+  ENG.placeBuilding(spot.cell.c, spot.cell.r, 'gas');
+  // ① 覆盖格提速：车头在覆盖格 ⇒ 1 + 覆盖座数（1 座 = 2×），无需跨格触发
+  GS.train.index = spot.idx;
+  check('[GB] 覆盖格提速：1 座 = 2×（每座 +100%）', ENG.trainSpeedMul() === 2,
+    'mul=' + ENG.trainSpeedMul());
+  // ② 无尾巴：车头挪到无覆盖格 ⇒ 立即回落 1×（查询式与旧 buff 制的本质区别）
+  const far = rail.findIndex(p => GS.gasCoverAt(p.c, p.r) === 0);
+  check('[GB] 前置：环上存在无覆盖格', far >= 0);
+  GS.train.index = far;
+  check('[GB] 离开覆盖格立即回落（无尾巴）', ENG.trainSpeedMul() === 1,
+    'mul=' + ENG.trainSpeedMul() + ' far=' + far);
+  // ③ 可叠加：第二座站也盖同一格（测试直注建筑，等价 3×3 内同格两座）⇒ 1+2 = 3×
+  GS.buildings.push({ type: 'gas', c: spot.hit.c, r: spot.hit.r - 1 });
+  GS.train.index = spot.idx;
+  check('[GB] 可叠加：两座同盖 = 3×（求和非连乘、无上限）',
+    GS.gasCoverAt(spot.hit.c, spot.hit.r) === 2 && ENG.trainSpeedMul() === 3,
+    'cov=' + GS.gasCoverAt(spot.hit.c, spot.hit.r) + ' mul=' + ENG.trainSpeedMul());
+  // ④ boost 不短路（v1.8u 十五令 §14.86）：boost 走 dt 快进，系数全程 = 1+覆盖座数
+  ENG.boost = 3;
+  check('[GB] boost 不短路：boost=3 时系数仍 = 1+覆盖座数（两座格）', ENG.trainSpeedMul() === 3);
+  ENG.boost = 0;
+  // ⑤ 重开归零：restart 清建筑与车头位置 ⇒ 覆盖 0、系数 1
+  ENG.restart();
+  check('[GB] 重开归零',
+    ENG.trainSpeedMul() === 1 && GS.buildings.every(b => b.type !== 'gas'));
+}
 
   // ⑤ 三选一：三类卡同池 + 概率 40/35/25 + 去重
   GS.newGame();
@@ -550,18 +626,70 @@ const isOuterRing = (c, r) => c === 0 || c === CFG.MAP_COLS - 1 || r === 0 || r 
 }
 
 // ============================================================================
+// [FX2] 伤害/击杀飘字（v1.8s 大王令 C：特效盘点清单 C 销账）
+// ============================================================================
+{
+  GS.newGame();
+  sandbox.LAY = CFG.layout();   // 飘字锚点换算需要布局（游戏里 LAY 由 main 每帧喂）
+  GS.floats = [];
+  const mkHit = (hp, cd) => ({ c: 4.2, r: 6.3, hp: hp, maxHp: 100, dmgFloatT: cd || 0, hitFlash: 0, slow: 0 });
+  // ① 普通伤害飘字：kind=dmg、文本=实扣血量、锚点在怪位附近
+  const fA = mkHit(100);
+  ENG.dmgFloat(fA, 8, false);
+  const d1 = GS.floats[0];
+  check('[FX2] 伤害飘字生成：kind=dmg / 文本=实扣血 / 锚点=怪位换算',
+    d1 && d1.kind === 'dmg' && d1.text === '8' &&
+    Math.abs(d1.x - CFG.ccx(sandbox.LAY, 4.2)) < 0.01 &&
+    Math.abs(d1.y - (CFG.ccy(sandbox.LAY, 6.3) - 14)) < 0.01,
+    JSON.stringify(d1));
+  check('[FX2] 节流冷却置位 0.3s', fA.dmgFloatT === ENG.DMG_FLOAT_CD);
+  // ② 同怪节流：0.3s 冷却内的第二次命中不飘（机枪 0.4s 高频防糊屏）
+  ENG.dmgFloat(fA, 8, false);
+  check('[FX2] 同怪 0.3s 节流 ⇒ 冷却中不生成', GS.floats.length === 1);
+  // ③ 冷却过后恢复生成
+  fA.dmgFloatT = 0;
+  ENG.dmgFloat(fA, 8, false);
+  check('[FX2] 冷却过后恢复生成', GS.floats.length === 2);
+  // ④ 击杀飘字：kind=kill 且无视节流（冷却中击杀也必须报）；补刀（preHp≤0）不报击杀
+  const fK = mkHit(5, 0.2);   // 冷却中
+  ENG.dmgFloat(fK, 9, true);
+  const k1 = GS.floats[2];
+  check('[FX2] 击杀飘字：kind=kill / 无视节流必报', k1 && k1.kind === 'kill' && k1.text === '9');
+  ENG.dmgFloat(mkHit(-3), 9, false);   // 已死怪补刀：killed=false（preHp≤0）
+  const k2 = GS.floats[3];
+  check('[FX2] 补刀不报击杀（preHp≤0 ⇒ kind=dmg）', k2 && k2.kind === 'dmg');
+  // ⑤ ttl 短于交付飘字（战斗高频，长寿命会叠成一片）
+  check('[FX2] 伤害飘字 ttl 0.75s < 交付 1.15s', ENG.DMG_FLOAT_TTL === 0.75 && ENG.DMG_FLOAT_TTL < ENG.FLOAT_TTL);
+  // ⑥ 交付清场只清 gold/heal 行，伤害/击杀飘字保留
+  ENG.spawnDeliverFloats(10, 5);
+  const kinds = GS.floats.map(x => x.kind);
+  check('[FX2] 交付清场 ⇒ 只清交付行，dmg/kill 保留',
+    kinds.indexOf('gold') >= 0 && kinds.indexOf('heal') >= 0 &&
+    kinds.indexOf('dmg') >= 0 && kinds.indexOf('kill') >= 0,
+    JSON.stringify(kinds));
+  // ⑦ 无 LAY（纯逻辑沙箱）不生成——与交付飘字同一退化口径
+  sandbox.LAY = null;
+  GS.floats = [];
+  ENG.dmgFloat(mkHit(10), 5, true);
+  check('[FX2] 无 LAY ⇒ 不生成（typeof 守卫）', GS.floats.length === 0);
+  delete sandbox.LAY;   // 还原：后续块（[SP] 等）不感知布局
+  ENG.dmgFloat(mkHit(10), 5, true);
+  check('[FX2] 还原后仍不生成', GS.floats.length === 0);
+}
+
+// ============================================================================
 // [SP] 固定刷怪点（v1.6.50 大王令：数量随波增、位置每波重抽、预警 ×数量守恒）
 // ============================================================================
 {
   FOES.reset();            // wave 归零 + 预生成第 1 波点位（前序战斗块可能已推高 wave）
   GS.newGame();
-  // ① 第 1 波点位：N=3（v1.6.56）、count 总和 = count(1)=36、点间距 ≥3、均在地图外 ≥2 格
+  // ① 第 1 波点位：N=3（v1.6.56）、count 总和 = count(1)=8、点间距 ≥3、均在地图外 ≥2 格
   const ns = GS.nextSpawns;
   check('[SP] newGame ⇒ 第 1 波点位就绪（3 个点，预警可用）',
     Array.isArray(ns) && ns.length === FOES.nextPointCount(1),
     JSON.stringify(ns));
   const cntSum = ns.reduce((s, p) => s + p.count, 0);
-  check('[SP] 各点 count 之和 = 本波总怪数 36（均分+余数随机）', cntSum === FOES.CFG.count(1),
+  check('[SP] 各点 count 之和 = 本波总怪数 8（均分+余数随机）', cntSum === FOES.CFG.count(1),
     'sum=' + cntSum);
   let gapOk = true;
   for (let i = 0; i < ns.length; i++) for (let j = i + 1; j < ns.length; j++)
@@ -569,11 +697,11 @@ const isOuterRing = (c, r) => c === 0 || c === CFG.MAP_COLS - 1 || r === 0 || r 
   check('[SP] 点间距 ≥ 3 格（2a）', gapOk);
   const outOk = ns.every(p => p.r <= -2 || p.r >= 12 + 2 || p.c <= -2 || p.c >= 8 + 2);
   check('[SP] 点位均在地图外 ≥ 2 格', outOk, JSON.stringify(ns));
-  // ② 数量梯度（1a）：2/2→3/3→4/4→5/5→5 封顶
-  check('[SP] 点数梯度 min(8,max(3,round(per/3)))：w1=3 w3=3 w4=4 w7=6 w10=8 w13=8',
+  // ② 数量梯度（1a）：v1.8u 十一令 count=6w+2 下移 —— w1=3 w3=3 w10=3 w13=4 w20=7 w25=8
+  check('[SP] 点数梯度 min(8,max(3,round(per/3)))：w1=3 w3=3 w10=3 w13=4 w20=7 w25=8',
     FOES.nextPointCount(1) === 3 && FOES.nextPointCount(3) === 3 &&
-    FOES.nextPointCount(4) === 4 && FOES.nextPointCount(7) === 6 &&
-    FOES.nextPointCount(10) === 8 && FOES.nextPointCount(13) === 8);
+    FOES.nextPointCount(10) === 3 && FOES.nextPointCount(13) === 4 &&
+    FOES.nextPointCount(20) === 7 && FOES.nextPointCount(25) === 8);
   // ③ 避重（3a）：带 prev 生成的新点全部距 prev ≥ 2 格
   const gen2 = FOES.genSpawns(2, ns);
   check('[SP] 下一波点位避开上一波（距离 ≥ 2 格）',

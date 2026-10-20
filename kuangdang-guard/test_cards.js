@@ -68,7 +68,8 @@ for (const f of ['js/config/map.js', 'js/state.js', 'js/resources.js', 'js/cards
                  'js/engine.js', 'js/renderer.js', 'js/ui.js']) {
   vm.runInContext(fs.readFileSync(path.join(ROOT, f), 'utf8'), sandbox, { filename: f });
 }
-const CFG = sandbox.CFG, GS = sandbox.GS, UI = sandbox.UI, REND = sandbox.REND;
+const CFG = sandbox.CFG, GS = sandbox.GS, UI = sandbox.UI, REND = sandbox.REND,
+      ENG = sandbox.ENG, TOWERS = sandbox.TOWERS;   // [C6] 建筑拖动用例补 ENG/TOWERS
 GS.debugNoDeadline = true;
 GS.newGame();
 
@@ -83,7 +84,8 @@ function kindsOf(el) { return el.children.map(c => c.className); }
   const hero = { kind: 'hero', id: 2, elem: 'arrow' };
   const mint = { kind: 'building', id: 3, bkey: 'mint' };
   const gas = { kind: 'building', id: 4, bkey: 'gas' };
-  const factory = { kind: 'building', id: 5, bkey: 'factory' };
+  const atk = { kind: 'building', id: 5, bkey: 'atk' };
+  const asp = { kind: 'building', id: 7, bkey: 'asp' };
   const affix = { kind: 'affix', id: 6, aid: 'a1' };
 
   for (const [tag, card, isOffer] of [['p', shape, false], ['p', hero, false],
@@ -113,11 +115,14 @@ function kindsOf(el) { return el.children.map(c => c.className); }
     eHero.children[0].className === 'p-art' && heroGlyph.className === 'art-hex');
   check('[C3] 英雄卡顶部上塔型色（与塔同色）',
     heroGlyph.style.background === REND.C.tower['arrow'], String(heroGlyph.style.background));
-  check('[C3] 英雄卡名字 = 塔型名（v1.6.34 塔型化）', eHero.children[1].textContent === '箭塔',
+  check('[C3] 英雄卡名字 = 塔型名（v1.8j 车厢改版）', eHero.children[1].textContent === '机枪',
     eHero.children[1].textContent);
   const eBld = mkEl('div'); UI.fillCardDom(eBld, mint, false);
-  check('[C3] 建筑卡顶部 = 方块（.art-sq，建筑的形状语言）',
-    eBld.children[0].children[0].className === 'art-sq');
+  // v1.8u 三拍板：铸币所卡顶从单块黄方块改 3×3 范围图（金系，大王令"卡牌样式参考加油站"）
+  check('[C3] 铸币所卡顶 = 范围图（3×3 全 9 格，中心金色）',
+    eBld.children[0].className === 'p-range' && eBld.children[0].children.length === 9 &&
+    eBld.children[0].children[4].style.background === '#f0b429' &&
+    eBld.children[0].children[0].style.background !== '#f0b429');
 
   // 文案：形状卡有"清理 N 格"描述；英雄卡"建造后 +1 车厢"
   check('[C4] 形状卡描述 = 清理 4 格', eShape.children[2].textContent === '清理 4 格',
@@ -126,8 +131,9 @@ function kindsOf(el) { return el.children.map(c => c.className); }
     eHero.children[2].textContent);
 
   // ⭐ 大王令：建筑卡描述**干掉"（可叠加）"**（叠加规则照旧生效，只是不再写卡面）
-  check('[C4] 铸币所描述无"可叠加"（= 全场金币价值 +' + CFG.MINT_BONUS + '）',
-    eBld.children[2].textContent === '全场金币价值 +' + CFG.MINT_BONUS &&
+  //   v1.8u（§14.82 三拍板）：铸币所 sub 改覆盖枚数口径「覆盖金币 +1 枚（3×3）」
+  check('[C4] 铸币所描述 = 覆盖金币 +' + CFG.MINT_BONUS + ' 枚（3×3），无"可叠加"',
+    eBld.children[2].textContent === '覆盖金币 +' + CFG.MINT_BONUS + ' 枚（3×3）' &&
     eBld.children[2].textContent.indexOf('叠加') < 0, eBld.children[2].textContent);
   const eGas = mkEl('div'); UI.fillCardDom(eGas, gas, false);
   check('[C4] 加油站描述无"可叠加"（= 3×3 内列车提速）',
@@ -142,14 +148,25 @@ function kindsOf(el) { return el.children.map(c => c.className); }
     eGas2.children[0].className === 'p-range' && eGas2.children[0].children.length === 9 &&
     eGas2.children[0].children[4].style.background === '#5ec8f0' &&
     eGas2.children[0].children[0].style.background !== '#5ec8f0');
-  const eFac = mkEl('div'); UI.fillCardDom(eFac, factory, false);
-  const facCells = eFac.children[0].children;
-  const facVisible = facCells.filter(d => d.style.visibility !== 'hidden').length;
-  check('[C5] 军工厂卡顶 = 范围图（十字 5 格：四角隐藏）',
-    eFac.children[0].className === 'p-range' && facCells.length === 9 && facVisible === 5 &&
-    facCells[4].style.background === '#7e57c2', 'visible=' + facVisible);
-  check('[C5] 军工厂描述 = 车厢攻击 +20%', eFac.children[2].textContent === '车厢攻击 +20%',
-    eFac.children[2].textContent);
+  // ── v1.8u 十三令（§14.84）：军工厂退役 → 猛攻坊（横条）/ 疾速坊（竖条）──
+  const eAtk = mkEl('div'); UI.fillCardDom(eAtk, atk, false);
+  const atkCells = eAtk.children[0].children;
+  const atkVisible = atkCells.filter(d => d.style.visibility !== 'hidden').length;
+  check('[C5] 猛攻坊卡顶 = 范围图（横条 3 格：上下行隐藏，中心绯红）',
+    eAtk.children[0].className === 'p-range' && atkCells.length === 9 && atkVisible === 3 &&
+    atkCells[4].style.background === '#c9503f' &&
+    atkCells[3].style.background === 'rgba(224,86,63,0.45)', 'visible=' + atkVisible);
+  check('[C5] 猛攻坊描述 = 左右车厢攻击 +100%', eAtk.children[2].textContent === '左右车厢攻击 +100%',
+    eAtk.children[2].textContent);
+  const eAsp = mkEl('div'); UI.fillCardDom(eAsp, asp, false);
+  const aspCells = eAsp.children[0].children;
+  const aspVisible = aspCells.filter(d => d.style.visibility !== 'hidden').length;
+  check('[C5] 疾速坊卡顶 = 范围图（竖条 3 格：左右列隐藏，中心青碧）',
+    eAsp.children[0].className === 'p-range' && aspCells.length === 9 && aspVisible === 3 &&
+    aspCells[4].style.background === '#3dbd9e' &&
+    aspCells[1].style.background === 'rgba(61,189,158,0.45)', 'visible=' + aspVisible);
+  check('[C5] 疾速坊描述 = 上下车厢攻速 +100%', eAsp.children[2].textContent === '上下车厢攻速 +100%',
+    eAsp.children[2].textContent);
 
   // ── v1.6.34 词条卡（第 5 类卡）──
   const eAf = mkEl('div'); UI.fillCardDom(eAf, affix, false);
@@ -161,9 +178,9 @@ function kindsOf(el) { return el.children.map(c => c.className); }
     eAf.children[1].textContent === '散射箭' &&
     eAf.children[2].textContent.length > 4, eAf.children[2].textContent);
   check('[C5] cardLabel 五类齐（塔型名替换元素名）',
-    UI.cardLabel(hero) === '塔·箭塔' && UI.cardLabel(affix) === '词条·散射箭' &&
-    UI.cardLabel(factory) === '建筑·军工厂',
-    UI.cardLabel(hero) + '/' + UI.cardLabel(affix) + '/' + UI.cardLabel(factory));
+    UI.cardLabel(hero) === '塔·机枪' && UI.cardLabel(affix) === '词条·散射箭' &&
+    UI.cardLabel(atk) === '建筑·猛攻坊' && UI.cardLabel(asp) === '建筑·疾速坊',
+    UI.cardLabel(hero) + '/' + UI.cardLabel(affix) + '/' + UI.cardLabel(atk) + '/' + UI.cardLabel(asp));
 }
 
 // ============================================================================
@@ -303,6 +320,164 @@ function kindsOf(el) { return el.children.map(c => c.className); }
   const e2 = GS.importMap(txt1.join('\n').replace(/^(rail\(\d+\): )\d+,\d+/m, '$19,9'));
   check('[IM] check 首尾格不符被拒收', typeof e2 === 'string' && e2.indexOf('不符') >= 0, e2);
   GS.newGame();                                     // 恢复干净盘面
+}
+
+// ============================================================================
+// [C6] 场上建筑自由拖动（v1.8u 十四令 §14.85）：移动 / 交换 / 下场变卡 / 非法弹回
+//   —— 大王令"建筑不再能合成升级"，位置调整替代升级：拖空地=移动、拖建筑=交换、
+//   拖出画布=变回卡牌（进牌库尾部，可逆）；金币/塔/镇中心全弹回。
+// ============================================================================
+{
+  sandbox.FOES = sandbox.FOES || { wave: 0 };
+  UI.setStatus = () => {};
+  UI.renderDeck = () => {};
+  GS.debugNoDeadline = true;
+  GS.newGame();
+  for (let r = 0; r < CFG.MAP_ROWS; r++) for (let c = 0; c < CFG.MAP_COLS; c++) {
+    GS.grid[r][c].gold = false; GS.grid[r][c].heart = false;   // 清资源格凑干净可行区
+  }
+  GS.goldTiles = []; GS.heartTiles = [];
+  // 开局自带 12 格初始环（内区真空地只剩 2 格）—— 清几块废墟凑拖动用例的场地
+  let made = 0;
+  for (let r = 0; r < CFG.MAP_ROWS && made < 6; r++)
+    for (let c = 0; c < CFG.MAP_COLS && made < 6; c++) {
+      if (GS.grid[r][c].t === 'blank' || GS.grid[r][c].b || GS.onRail(c, r)) continue;
+      GS.grid[r][c].t = 'blank'; made++;
+    }
+  const free = [];
+  for (let r = 0; r < CFG.MAP_ROWS; r++) for (let c = 0; c < CFG.MAP_COLS; c++)
+    if (GS.isFreeSpot(c, r)) free.push({ c, r });
+  const A = free[0], B = free[1], C = free[2];
+
+  // ① 移动：mint 建在 A，拖到空地 B → 双格引用对调、坐标更新（加成查询式自动跟随）
+  ENG.placeBuilding(A.c, A.r, 'mint');
+  const mint = GS.grid[A.r][A.c].b;
+  UI.settleBuildingMove({ building: mint }, B);
+  check('[C6] 移动：松手空地 → 坐标/双格引用同步',
+    GS.grid[A.r][A.c].b === null && GS.grid[B.r][B.c].b === mint &&
+    mint.c === B.c && mint.r === B.r);
+
+  // ② 交换：gas 建在 C，mint(B) 拖到 gas(C) → 两格引用互换、坐标互换
+  ENG.placeBuilding(C.c, C.r, 'gas');
+  const gas = GS.grid[C.r][C.c].b;
+  UI.settleBuildingMove({ building: mint }, C);
+  check('[C6] 交换：拖到另一建筑上 → 引用/坐标互换（不是合成升级）',
+    GS.grid[B.r][B.c].b === gas && GS.grid[C.r][C.c].b === mint &&
+    gas.c === B.c && gas.r === B.r && mint.c === C.c && mint.r === C.r);
+
+  // ③ 下场：mint 拖出画布（cell=null）→ buildings 减一、deck 尾多一张同型建筑卡
+  const nB = GS.buildings.length, nD = GS.deck.length;
+  UI.settleBuildingMove({ building: mint }, null);
+  check('[C6] 下场：拖出画布 → 变回建筑卡进牌库尾部（可再拖回）',
+    GS.buildings.length === nB - 1 && GS.deck.length === nD + 1 &&
+    GS.deck[nD].kind === 'building' && GS.deck[nD].bkey === 'mint' &&
+    GS.grid[C.r][C.c].b === null);
+
+  // ④ 弹回/交换两路：金币格（b=null 但非 isFreeSpot）弹回；塔格 = 建筑 ⇄ 塔交换
+  //   （v1.8u 十七令 §14.88 放开：塔纳入交换，双向）
+  const atk2 = free[3];
+  ENG.placeBuilding(atk2.c, atk2.r, 'atk');
+  const atkB = GS.grid[atk2.r][atk2.c].b;
+  const goldCell = free[5];                       // 造在空闲格（B 已被 ② 的 gas 占着）
+  GS.goldTiles.push({ c: goldCell.c, r: goldCell.r }); GS.grid[goldCell.r][goldCell.c].gold = true;
+  UI.settleBuildingMove({ building: atkB }, goldCell);
+  check('[C6] 弹回：金币格不是空地（b=null 也不行）',
+    atkB.c === atk2.c && atkB.r === atk2.r && GS.grid[atk2.r][atk2.c].b === atkB);
+  TOWERS.placeAt(free[4].c, free[4].r, 'arrow', 1);
+  const tw0 = GS.grid[free[4].r][free[4].c].b;
+  UI.settleBuildingMove({ building: atkB }, free[4]);
+  check('[C6] 建筑 ⇄ 塔交换（十七令放开）：引用/坐标互换',
+    GS.grid[atk2.r][atk2.c].b === tw0 && GS.grid[free[4].r][free[4].c].b === atkB &&
+    tw0.c === atk2.c && tw0.r === atk2.r && atkB.c === free[4].c && atkB.r === free[4].r);
+  UI.settleBuildingMove({ building: atkB }, { c: GS.core.c, r: GS.core.r });
+  check('[C6] 弹回：镇中心不能换位',
+    atkB.c === free[4].c && atkB.r === free[4].r &&
+    GS.grid[GS.core.r][GS.core.c].b === GS.core);
+  // ⑤ 原位松手 = 无事
+  UI.settleBuildingMove({ building: atkB }, { c: free[4].c, r: free[4].r });
+  check('[C6] 原位松手 = 无事', GS.grid[free[4].r][free[4].c].b === atkB);
+}
+
+// ============================================================================
+// [C7] 场上塔自由拖动（v1.8u 十七令 §14.88）：移动 / 交换 / 合成保留 / 弹回 / 不可下场
+//   —— 大王拍板「移动+交换」：拖空地=移动、拖建筑/异类塔=交换、同名同星=合成（保留）；
+//   星级长在塔上 ⇒ 拖出画布**不下场**（弹回），与建筑拖动的唯一差异点。
+// ============================================================================
+{
+  GS.newGame();
+  for (let r = 0; r < CFG.MAP_ROWS; r++) for (let c = 0; c < CFG.MAP_COLS; c++) {
+    GS.grid[r][c].gold = false; GS.grid[r][c].heart = false;
+  }
+  GS.goldTiles = []; GS.heartTiles = [];
+  let made7 = 0;
+  for (let r = 0; r < CFG.MAP_ROWS && made7 < 6; r++)
+    for (let c = 0; c < CFG.MAP_COLS && made7 < 6; c++) {
+      if (GS.grid[r][c].t === 'blank' || GS.grid[r][c].b || GS.onRail(c, r)) continue;
+      GS.grid[r][c].t = 'blank'; made7++;
+    }
+  const f7 = [];
+  for (let r = 0; r < CFG.MAP_ROWS; r++) for (let c = 0; c < CFG.MAP_COLS; c++)
+    if (GS.isFreeSpot(c, r)) f7.push({ c, r });
+  const P = f7[0], Q = f7[1], R7 = f7[2];
+
+  // ① 移动：塔建在 P，拖到空地 Q → 双格引用同步、塔对象 c/r 更新、仍在编组
+  const t1 = TOWERS.placeAt(P.c, P.r, 'magic', 1);
+  UI.settleTowerMove({ tower: t1 }, Q);
+  check('[C7] 移动：松手空地 → 坐标/双格引用同步（仍在 GS.towers）',
+    GS.grid[P.r][P.c].b === null && GS.grid[Q.r][Q.c].b === t1 &&
+    t1.c === Q.c && t1.r === Q.r && GS.towers.indexOf(t1) >= 0);
+
+  // ② 交换（异类塔）：arrow 塔建在 R7，magic(Q) 拖到 arrow(R7) → 互换不合并
+  const t2 = TOWERS.placeAt(R7.c, R7.r, 'arrow', 1);
+  UI.settleTowerMove({ tower: t1 }, R7);
+  check('[C7] 交换：异类塔上松手 → 引用/坐标互换（不吞塔）',
+    GS.grid[Q.r][Q.c].b === t2 && GS.grid[R7.r][R7.c].b === t1 &&
+    t2.c === Q.c && t2.r === Q.r && t1.c === R7.c && t1.r === R7.r &&
+    GS.towers.length === 2);
+
+  // ③ 合成保留：magic 1 星建在 P（R7 的 magic 拖过去）→ star=2、源塔离场
+  const t3 = TOWERS.placeAt(P.c, P.r, 'magic', 1);
+  UI.settleTowerMove({ tower: t1 }, P);
+  check('[C7] 合成保留：同名同星 → 星级+1、源塔离场',
+    GS.grid[P.r][P.c].b === t3 && t3.star === 2 &&
+    GS.towers.indexOf(t1) < 0 && GS.towers.length === 2);
+
+  // ④ 同名异星 = 交换不吞：magic 1 星建在 R7，拖到 P 的 magic 2 星上 → 互换
+  const t4 = TOWERS.placeAt(R7.c, R7.r, 'magic', 1);
+  UI.settleTowerMove({ tower: t4 }, P);
+  check('[C7] 同名异星不合成 → 交换（星级不吞不并）',
+    GS.grid[R7.r][R7.c].b === t3 && GS.grid[P.r][P.c].b === t4 &&
+    t3.star === 2 && t4.star === 1 && GS.towers.length === 3);
+
+  // ⑤ 不可下场：拖出画布（cell=null）→ 弹回，塔数/格引用原样
+  UI.settleTowerMove({ tower: t4 }, null);
+  check('[C7] 不可下场：拖出画布弹回（星级资产不动）',
+    GS.towers.length === 3 && GS.grid[P.r][P.c].b === t4 && t4.c === P.c);
+
+  // ⑥ 弹回：金币格（b=null 但非 isFreeSpot）
+  const g7 = f7[5];
+  GS.goldTiles.push({ c: g7.c, r: g7.r }); GS.grid[g7.r][g7.c].gold = true;
+  UI.settleTowerMove({ tower: t4 }, g7);
+  check('[C7] 弹回：金币格不是空地', t4.c === P.c && t4.r === P.r &&
+    GS.grid[P.r][P.c].b === t4);
+
+  // ⑦ core 不能换位
+  UI.settleTowerMove({ tower: t4 }, { c: GS.core.c, r: GS.core.r });
+  check('[C7] 弹回：镇中心不能换位',
+    t4.c === P.c && GS.grid[GS.core.r][GS.core.c].b === GS.core);
+
+  // ⑧ 原位松手 = 无事
+  UI.settleTowerMove({ tower: t4 }, { c: P.c, r: P.r });
+  check('[C7] 原位松手 = 无事', GS.grid[P.r][P.c].b === t4);
+
+  // ⑨ 建筑 ⇄ 塔交换（另一方向）：gas 放到空格，塔 t2(Q) 拖到 gas 上 → 互换
+  const S7 = f7[3];
+  ENG.placeBuilding(S7.c, S7.r, 'gas');
+  const gas7 = GS.grid[S7.r][S7.c].b;
+  UI.settleTowerMove({ tower: t2 }, S7);
+  check('[C7] 建筑 ⇄ 塔交换：塔拖到建筑上 → 互换',
+    GS.grid[Q.r][Q.c].b === gas7 && GS.grid[S7.r][S7.c].b === t2 &&
+    gas7.c === Q.c && gas7.r === Q.r && t2.c === S7.c && t2.r === S7.r);
 }
 
 console.log('\n' + '='.repeat(64));

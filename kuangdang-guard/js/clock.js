@@ -42,12 +42,13 @@ CLOCK.overtime = false;   // 倒计时已走完但怪物还没清空 → 继续�
 CLOCK.reward = false;     // v1.6.19 奖励时间：倒计时内清空怪物 → 剩余倒计时继续跑圈不停靠
 CLOCK.hasFoes = false;    // 场上是否有活怪（foes.js 维护）
 
-// ---- 全局倍速（v1.6.2 大王令：1/2/3 倍循环按钮）----
+// ---- 全局倍速（v1.6.2 大王令：循环按钮；v1.8u 五令：干掉 ×3，只保留 ×1/×2）----
 // main.js 把帧 dt 乘上 timeScale 后再喂给 ENG.update，游戏整体（倒计时/刷怪/列车/
-// 攻击冷却）等比加速。档位循环 1→2→3→1；档位记在 sessionStorage —— 关掉网页
+// 攻击冷却）等比加速。档位循环 1→2→1；档位记在 sessionStorage —— 关掉网页
 // 才重置回 1，同一会话内刷新/开新局都保持（大王口径："除非重新打开网页才重置"）。
+// 旧会话存过 3 的，恢复守卫（indexOf 表内校验）拒绝、回落 ×1。
 CLOCK.timeScale = 1;
-CLOCK.SPEEDS = [1, 2, 3];
+CLOCK.SPEEDS = [1, 2];
 
 CLOCK.speedInit = function () {
   try {

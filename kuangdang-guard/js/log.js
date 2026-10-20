@@ -6,7 +6,9 @@
 //   · 施工：cleanPay（抽形状付费）/ cleanApply / cleanFail（清理成败与原因）/
 //     cleanDiscard（形状作废）/ cleanUndo（撤销清理，v1.4.5）/ buildHero（英雄卡建造）/
 //     buildBuilding / buildCancel（v1.6.23：建筑卡落位 / 取消收回）/
-//     heroCancel（英雄卡拖空或非法位收回，v1.4.10）/ summon / summonFail / merge / mergeFail
+//     buildMove / buildSwap / buildRecall（v1.8u 十四令 §14.85：场上建筑移动 /
+//     交换 / 下场变卡）/ heroCancel（英雄卡拖空或非法位收回，v1.4.10）/ summon /
+//     summonFail / merge / mergeFail
 //   · 经济：waveStart（带金币快照）/ waveEnd / deliver（车斗+站台分项、结余、爱心数）
 //     / heal（v1.6.22：到站交付爱心回血后的血量快照）
 //   · 战斗：coreHit（镇中心每次受伤后的血量）/ gameOver / newGame（含重开）

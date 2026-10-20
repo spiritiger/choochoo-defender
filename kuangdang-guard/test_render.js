@@ -33,8 +33,28 @@ function makeCtx() {
     'scale', 'moveTo', 'lineTo', 'arc', 'arcTo', 'bezierCurveTo', 'fillText', 'strokeText',
     'setLineDash', 'clip', 'rect', 'quadraticCurveTo', 'ellipse']) c[m] = () => {};
   c.measureText = () => ({ width: 10 });
+  // v1.8u 八令：gradient mock —— mintStack 叠币的呼吸金光走 createRadialGradient，
+  //   此前假 ctx 没有它 ⇒ n>0 分支一进就 TypeError（测试从未摆铸币所所以没炸过）
+  c.createRadialGradient = () => ({ addColorStop: () => {} });
+  c.createLinearGradient = () => ({ addColorStop: () => {} });
+  // v1.8u 六令：记录 fillRect（连同 fillStyle）—— 拖拽预览两态（标准淡底/命中高亮）断言用
+  c._rects = [];
+  c.fillRect = (x, y, w, h) => c._rects.push({ x: x, y: y, w: w, h: h, fill: c.fillStyle });
   c.texts = [];                                  // 记录 fillText（连同当时的 fillStyle / globalAlpha），
   c.fillText = (t, x, y) => c.texts.push({ t: t, x: x, y: y, fill: c.fillStyle, a: c.globalAlpha });
+  // v1.8u：记录 arc 参数（仿 texts）——此前 arc 是全空函数，"弯道弧画错"这类
+  //   形状问题零告警漏网（大王两报"加油站的弧线不对"的病根之一）
+  c._arcs = [];
+  c.arc = (x, y, r, a0, a1, ccw) =>
+    c._arcs.push({ x: x, y: y, r: r, a0: a0, a1: a1, ccw: !!ccw, stroke: c.strokeStyle, w: c.lineWidth });
+  // v1.8u：记录 moveTo/lineTo 线段（T 岔贴轨中心线断言用；moveTo 起笔、lineTo 落段）
+  c._segs = [];
+  let _pen = null;
+  c.moveTo = (x, y) => { _pen = { x: x, y: y }; };
+  c.lineTo = (x, y) => {
+    if (_pen) c._segs.push({ x1: _pen.x, y1: _pen.y, x2: x, y2: y, stroke: c.strokeStyle, w: c.lineWidth });
+    _pen = { x: x, y: y };
+  };
   c.globalAlpha = 1;                             // 供"文字浮标 / 淡出"类断言
   c.save = () => st.push({ x: cur().x, y: cur().y, a: cur().a });
   c.restore = () => { if (st.length > 1) st.pop(); };
@@ -87,73 +107,66 @@ function drawAt(index, frac) {
 const head = () => ENG.trainPos();
 
 // ============================================================================
-// [R1] v1.8g 方案 B：资源堆**刚性挂在车尾** —— 每枚资源按"车体局部坐标"
-//   （沿尾巴方向的距离 back、侧向偏移 side）定位：世界坐标 = 车头 − 前进·back + 侧向·side。
-//   ⇒ ①每枚都在车尾侧（back>0）；②同一枚在**四种朝向下**局部坐标一致（刚性、不随车转歪）；
-//     ③金币/爱心两条平行拖尾侧向错开 ∓PK_SEP；④同类沿尾巴方向逐枚递增 PK_STEP。
-//   ⚠️ 旧口径（v1.6.29~1.8f：屏幕坐标系 + 堆叠恒朝屏幕上方）已废弃 —— 那正是"金币与车头
-//     距离忽长忽短"的病根（车头换向时同一枚到车头的距离在 18.9↔28.3px 摆动 ≈50%）。
+// [R1] v1.8u 十六令：资源堆**锁定朝 Y**（屏幕系恒朝上方堆叠）—— 金币列在左
+//   （x = head.x − PK_SEP）、爱心列在右（x = head.x + PK_SEP），同类逐枚**垂直向上**
+//   递增 PK_STEP（y = head.y − PK_D − i×PK_STEP，上枚压下枚）。整堆随车头平移、
+//   不随车头转向旋转 ⇒ **四种朝向下每枚资源相对车头的偏移逐枚恒等**（强断言）。
+//   ⚠️ 沿革：v1.8g B 案（刚性挂车尾、车体局部坐标）已退役 —— 大王令"资源甩来甩去
+//     不好看，锁定朝 Y"：转向时的角速度甩动比距离小幅摆动更扎眼，两害相权取朝向恒定。
 //   环上朝向取**直线段中点**（整数下标格 = 拐角顶点，行进角 45°）：ed0/1=东、ed3=南、ed6/7=西、ed10=北。
 // ============================================================================
 const HEADING = [[1, 0.25, '朝右(E)'], [6, 0.75, '朝左(W)'], [3, 0.5, '朝下(S)'], [10, 0.5, '朝上(N)']];
-const PKD = 16 * REND.TRAIN_SCALE, PKSEP = 4.75, PKSTEP = 3.6;   // PK_D 系数 v1.8i：17→16（车尾外沿下限）
+const PKD = 16 * REND.TRAIN_SCALE, PKSEP = 4.75, PKSTEP = 3.6;   // PK_D 系数 v1.8i 下限（车头上缘外沿起叠）
 const localSig = [];
 for (const [idx, fr, name] of HEADING) {
   const r = drawAt(idx, fr);
   const h0 = head();
-  const a = ENG.trainAngle();
-  const ux = Math.cos(a), uy = Math.sin(a);          // 前进方向
-  const px = -uy, py = ux;                            // 侧向（车头朝右时指向屏幕下方）
-  const loc = r.map(x => {
+  const rel = r.map(x => {
     const dx = x.w.x - h0.x, dy = x.w.y - h0.y;
-    return { k: x.k, back: dx * (-ux) + dy * (-uy), side: dx * px + dy * py };
+    return { k: x.k, dx: dx, dy: dy };
   });
-  localSig.push(loc);
-  const g = loc.filter(v => v.k === 'gold'), h = loc.filter(v => v.k === 'heart');
-  check('[R1] ' + name + ' 资源全在车尾侧（沿尾巴方向距离 > 0）',
-    loc.every(v => v.back > 0), loc.map(v => v.back.toFixed(1)).join(','));
-  check('[R1] ' + name + ' 金币拖尾侧向偏移恒 = ' + (-PKSEP),
-    g.every(v => Math.abs(v.side - (-PKSEP)) < 1e-9), g.map(v => v.side.toFixed(2)).join(','));
-  check('[R1] ' + name + ' 爱心拖尾侧向偏移恒 = ' + (PKSEP),
-    h.every(v => Math.abs(v.side - PKSEP) < 1e-9), h.map(v => v.side.toFixed(2)).join(','));
-  check('[R1] ' + name + ' 同类逐枚沿尾巴方向递增 PK_STEP（"一枚压一枚"）',
-    g.every((v, i) => i === 0 || Math.abs((v.back - g[i - 1].back) - PKSTEP) < 1e-9) &&
-    h.every((v, i) => i === 0 || Math.abs((v.back - h[i - 1].back) - PKSTEP) < 1e-9));
-  check('[R1] ' + name + ' 首枚距车头沿尾轴退 PK_D',
-    Math.abs(g[0].back - PKD) < 1e-9 && Math.abs(h[0].back - PKD) < 1e-9,
-    'back=' + g[0].back.toFixed(3) + '/' + h[0].back.toFixed(3));
-  const maxD = Math.max(...r.map(x => Math.hypot(x.w.x - h0.x, x.w.y - h0.y)));
+  localSig.push(rel);
+  const g = rel.filter(v => v.k === 'gold'), h = rel.filter(v => v.k === 'heart');
+  check('[R1] ' + name + ' 金币列在左（x 恒 = −PK_SEP）',
+    g.every(v => Math.abs(v.dx - (-PKSEP)) < 1e-9), g.map(v => v.dx.toFixed(2)).join(','));
+  check('[R1] ' + name + ' 爱心列在右（x 恒 = +PK_SEP）',
+    h.every(v => Math.abs(v.dx - PKSEP) < 1e-9), h.map(v => v.dx.toFixed(2)).join(','));
+  check('[R1] ' + name + ' 全列朝上：y = −PK_D − i×PK_STEP（上枚压下枚）',
+    g.every((v, i) => Math.abs(v.dy - (-PKD - i * PKSTEP)) < 1e-9) &&
+    h.every((v, i) => Math.abs(v.dy - (-PKD - i * PKSTEP)) < 1e-9),
+    g.map(v => v.dy.toFixed(1)).join(','));
+  const maxD = Math.max(...rel.map(v => Math.hypot(v.dx, v.dy)));
   check('[R1] ' + name + ' 堆挂在车上不脱钩（离车头 < 50px）', maxD < 50, 'maxD=' + maxD.toFixed(1));
 }
-{ // 刚性：四种朝向下每枚资源的"车体局部坐标"逐枚一致（不随车头转向而变）
+{ // 锁定朝 Y 的本质断言：四种朝向下每枚资源相对车头的偏移**逐枚恒等**（堆不随车转）
   const ref = localSig[0];
   let maxDev = 0;
   for (const cur of localSig) for (let i = 0; i < cur.length; i++) {
     if (cur[i].k !== ref[i].k) maxDev = 1e9;
-    maxDev = Math.max(maxDev, Math.abs(cur[i].back - ref[i].back), Math.abs(cur[i].side - ref[i].side));
+    maxDev = Math.max(maxDev, Math.abs(cur[i].dx - ref[i].dx), Math.abs(cur[i].dy - ref[i].dy));
   }
-  check('[R1] 四种朝向下每枚资源的"车体局部坐标"逐枚一致（刚性挂车尾）',
+  check('[R1] 四种朝向下每枚资源相对车头的偏移逐枚恒等（锁定朝 Y，不随车转）',
     maxDev < 1e-9, 'maxDev=' + maxDev.toFixed(6));
 }
 
-// [R2] 车朝右时**首枚** = 车头屁股（朝右直线段中点 idx1/frac0.25，行进角 0 ⇒ 前进=+x、侧向=+y）：
-//   金首枚 (head.x − PK_D, head.y − PK_SEP)、心首枚 (head.x − PK_D, head.y + PK_SEP)。
-//   ⚠️ v1.8g 方案 B：沿**尾巴方向**退 PK_D（不再是旧屏幕系的 "−PK_D±PK_SEP 左右并排"）。
-//   PK_D = 16×TRAIN_SCALE（v1.8i 大王令"再往前调一点"：系数 17→16，已近下限），车再缩放不用改这里。
+// [R2] 任意朝向（取朝右）**首枚** = (head.x ∓ PK_SEP, head.y − PK_D)：
+//   金首枚在左上、心首枚在右上，对称分列车头正上方两侧。
+//   PK_D = 16×TRAIN_SCALE（v1.8i 下限），车再缩放不用改这里。
 {
   const r = drawAt(1, 0.25), h0 = head();
   const g0 = r.filter(x => x.k === 'gold')[0].w;
   const h1 = r.filter(x => x.k === 'heart')[0].w;
-  check('[R2] 朝右时首枚跟车尾（金=(head.x−PK_D, head.y−PK_SEP) / 心=(head.x−PK_D, head.y+PK_SEP)）',
-    Math.abs(g0.x - (h0.x - PKD)) < 1e-9 && Math.abs(g0.y - (h0.y - PKSEP)) < 1e-9 &&
-    Math.abs(h1.x - (h0.x - PKD)) < 1e-9 && Math.abs(h1.y - (h0.y + PKSEP)) < 1e-9,
+  check('[R2] 首枚 = (head.x±PK_SEP, head.y−PK_D)（金左/心右，正上方起叠）',
+    Math.abs(g0.x - (h0.x - PKSEP)) < 1e-9 && Math.abs(g0.y - (h0.y - PKD)) < 1e-9 &&
+    Math.abs(h1.x - (h0.x + PKSEP)) < 1e-9 && Math.abs(h1.y - (h0.y - PKD)) < 1e-9,
     '金Δ=(' + (g0.x - h0.x).toFixed(2) + ',' + (g0.y - h0.y).toFixed(2) + ') 心Δ=(' +
       (h1.x - h0.x).toFixed(2) + ',' + (h1.y - h0.y).toFixed(2) + ')');
 }
 
-// [R12] 转弯平滑（v1.8f）+ 资源堆刚性（v1.8g）：圆角路径下**行进角连续**（无 90° 跳变），
-//   且每枚资源到车头的距离**沿全环恒定**。旧口径：行进角是轨段阶梯角（拐角瞬间跳 90°）；
-//   资源堆的屏幕系偏移不随车头转 ⇒ 同一枚到车头距离在 18.9↔28.3px 摆动（"忽长忽短"）。
+// [R12] 转弯平滑（v1.8f）+ 资源堆锁定朝 Y（v1.8u 十六令）：圆角路径下**行进角连续**（无 90° 跳变），
+//   且每枚资源**相对车头的偏移沿全环恒定**（堆随车平移、不随车转向旋转）。
+//   旧口径沿革：v1.8g B 案"刚性挂车尾"（局部坐标恒 ⇒ 距离恒，但转向甩动）→ v1.8u 十六令
+//   改屏幕系锁定朝 Y（大王令"甩来甩去不好看"）⇒ 改为断言偏移恒等（朝向恒定）。
 {
   const n = GS.railPath.length;
   const step = n / 800;                              // 名义弧长步长（格/采样）
@@ -174,21 +187,21 @@ for (const [idx, fr, name] of HEADING) {
   check('[R12] 走一圈位置连续（单步位移 ≤ 1.2×名义步长，无跳变/断口）',
     maxStep <= 1.2 * step, 'maxStep=' + maxStep.toFixed(4) + ' 名义=' + step.toFixed(4));
 
-  // 每枚资源到车头的距离须**与朝向/位置无关**（刚性挂车尾的根本保证）——全环逐格采样比对：
-  //   参考值 = idx0 各枚距离，其余 idx 逐枚比对（顺序稳定：金×4 后 心×2）。
+  // 每枚资源相对车头的偏移（dx,dy）须**与朝向/位置无关**（锁定朝 Y 的根本保证）——
+  //   全环逐格采样比对：参考值 = idx0 各枚偏移，其余 idx 逐枚比对（顺序稳定：金×4 后 心×2）。
   const ref = (() => {
     const r = drawAt(0, 0.5), h0 = head();
-    return r.map(x => Math.hypot(x.w.x - h0.x, x.w.y - h0.y));
+    return r.map(x => ({ dx: x.w.x - h0.x, dy: x.w.y - h0.y }));
   })();
   let maxErr = 0;
   for (let idx = 0; idx < n; idx++) {
     const r = drawAt(idx, 0.5), h0 = head();
     for (let i = 0; i < r.length; i++) {
-      const d = Math.hypot(r[i].w.x - h0.x, r[i].w.y - h0.y);
-      maxErr = Math.max(maxErr, Math.abs(d - ref[i]));
+      maxErr = Math.max(maxErr,
+        Math.abs(r[i].w.x - h0.x - ref[i].dx), Math.abs(r[i].w.y - h0.y - ref[i].dy));
     }
   }
-  check('[R12] 每枚资源到车头距离沿全环恒定（刚性挂车尾 ⇒ 无"忽长忽短"）',
+  check('[R12] 每枚资源相对车头偏移沿全环恒定（锁定朝 Y ⇒ 堆不随车转向旋转）',
     maxErr < 1e-6, 'maxErr=' + maxErr.toFixed(6));
 }
 
@@ -324,6 +337,82 @@ for (const [idx, fr, name] of HEADING) {
 }
 
 // ============================================================================
+// [R15] v1.8u 六令：拖 gas/mint 悬停 3×3 范围格**两态**（§4d/§14.82）——
+//   标准态 = 淡底（gas 0.16 / mint 0.14）；高亮态 = 3×3 内命中有效目标
+//   （gas=在轨格 GS.onRail → 0.38 / mint=金币格 grid.gold → 0.35）整格高亮。
+// ============================================================================
+{
+  const px = L.x + 2.5 * L.cell, py = L.y + 1.5 * L.cell;   // 悬停格 (2,1) → 范围 c1..3 × r0..2
+  // gas：手摆 (2,2) 为轨道 → 该格高亮 0.38，其余 8 格标准淡底 0.16
+  GS.railSet = { '2,2': 1 };
+  const cg = makeCtx();
+  REND.draw(cg, L, null, { kind: 'building', bkey: 'gas', px: px, py: py });
+  const ghi = cg._rects.filter(x => x.fill === 'rgba(94,200,240,0.38)');
+  const glo = cg._rects.filter(x => x.fill === 'rgba(94,200,240,0.16)');
+  check('[R15] gas 范围内在轨格整格高亮 0.38（恰 1 格、落在 (2,2)）',
+    ghi.length === 1 && ghi[0].x === L.x + 2 * L.cell && ghi[0].y === L.y + 2 * L.cell,
+    'n=' + ghi.length);
+  check('[R15] gas 范围内非轨格保持标准淡底 0.16（8 格）', glo.length === 8, 'n=' + glo.length);
+  GS.railSet = {};
+  // mint：3×3 内清金币后只摆 (1,1) → 该格高亮 0.35，其余 8 格标准淡底 0.14
+  for (let rr = 0; rr <= 2; rr++) for (let cc = 1; cc <= 3; cc++) GS.grid[rr][cc].gold = false;
+  GS.grid[1][1].gold = true;
+  const cm = makeCtx();
+  REND.draw(cm, L, null, { kind: 'building', bkey: 'mint', px: px, py: py });
+  const mhi = cm._rects.filter(x => x.fill === 'rgba(240,180,41,0.35)');
+  const mlo = cm._rects.filter(x => x.fill === 'rgba(240,180,41,0.14)');
+  check('[R15] mint 范围内金币格整格高亮 0.35（恰 1 格、落在 (1,1)）',
+    mhi.length === 1 && mhi[0].x === L.x + 1 * L.cell && mhi[0].y === L.y + 1 * L.cell,
+    'n=' + mhi.length);
+  check('[R15] mint 范围内非金币格保持标准淡底 0.14（8 格）', mlo.length === 8, 'n=' + mlo.length);
+  GS.grid[1][1].gold = false;
+}
+
+// ============================================================================
+// [R16] v1.8u 十令（大王亲定）：格内多币布阵 —— 格内币数 = 总枚数 piles = 座数+1；
+//   2 枚 = 右上+左下对角、3 枚 = 顶点朝上三角形、币随枚数缩小、相邻币轻微相切。
+//   钉死：对角对称 / 三角朝向 / 币径递减 / n=0 单币原尺寸。
+// ============================================================================
+{
+  const savedCover = GS.mintCoverAt;
+  const mctx = makeCtx();
+  const got = [];
+  const realCoin = REND.coin;
+  REND.coin = (ctx, x, y, rr2) => got.push({ x: x, y: y, r: rr2 });
+  GS.mintCoverAt = function () { return 1; };               // 覆盖 1 座 → piles=2
+  REND.mintStack(mctx, 100, 100, 10, false, 3, 3);
+  check('[R16] 覆盖 1 座 → 布阵 2 枚', got.length === 2, 'n=' + got.length);
+  const a = got[0], b = got[1];
+  const hi = a.y < b.y ? a : b, lo = a.y < b.y ? b : a;     // hi=右上、lo=左下
+  check('[R16] 2 枚对角布阵（右上 + 左下，对角对称）',
+    hi.x > 100 && hi.y < 100 && lo.x < 100 && lo.y > 100 &&
+    Math.abs((hi.x - 100) - (100 - lo.x)) < 1e-9 &&
+    Math.abs((100 - hi.y) - (lo.y - 100)) < 1e-9,
+    JSON.stringify(got.map(p => [p.x, p.y])));
+  check('[R16] 2 枚币径缩小 0.78r 且轻微相切（心距 < 两倍币径）',
+    Math.abs(hi.r - 7.8) < 1e-9 &&
+    Math.hypot(hi.x - lo.x, hi.y - lo.y) < hi.r + lo.r,
+    'r=' + hi.r);
+  GS.mintCoverAt = function () { return 2; };               // 覆盖 2 座 → piles=3
+  got.length = 0;
+  REND.mintStack(mctx, 100, 100, 10, false, 3, 3);
+  check('[R16] 覆盖 2 座 → 布阵 3 枚（三角形）', got.length === 3, 'n=' + got.length);
+  const top = got.find(p => p.y < 100), bl = got.filter(p => p.y > 100);
+  check('[R16] 三角朝向：顶点朝上 + 底边两枚左右对称',
+    top && top.x === 100 && bl.length === 2 &&
+    Math.abs((bl[0].x - 100) + (bl[1].x - 100)) < 1e-9 && bl[0].x !== bl[1].x,
+    JSON.stringify(got.map(p => [p.x, p.y])));
+  check('[R16] 3 枚币径再缩 0.66r', got.every(p => Math.abs(p.r - 6.6) < 1e-9), 'r=' + got[0].r);
+  GS.mintCoverAt = function () { return 0; };               // 无覆盖 → 单币原尺寸
+  got.length = 0;
+  REND.mintStack(mctx, 100, 100, 10, false, 3, 3);
+  check('[R16] n=0 → 单币原尺寸零开销', got.length === 1 && got[0].r === 10 && got[0].x === 100,
+    JSON.stringify(got[0]));
+  REND.coin = realCoin;
+  GS.mintCoverAt = savedCover;
+}
+
+// ============================================================================
 // [R8] 作战拉远：真缩小布局 + 大字横幅（v1.6.38 建凭；v1.6.39 大王二令
 //      "不是平移要缩小 + 平滑过渡"，cell 41→34、荒野带/横幅吃 CAM 淡入淡出）
 // ============================================================================
@@ -395,8 +484,8 @@ for (const [idx, fr, name] of HEADING) {
 }
 
 // ============================================================================
-// [R9] 经验条改版（v1.6.41 大王令 = C 全宽细条 × A 胶囊语言）：
-//      全宽胶囊贴 HUD 下沿 + ◆ 徽标 + 右端数字 + ≥80% 呼吸脉冲
+// [R9] 经验条（v1.6.41 全宽胶囊；v1.8u 四拍板 §14.83：等级曲线 + 数字退役）：
+//      全宽胶囊贴 HUD 下沿 + ◆ 徽标 + ≥80% 呼吸脉冲；25 级封顶显示满条
 // ============================================================================
 {
   // 拦截 REND.rr 记录胶囊尺寸（进度宽 = (390-5) × ratio）
@@ -407,40 +496,47 @@ for (const [idx, fr, name] of HEADING) {
   const savedExp = { exp: GS.exp, taken: GS.expTaken, pending: GS.expPending };
   const cN = makeCtx();
 
-  // ① 中段进度（12/30 = 40%）：全宽底槽 + 进度宽 154 + 数字文本
-  GS.exp = 12; GS.expTaken = 2; GS.expPending = 0;
+  // ① 中段进度（1640/4100 = 40%，expTaken=2 ⇒ L3 → need 4100）：全宽底槽 + 进度宽 154 + 无数字
+  GS.exp = 1640; GS.expTaken = 2; GS.expPending = 0;
   rrCalls.length = 0;
   REND.expBar(cN, L);
   check('[R9] 全宽底槽（W-1=389 × 8，贴 HUD 下沿）',
     rrCalls.some(c => c.w === 389 && c.h === 8 && c.r === 4.5),
     JSON.stringify(rrCalls));
-  check('[R9] 进度条宽 = (W-5)×ratio（12/30 ⇒ 154）',
+  check('[R9] 进度条宽 = (W-5)×ratio（1640/4100 ⇒ 154）',
     rrCalls.some(c => Math.abs(c.w - 154) < 0.01 && c.h === 4),
     JSON.stringify(rrCalls));
-  check('[R9] 数字文本 12/30（v1.6.42 起居中压条）', cN.texts.some(x => x.t === '12/30'),
-    JSON.stringify(cN.texts.map(x => x.t)));
+  check('[R9] 数字退役：条上无任何 fillText（v1.8u 四拍板「干掉数字」）',
+    cN.texts.length === 0, JSON.stringify(cN.texts.map(x => x.t)));
 
-  // ② 快满（24/30 = 80%）：呼吸分支不抛异常（pulse 走 performance.now）
+  // ② 快满（3280/4100 = 80%）：呼吸分支不抛异常（pulse 走 performance.now）
   let errH = null;
-  GS.exp = 24;
+  GS.exp = 3280;
   try { REND.expBar(makeCtx(), L); } catch (e) { errH = (e && e.message) || 'throw'; }
   check('[R9] ≥80% 呼吸脉冲分支执行不抛异常', !errH, errH);
 
-  // ③ 满（30/30）：进度宽 = 全宽 385
+  // ③ 满（4100/4100）：进度宽 = 全宽 385
   rrCalls.length = 0;
-  GS.exp = 30;
+  GS.exp = 4100;
   REND.expBar(makeCtx(), L);
   check('[R9] 满进度 ⇒ 进度宽 385（整条填满）',
     rrCalls.some(c => Math.abs(c.w - 385) < 0.01), JSON.stringify(rrCalls));
 
-  // ④ 经验为 0：条仍画（0/30 提醒攒头一杀），进度胶囊跳过
+  // ④ 经验为 0：条仍画（提醒攒头一杀），进度胶囊与数字都跳过
   rrCalls.length = 0;
   GS.exp = 0;
   const cZ = makeCtx();
   REND.expBar(cZ, L);
-  check('[R9] 经验 0 ⇒ 画底槽与数字、不画进度胶囊',
-    rrCalls.length === 1 && cZ.texts.some(x => x.t === '0/30'),
+  check('[R9] 经验 0 ⇒ 画底槽、不画进度胶囊、无数字',
+    rrCalls.length === 1 && cZ.texts.length === 0,
     'rr=' + rrCalls.length + ' texts=' + JSON.stringify(cZ.texts.map(x => x.t)));
+
+  // ⑤ 25 级封顶（expTaken=24 ⇒ need=Infinity）：progress 满条 {1,1} ⇒ 进度宽 385
+  rrCalls.length = 0;
+  GS.expTaken = 24; GS.exp = 99999;
+  REND.expBar(makeCtx(), L);
+  check('[R9] 25 级封顶 ⇒ progress 满条、进度宽 385',
+    rrCalls.some(c => Math.abs(c.w - 385) < 0.01), JSON.stringify(rrCalls));
 
   REND.rr = rrOrig;
   GS.exp = savedExp.exp; GS.expTaken = savedExp.taken; GS.expPending = savedExp.pending;
@@ -491,6 +587,121 @@ for (const [idx, fr, name] of HEADING) {
   GS.nextSpawns = savedNs;
   if (sandbox.FOES) { sandbox.FOES.fadeSpawns = savedFs; sandbox.FOES.wave = savedWave; }
   CLOCK.phase = savedPhase;
+}
+
+// ============================================================================
+// [R13] 加油站铁轨流光——弯道弧几何钉死（v1.8u 五改后：单轨中心线，railTiles 查表）：
+//   v1.8u 流光改**单轨中心线 + 保留弧度**（大王令"改成单轨，居中于两条铁轨之间"）：
+//   弯道 = 单四分之一弧（圆心=格角、半径 h=双轨正中、查表同轨贴片）。本块真摆一座
+//   加油站罩住真实关卡环线上的弯道格，对每格 gas 色弧断言：恰 1 弧、圆心 = 格角
+//   （|dx|=|dy|=h）、半径 = h、扫过角 = 90°、弧端点 = 两臂边中点（居中贯通）。
+// ============================================================================
+{
+  // 弯道格 = 闭环上前后邻格方向垂直（与 rangeHighlights 的 use[] 同口径：只看
+  // railPath 相邻对 —— 环线十字/T 岔按车实际走向归为弯道/直线，如实盘 (5,3)/(4,3)）
+  const rail = GS.railPath, n = rail.length, corners = [];
+  for (let i = 0; i < n; i++) {
+    const a = rail[(i - 1 + n) % n], b = rail[i], c2 = rail[(i + 1) % n];
+    const d1 = [Math.sign(b.c - a.c), Math.sign(b.r - a.r)];
+    const d2 = [Math.sign(c2.c - b.c), Math.sign(c2.r - b.r)];
+    if (d1[0] * d2[0] + d1[1] * d2[1] === 0) corners.push({ c: b.c, r: b.r, d1: d1, d2: d2 });
+  }
+  check('[R13] 真实关卡环线上存在弯道格（≥1）', corners.length >= 1, 'corners=' + corners.length);
+  // 择优摆一座加油站（罩住弯道格最多），选点法复刻 test_rules [GB]
+  let best = null;
+  for (let r = 0; r < CFG.MAP_ROWS; r++) for (let c = 0; c < CFG.MAP_COLS; c++) {
+    if (!GS.isFreeSpot(c, r)) continue;
+    const cov = corners.filter(p => Math.max(Math.abs(p.c - c), Math.abs(p.r - r)) <= CFG.GAS_RANGE);
+    if (cov.length && (!best || cov.length > best.cov.length)) best = { c: c, r: r, cov: cov };
+  }
+  check('[R13] 存在罩住弯道格的可建空地', !!best);
+  if (best) {
+    ENG.placeBuilding(best.c, best.r, 'gas');
+    check('[R13] 摆位后覆盖弯道格 gasCoverAt > 0（查询接线通）',
+      best.cov.every(p => GS.gasCoverAt(p.c, p.r) > 0));
+    const h = L.cell / 2;
+    const cA = makeCtx();
+    REND.rangeHighlights(cA, L);
+    const arcs = cA._arcs.filter(x => String(x.stroke).indexOf('94,200,240') >= 0);
+    check('[R13] gas 色弧条数 = 被罩弯道格数（每弯道单弧，直线/T 岔贯通轴不产弧）',
+      arcs.length === best.cov.length, 'arcs=' + arcs.length + ' cov=' + best.cov.length);
+    for (const p of best.cov) {
+      const cx = CFG.ccx(L, p.c), cy = CFG.ccy(L, p.r);
+      // 臂 = 从本格指向邻格：前驱臂 = 行进入弯方向取反；后继臂 = 出弯方向原样
+      const P1 = { x: cx - p.d1[0] * h, y: cy - p.d1[1] * h };
+      const P2 = { x: cx + p.d2[0] * h, y: cy + p.d2[1] * h };
+      const d = (P, Q) => Math.hypot(P.x - Q.x, P.y - Q.y);
+      const hit = arcs.filter(ar => {
+        if (Math.abs(ar.r - h) > 1e-9) return false;
+        const S = { x: ar.x + ar.r * Math.cos(ar.a0), y: ar.y + ar.r * Math.sin(ar.a0) };
+        const E = { x: ar.x + ar.r * Math.cos(ar.a1), y: ar.y + ar.r * Math.sin(ar.a1) };
+        return (d(S, P1) < 1e-6 && d(E, P2) < 1e-6) || (d(S, P2) < 1e-6 && d(E, P1) < 1e-6);
+      })[0];
+      check('[R13] 弯道(' + p.c + ',' + p.r + ')：弧存在，起/终点 = 两臂边中点、半径 = h', !!hit);
+      check('[R13] 弯道(' + p.c + ',' + p.r + ')：圆心 = 格角（|dx|=|dy|=h）',
+        !!hit && Math.abs(Math.abs(hit.x - cx) - h) < 1e-9 &&
+        Math.abs(Math.abs(hit.y - cy) - h) < 1e-9,
+        hit ? '(' + hit.x.toFixed(1) + ',' + hit.y.toFixed(1) + ')' : '无弧');
+      if (hit) {
+        let sw = hit.a1 - hit.a0;
+        while (sw > Math.PI) sw -= 2 * Math.PI;
+        while (sw <= -Math.PI) sw += 2 * Math.PI;
+        if (hit.ccw && sw > 0) sw -= 2 * Math.PI;
+        if (!hit.ccw && sw < 0) sw += 2 * Math.PI;
+        const M = { x: hit.x + hit.r * Math.cos(hit.a0 + sw / 2),
+                    y: hit.y + hit.r * Math.sin(hit.a0 + sw / 2) };
+        check('[R13] 弯道(' + p.c + ',' + p.r + ')：扫过角 90°、弧中点在格内',
+          Math.abs(Math.abs(sw) - Math.PI / 2) < 1e-9 &&
+          Math.abs(M.x - cx) <= h + 1e-9 && Math.abs(M.y - cy) <= h + 1e-9,
+          'sw=' + (sw * 180 / Math.PI).toFixed(1) + '°');
+      }
+    }
+  }
+}
+
+// ============================================================================
+// [R14] T 岔流光喇叭口（v1.8u 五改：单轨中心线 + 保留弧度——贯通轴中线与弯道
+//   单弧居中于 ±d 双轨之间；喇叭口单弧半径 h）：虚构 T 岔小环 + mock gasCoverAt，
+//   断言——①T 岔 = 贯通轴 1 条中线 + 支臂喇叭口 1 弧（pass 驱动查表）；
+//   ②三个弯道格各产 1 弧（圆心=格角、半径 h）。环：(tx,ty-1)→(tx,ty)→(tx,ty+1)→
+//   (tx+1,ty+1)→(tx+1,ty)→(tx,ty) —— (tx,ty) 被两次经过 ⇒ use = N+S+E（T 岔，
+//   支臂 E，转弯趟 E 进 N 出 ⇒ 喇叭口 = NE 角）；死头 (tx,ty-1) 不罩。
+// ============================================================================
+{
+  const tx = 1, ty = 1;
+  const ring = [{ c: tx, r: ty - 1 }, { c: tx, r: ty }, { c: tx, r: ty + 1 },
+                { c: tx + 1, r: ty + 1 }, { c: tx + 1, r: ty }, { c: tx, r: ty }];
+  const savedPath = GS.railPath, savedSet = GS.railSet, savedCover = GS.gasCoverAt;
+  GS.railPath = ring; GS.railSet = {};
+  ring.forEach(q => { GS.railSet[q.c + ',' + q.r] = true; });
+  GS.gasCoverAt = (c, r) => ((c === tx || c === tx + 1) && r >= ty && r <= ty + 1) ? 1 : 0;
+  const h = L.cell / 2;
+  const cB = makeCtx();
+  REND.rangeHighlights(cB, L);
+  const gasK = s => String(s || '').indexOf('94,200,240') >= 0;
+  const segs = cB._segs.filter(q => gasK(q.stroke));
+  const arcsB = cB._arcs.filter(q => gasK(q.stroke));
+  // gas 弧 = 3 弯道 + T 岔喇叭口 = 4；线段 = T 岔纵贯通轴中线 = 1
+  check('[R14] gas 色弧 = 4（3 弯道 + T 岔喇叭口）', arcsB.length === 4, 'arcs=' + arcsB.length);
+  check('[R14] gas 色线段 = 1（T 岔纵贯通轴中线）', segs.length === 1,
+    'segs=' + JSON.stringify(segs));
+  const cxT = CFG.ccx(L, tx), cyT = CFG.ccy(L, ty);
+  const eq = (a, b) => Math.abs(a - b) < 1e-9;
+  const hasV = segs.some(q => eq(q.x1, cxT) && eq(q.y1, cyT - h) && eq(q.x2, cxT) && eq(q.y2, cyT + h));
+  check('[R14] T 岔(' + tx + ',' + ty + ')：纵贯通中线 (cx, cy−h)→(cx, cy+h)',
+    hasV, 'V=' + hasV);
+  // 喇叭口：E 进 N 出 → NE 角单弧（圆心 (cx+h, cy−h)、半径 h、ccw）
+  const horn = arcsB.filter(ar => eq(ar.x, cxT + h) && eq(ar.y, cyT - h));
+  check('[R14] T 岔喇叭口 = NE 角单弧（圆心 (cx+h,cy−h)、半径 h）',
+    horn.length === 1 && horn[0] && eq(horn[0].r, h),
+    'horn=' + horn.map(ar => ar.r.toFixed(1)).join(','));
+  const cornerOk = arcsB.every(ar => {
+    const fx = (ar.x - L.x) / L.cell, fy = (ar.y - L.y) / L.cell;
+    return eq(ar.r, h) && Math.abs(fx - Math.round(fx)) < 1e-9 &&
+           Math.abs(fy - Math.round(fy)) < 1e-9;
+  });
+  check('[R14] 每条弧半径 = h、圆心落在格角（整格坐标）', arcsB.length === 4 && cornerOk);
+  GS.railPath = savedPath; GS.railSet = savedSet; GS.gasCoverAt = savedCover;   // 复原现场
 }
 
 console.log('\n' + '='.repeat(64));

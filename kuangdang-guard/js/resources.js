@@ -171,13 +171,31 @@ GS.isFreeSpot = function (c, r) {
   if (GS.onRail(c, r)) return false;      // 铁轨格不占（列车不做碰撞，视觉重叠即逻辑荒谬）
   return true;
 };
-// 【铸币所】座数 → 金币价值 = CFG.GOLD_RATE + MINT_BONUS × 座数（叠加，大王拍板）
-GS.mintCount = function () {
+// 【铸币所】（v1.8u 大王令改版 §14.82：全场 +5 退役 → 3×3 覆盖金币 +1×座数）
+//   旧全场座数查询退役（保留注释不删习惯）：唯一调用方 goldValue 已改 mintCoverAt。
+// GS.mintCount = function () {
+//   var n = 0;
+//   for (var i = 0; i < GS.buildings.length; i++) if (GS.buildings[i].type === 'mint') n++;
+//   return n;
+// };
+// 【铸币所】覆盖 (c,r) 的座数（3×3 ⇒ 切比雪夫 ≤ CFG.MINT_RANGE，与 gasCoverAt 同构）
+GS.mintCoverAt = function (c, r) {
   var n = 0;
-  for (var i = 0; i < GS.buildings.length; i++) if (GS.buildings[i].type === 'mint') n++;
+  for (var i = 0; i < GS.buildings.length; i++) {
+    var b = GS.buildings[i];
+    if (b.type !== 'mint') continue;
+    if (Math.max(Math.abs(b.c - c), Math.abs(b.r - r)) <= CFG.MINT_RANGE) n++;
+  }
   return n;
 };
-GS.goldValue = function () { return CFG.GOLD_RATE + CFG.MINT_BONUS * GS.mintCount(); };
+// 金币拾取额 = GOLD_RATE × (1 + MINT_BONUS × 覆盖座数)（v1.8u 三拍板枚数口径：
+//   覆盖座数是「枚数」乘数 —— 每覆盖一座 +1 枚，覆盖一座该格拾取从 1 枚变 2 枚；
+//   金额 = 枚数 × 单枚 GOLD_RATE，覆盖一座 = 5×2 = 10。v1.8u 首版「金额 +1」作废）。
+//   无参调用退化为基础价 GOLD_RATE（= 1 枚，兼容旧调用点/显示/测试）。
+GS.goldValue = function (c, r) {
+  if (c == null) return CFG.GOLD_RATE;
+  return CFG.GOLD_RATE * (1 + CFG.MINT_BONUS * GS.mintCoverAt(c, r));
+};
 // 【加油站】覆盖 (c,r) 的座数（3×3 ⇒ 切比雪夫 ≤ CFG.GAS_RANGE）
 GS.gasCoverAt = function (c, r) {
   var n = 0;
@@ -188,33 +206,31 @@ GS.gasCoverAt = function (c, r) {
   }
   return n;
 };
-// 【军工厂】（v1.6.35 大王令）车厢攻击加成（小数，0.2 = +20%）。
-//   规则：每座 +CFG.FACTORY_BASE；**每有一对相互在十字范围内的军工厂（曼哈顿 ≤1），
-//   额外 +CFG.FACTORY_ADJ**（按**相邻对**计一次，不逐厂重复计）。
-//   ⇒ 总加成 = BASE×座数 + ADJ×相邻对数：1 座 20%、两座相邻 50%、两座远离 40%、
-//     三座连成一线 80%（60% + 2 对）—— "堆在一起更强"的聚集激励。
-//   ⚠️ 效果是**查询式**（不是落位时写死）：拆/加厂自动重算，与铸币所同款口径。
-GS.wagonAtkBonus = function () {
-  var fs = [], i, j, pairs = 0;
-  for (i = 0; i < GS.buildings.length; i++) if (GS.buildings[i].type === 'factory') fs.push(GS.buildings[i]);
-  for (i = 0; i < fs.length; i++) {
-    for (j = i + 1; j < fs.length; j++) {
-      if (Math.abs(fs[j].c - fs[i].c) + Math.abs(fs[j].r - fs[i].r) === 1) pairs++;
-    }
-  }
-  return CFG.FACTORY_BASE * fs.length + CFG.FACTORY_ADJ * pairs;
-};
-// 单座军工厂自己的贡献（BASE + ADJ×它与多少座其他厂相邻）—— 生效反馈标注用
-//   （v1.6.36 大王令"军工厂的生效 UI 反馈只针对军工厂"：在建筑上直接标 %，不标铁轨）
-GS.factoryShare = function (b) {
-  if (!b || b.type !== 'factory') return 0;
-  var adj = 0;
+// 【猛攻坊】（v1.8u 十三令，§14.84 大王令）(c,r) 处车厢吃到的攻击加成（小数，1 = +100%）。
+//   规则：每座**同行左右邻格**（b.r===r 且 |b.c−c|===1）的猛攻坊 +CFG.AUX_ATK，
+//   **求和非连乘**（斜角/隔格不算；一座坊可同惠左右两节，一节车厢可吃多座求和）。
+//   ⚠️ 效果是**查询式**（不是落位时写死）：拆/加建筑、铁轨重排自动重算，与加油站同款口径。
+//   【原军工厂 GS.wagonAtkBonus/factoryShare 已随十三令退役】
+GS.atkBoostAt = function (c, r) {
+  var n = 0;
   for (var i = 0; i < GS.buildings.length; i++) {
-    var g = GS.buildings[i];
-    if (g === b || g.type !== 'factory') continue;
-    if (Math.abs(g.c - b.c) + Math.abs(g.r - b.r) === 1) adj++;
+    var b = GS.buildings[i];
+    if (b.type !== 'atk') continue;
+    if (b.r === r && Math.abs(b.c - c) === 1) n++;
   }
-  return CFG.FACTORY_BASE + CFG.FACTORY_ADJ * adj;
+  return CFG.AUX_ATK * n;
+};
+// 【疾速坊】（v1.8u 十三令）(c,r) 处车厢吃到的攻速加成（小数，1 = +100%）。
+//   每座**同列上下邻格**（b.c===c 且 |b.r−r|===1）的疾速坊 +CFG.AUX_ASP，**求和非连乘**。
+//   攻速换算：间隔 = 基础间隔 ÷ (1 + 加成) ⇒ +300% = 间隔 ×1/4（−75%），大王拍板锚点。
+GS.aspBoostAt = function (c, r) {
+  var n = 0;
+  for (var i = 0; i < GS.buildings.length; i++) {
+    var b = GS.buildings[i];
+    if (b.type !== 'asp') continue;
+    if (b.c === c && Math.abs(b.r - r) === 1) n++;
+  }
+  return CFG.AUX_ASP * n;
 };
 // （2026-10-15 代码整理：GS.factoryCovers(c,r) 已删 —— 全项目 0 调用（军工厂范围
 //   高亮实为 renderer 内联实现），注释口径"是否覆盖"与实现（计数）也不符；

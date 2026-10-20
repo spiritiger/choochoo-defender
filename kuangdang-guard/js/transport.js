@@ -6,7 +6,8 @@
 // 一次性入账并清空车斗。
 //
 // 车斗口径 = "这一圈（站台→站台）车上攒了多少"：
-//   · 金币地块：+GS.goldValue()（= CFG.GOLD_RATE + 铸币所数量 × CFG.MINT_BONUS；
+//   · 金币地块：+GS.goldValue(c,r)（= GOLD_RATE × (1 + 铸币所覆盖座数 × MINT_BONUS)，
+//     v1.8u 起 3×3 覆盖按座数叠加，§14.82；
 //     harvested 保证一圈只算一次，圈末由 resetLap 重置）
 //   · 爱心地块：+1 枚（v1.6.22；同上圈末重置，交付时按 CFG.HEART_HEAL 回血）
 //   · 贴轨经济建筑：+b.rate（每经过一次算一次）
@@ -72,9 +73,14 @@ TRANS.serviceCell = function (cell) {
   if (g.gold && !g.harvested) {
     g.harvested = true;
     g.flash = 0.35;
-    // v1.6.23：金币价值走 GS.goldValue()（= GOLD_RATE + 铸币所数量 × MINT_BONUS）
-    TRANS.load(GS.goldValue());    // v0.9.2：先堆到车上，到站才入账
-    TRANS.picked('gold');          // v1.6.25：屁股货堆 +1 枚金币图标
+    // v1.8u（§14.82 三拍板枚数口径）：金币拾取额走 GS.goldValue(c,r)（= GOLD_RATE ×
+    //   (1 + MINT_BONUS×覆盖座数)，覆盖一座 = 1枚→2枚；v1.6.23~v1.8t 旧「全场座数 × 5」退役）
+    TRANS.load(GS.goldValue(cell.c, cell.r));    // v0.9.2：先堆到车上，到站才入账
+    // v1.8u 七令（§14.82）：车尾货堆图标**跟枚数走** —— 覆盖格多收几枚，屁股上就
+    //   多挂几枚图标（piles = 金额÷单价：无覆盖 1 / 覆盖 1 座 2 / 两座交叠 3），
+    //   一眼看出这块地收了双份。纯表现记账口径不变：数值仍看 cargo。
+    var piles = Math.round(GS.goldValue(cell.c, cell.r) / CFG.GOLD_RATE);
+    for (var gp = 0; gp < piles; gp++) TRANS.picked('gold');
   } else if (g.heart && !g.harvested) {
     // v1.6.22 爱心：拾取进车斗（计数一枚），到站交付时才回血
     g.harvested = true;
