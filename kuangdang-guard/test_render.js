@@ -413,6 +413,30 @@ for (const [idx, fr, name] of HEADING) {
 }
 
 // ============================================================================
+// [R17] 场上建筑拖动（bmove）同样铺效果范围 —— 与手牌拖上场共用 REND.buildingRange，
+//   落点格即预览中心（含停在原格时也显示）。钉死 gas 两态与"原地悬停也预览"。
+// ============================================================================
+{
+  const px = L.x + 2.5 * L.cell, py = L.y + 1.5 * L.cell;   // 落点 (2,1)
+  GS.railSet = { '2,2': 1 };
+  const cb = makeCtx();
+  REND.draw(cb, L, null, { kind: 'bmove', building: { type: 'gas', c: 0, r: 0 }, px: px, py: py });
+  const bhi = cb._rects.filter(x => x.fill === 'rgba(94,200,240,0.38)');
+  const blo = cb._rects.filter(x => x.fill === 'rgba(94,200,240,0.16)');
+  check('[R17] 拖动场上 gas 显示 3×3 范围（在轨格高亮 0.38 恰 1 格）',
+    bhi.length === 1 && bhi[0].x === L.x + 2 * L.cell && bhi[0].y === L.y + 2 * L.cell,
+    'n=' + bhi.length);
+  check('[R17] 拖动场上 gas 其余 8 格标准淡底 0.16', blo.length === 8, 'n=' + blo.length);
+  // 停在建筑原格：范围照显（落点即预览，不因"没移动"而消失）
+  const cs = makeCtx();
+  REND.draw(cs, L, null, { kind: 'bmove', building: { type: 'gas', c: 2, r: 1 },
+                           px: px, py: py });
+  const shi = cs._rects.filter(x => x.fill === 'rgba(94,200,240,0.38)');
+  check('[R17] 拖动但没有移动（悬停回原格）范围仍显示', shi.length === 1, 'n=' + shi.length);
+  GS.railSet = {};
+}
+
+// ============================================================================
 // [R8] 作战拉远：真缩小布局 + 大字横幅（v1.6.38 建凭；v1.6.39 大王二令
 //      "不是平移要缩小 + 平滑过渡"，cell 41→34、荒野带/横幅吃 CAM 淡入淡出）
 // ============================================================================

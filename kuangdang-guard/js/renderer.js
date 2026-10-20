@@ -752,56 +752,7 @@ REND.draw = function (ctx, L, hover, drag) {
     var hcell2 = CFG.pickCell(LAY, drag.px, drag.py);
     if (hcell2) {
       var okHero = GS.isFreeSpot(hcell2.c, hcell2.r);
-      // v1.6.23 加油站：悬停时先铺 3×3 作用范围，让"提速盖到哪"一目了然。
-      //   v1.8u 六令（§4d/§14.82）：范围格**两态** —— 标准态蓝淡底 0.16；3×3 内
-      //   **在轨格**（有效目标，GS.onRail）整格高亮 0.38（对齐卡面图配色），
-      //   "哪几格真的吃到提速"一眼可辨。
-      if (drag.kind === 'building' && drag.bkey === 'gas') {
-        var gr = CFG.GAS_RANGE;
-        for (var gdr = -gr; gdr <= gr; gdr++) for (var gdc = -gr; gdc <= gr; gdc++) {
-          var gc2 = hcell2.c + gdc, gr3 = hcell2.r + gdr;
-          if (!CFG.inBounds(gc2, gr3)) continue;
-          ctx.fillStyle = GS.onRail(gc2, gr3) ? 'rgba(94,200,240,0.38)' : 'rgba(94,200,240,0.16)';
-          ctx.fillRect(L.x + gc2 * L.cell, L.y + gr3 * L.cell, L.cell, L.cell);
-        }
-      }
-      // v1.8u 铸币所（§14.82，三拍板补）：悬停时先铺 3×3 金淡底（与加油站蓝淡底同
-      //   语言，大王令"卡牌表现也把范围加上"）再描 3×3 内金币格淡金描边。
-      //   v1.8u 六令：范围格**两态** —— 标准态金淡底 0.14；3×3 内**金币格**
-      //   （有效目标）整格高亮 0.35（对齐卡面图配色），淡金描边保留。
-      if (drag.kind === 'building' && drag.bkey === 'mint') {
-        var mr = CFG.MINT_RANGE;
-        for (var mdr = -mr; mdr <= mr; mdr++) for (var mdc = -mr; mdc <= mr; mdc++) {
-          var mc2 = hcell2.c + mdc, mr3 = hcell2.r + mdr;
-          if (!CFG.inBounds(mc2, mr3)) continue;
-          ctx.fillStyle = GS.grid[mr3][mc2].gold ? 'rgba(240,180,41,0.35)' : 'rgba(240,180,41,0.14)';
-          ctx.fillRect(L.x + mc2 * L.cell, L.y + mr3 * L.cell, L.cell, L.cell);
-        }
-        for (var mdr2 = -mr; mdr2 <= mr; mdr2++) for (var mdc2 = -mr; mdc2 <= mr; mdc2++) {
-          var mc3 = hcell2.c + mdc2, mr4 = hcell2.r + mdr2;
-          if (!CFG.inBounds(mc3, mr4)) continue;
-          if (!GS.grid[mr4][mc3].gold) continue;
-          ctx.strokeStyle = 'rgba(240,180,41,0.45)';
-          ctx.lineWidth = 2;
-          ctx.strokeRect(L.x + mc3 * L.cell + 1.5, L.y + mr4 * L.cell + 1.5, L.cell - 3, L.cell - 3);
-        }
-      }
-      // v1.8u 十三令（§14.84）猛攻坊/疾速坊：悬停铺**横条/竖条**作用范围（各 3 格，
-      //   与实际范围同形）；两态（并入六令体系）—— 命中**车厢格**（有效目标）整格
-      //   高亮 0.38，其余淡底 0.16，"哪节车厢真的吃到加成"一眼可辨。
-      //   【v1.6.35 军工厂十字预览随建筑退役删除】
-      if (drag.kind === 'building' && (drag.bkey === 'atk' || drag.bkey === 'asp')) {
-        var axDirs = (drag.bkey === 'atk') ? [[0, 0], [1, 0], [-1, 0]] : [[0, 0], [0, 1], [0, -1]];
-        for (var d5 = 0; d5 < axDirs.length; d5++) {
-          var fc5 = hcell2.c + axDirs[d5][0], fr5 = hcell2.r + axDirs[d5][1];
-          if (!CFG.inBounds(fc5, fr5)) continue;
-          var axHit = GS.grid[fr5][fc5].b && GS.grid[fr5][fc5].b.type === 'tower';
-          ctx.fillStyle = (drag.bkey === 'atk')
-            ? (axHit ? 'rgba(224,86,63,0.38)' : 'rgba(224,86,63,0.16)')
-            : (axHit ? 'rgba(61,189,158,0.38)' : 'rgba(61,189,158,0.16)');
-          ctx.fillRect(L.x + fc5 * L.cell, L.y + fr5 * L.cell, L.cell, L.cell);
-        }
-      }
+      if (drag.kind === 'building') REND.buildingRange(ctx, L, hcell2.c, hcell2.r, drag.bkey);
       ctx.strokeStyle = okHero ? REND.C.okl : REND.C.bad;
       ctx.lineWidth = 2;
       ctx.strokeRect(L.x + hcell2.c * L.cell + 1, L.y + hcell2.r * L.cell + 1, L.cell - 2, L.cell - 2);
@@ -816,6 +767,10 @@ REND.draw = function (ctx, L, hover, drag) {
     //   跟指针；悬停格语义描边（绿=移动 / 金=交换 / 红=弹回）。源建筑原格照画
     //   （结算前数据不动，与拖塔同口径），判定与 UI.settleBuildingMove 完全同口径。
     var mbt = drag.building.type;
+    var mcell = CFG.pickCell(LAY, drag.px, drag.py);
+    // 拖动场上建筑时同样显示效果范围（与手牌拖上场同一套渲染件，落点即预览）——
+    //   先铺范围再画幽灵，幽灵方块保持清晰不被范围底色压暗。
+    if (mcell) REND.buildingRange(ctx, L, mcell.c, mcell.r, mbt);
     var mbody = (mbt === 'mint') ? '#8a6a12' : (mbt === 'gas') ? '#1b6a94'
               : (mbt === 'atk') ? '#a93b2e' : '#1f7a68';
     ctx.globalAlpha = 0.75;
@@ -825,7 +780,6 @@ REND.draw = function (ctx, L, hover, drag) {
     ctx.strokeStyle = 'rgba(255,255,255,0.8)';
     ctx.lineWidth = 1.2;
     ctx.strokeRect(drag.px - L.cell * 0.36, drag.py - L.cell * 0.36, L.cell * 0.72, L.cell * 0.72);
-    var mcell = CFG.pickCell(LAY, drag.px, drag.py);
     if (mcell && (mcell.c !== drag.building.c || mcell.r !== drag.building.r)) {
       var mdb = GS.grid[mcell.r][mcell.c].b;
       // v1.8u 十七令（§14.88）：塔也纳入交换（建筑 ⇄ 塔双向），只剩 core/非空地弹回
@@ -848,6 +802,54 @@ REND.draw = function (ctx, L, hover, drag) {
   // 词条经验条（v1.6.41）：**画在横幅之后** ⇒ 夜晚数字浮在横幅底条上（数字靠右、
   //   横幅文字居中，互不遮挡）；旧序（横幅前）会被半透明底条压暗看不清。
   REND.expBar(ctx, L);
+};
+
+// 建筑效果范围预览（手牌拖上场 / 场上建筑拖动**共用**，v1.6.23 建，抽出共用件）：
+//   以 (c,r) 为建筑中心，按建筑类型铺作用范围。两态口径（v1.8u 六令 §4d/§14.82）：
+//   标准态淡底；范围格内**有效目标**整格高亮 —— gas = 在轨格（GS.onRail）、
+//   mint = 金币格（grid.gold）、atk/asp = 车厢格（塔）。猛攻坊/疾速坊为横/竖 3 格条。
+REND.buildingRange = function (ctx, L, c, r, bkey) {
+  // 加油站：3×3 蓝淡底（在轨格提亮）
+  if (bkey === 'gas') {
+    var gr = CFG.GAS_RANGE;
+    for (var gdr = -gr; gdr <= gr; gdr++) for (var gdc = -gr; gdc <= gr; gdc++) {
+      var gc2 = c + gdc, gr3 = r + gdr;
+      if (!CFG.inBounds(gc2, gr3)) continue;
+      ctx.fillStyle = GS.onRail(gc2, gr3) ? 'rgba(94,200,240,0.38)' : 'rgba(94,200,240,0.16)';
+      ctx.fillRect(L.x + gc2 * L.cell, L.y + gr3 * L.cell, L.cell, L.cell);
+    }
+  }
+  // 铸币所：3×3 金淡底（金币格提亮）+ 金币格淡金描边
+  if (bkey === 'mint') {
+    var mr = CFG.MINT_RANGE;
+    for (var mdr = -mr; mdr <= mr; mdr++) for (var mdc = -mr; mdc <= mr; mdc++) {
+      var mc2 = c + mdc, mr3 = r + mdr;
+      if (!CFG.inBounds(mc2, mr3)) continue;
+      ctx.fillStyle = GS.grid[mr3][mc2].gold ? 'rgba(240,180,41,0.35)' : 'rgba(240,180,41,0.14)';
+      ctx.fillRect(L.x + mc2 * L.cell, L.y + mr3 * L.cell, L.cell, L.cell);
+    }
+    for (var mdr2 = -mr; mdr2 <= mr; mdr2++) for (var mdc2 = -mr; mdc2 <= mr; mdc2++) {
+      var mc3 = c + mdc2, mr4 = r + mdr2;
+      if (!CFG.inBounds(mc3, mr4)) continue;
+      if (!GS.grid[mr4][mc3].gold) continue;
+      ctx.strokeStyle = 'rgba(240,180,41,0.45)';
+      ctx.lineWidth = 2;
+      ctx.strokeRect(L.x + mc3 * L.cell + 1.5, L.y + mr4 * L.cell + 1.5, L.cell - 3, L.cell - 3);
+    }
+  }
+  // 猛攻坊（横条）/ 疾速坊（竖条）：各 3 格（车厢格提亮）
+  if (bkey === 'atk' || bkey === 'asp') {
+    var axDirs = (bkey === 'atk') ? [[0, 0], [1, 0], [-1, 0]] : [[0, 0], [0, 1], [0, -1]];
+    for (var d5 = 0; d5 < axDirs.length; d5++) {
+      var fc5 = c + axDirs[d5][0], fr5 = r + axDirs[d5][1];
+      if (!CFG.inBounds(fc5, fr5)) continue;
+      var axHit = GS.grid[fr5][fc5].b && GS.grid[fr5][fc5].b.type === 'tower';
+      ctx.fillStyle = (bkey === 'atk')
+        ? (axHit ? 'rgba(224,86,63,0.38)' : 'rgba(224,86,63,0.16)')
+        : (axHit ? 'rgba(61,189,158,0.38)' : 'rgba(61,189,158,0.16)');
+      ctx.fillRect(L.x + fc5 * L.cell, L.y + fr5 * L.cell, L.cell, L.cell);
+    }
+  }
 };
 
 // 人工地面纹理（v1.6.46 ①）：每格确定性 hash（同一格逐帧稳定）生成

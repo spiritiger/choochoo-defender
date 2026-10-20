@@ -5,15 +5,16 @@
 //   原先一起塞在 state.js 里。搬运时**逐行原样**，只换了宿主文件。
 //
 //   三类卡：清理形状卡（kind:shape）/ 英雄卡（kind:hero）/ 建筑卡（kind:building）
-//   概率：CFG 化的 GS.CARD_RATE（40% / 35% / 25%，大王拍板）；去重按尺寸家族 / 元素 / 建筑种类
+//   概率：CFG 化的 GS.CARD_RATE（50% / 35% / 15%，v1.8v 大王令）；去重按尺寸家族 / 元素 / 建筑种类
 //   依赖：CFG / GS / TOWERS（英雄元素表，仅运行时读）。
 //   加载序：resources.js 之后（函数体只在运行时被调，先定义后调用无环）。
 // ============================================================================
-// v1.6.15（大王令 2026-10-10）：下一抽的价格 = 10 + 10 × 已抽次数
-//   （首抽 10 → 20 → 30 → …，无上限封顶；沿革：v1.4.4 首抽 10 / v1.4.8 改 5 / 本次改回 10 起步步进 10）。
+// v1.8v（大王令 2026-10-20）：下一抽的价格 = 5 + 5 × 已抽次数
+//   （首抽 5 → 10 → 15 → …，无上限封顶；沿革：v1.4.4 首抽 10 / v1.4.8 改 5 /
+//   v1.6.15 改回 10 起步步进 10 / 本次改回 5 起步步进 5）。
 //   UI 层（按钮文案 / 禁用判断 / 扣费）一律走这里。
 GS.drawCost = function () {
-  return 10 + 10 * (GS.drawCount || 0);
+  return 5 + 5 * (GS.drawCount || 0);
 };
 
 // ---- 三选一：清理形状 + 经济建筑 ----
@@ -42,10 +43,11 @@ GS.cardSig = function (card) {
 // ============================================================================
 // v1.4 卡牌大改（规格 §14）：新三选一 + 牌库 + 车厢
 //   · v1.6.23：三类卡同池 —— 清理形状卡 / 英雄卡 / **建筑卡**（铸币所、加油站）；
-//     每张独立概率 CFG 化的 GS.CARD_RATE = 清理 40% / 英雄 35% / 建筑 25%（大王拍板）；
+//     每张独立概率 CFG 化的 GS.CARD_RATE = 清理 50% / 英雄 35% / 建筑 15%
+//     （v1.8v 大王令；沿革 40/35/25）；
 //     去重（形状按尺寸家族、英雄按元素、建筑按种类）；
 //   · 形状卡进牌库 ≤ GS.DECK_SHAPE_MAX 张（满了该位顺延英雄卡）；
-//   · 抽卡收费在 UI 层（价格 = GS.drawCost()，v1.6.15 起线性递增 10/20/30…），这里只管发牌。
+//   · 抽卡收费在 UI 层（价格 = GS.drawCost()，v1.8v 起线性递增 5/10/15…），这里只管发牌。
 // ============================================================================
 GS.DECK_SHAPE_MAX = 3;    // 牌库形状卡上限（大王拍板 ③：一次性消耗、攒≤3）
 
@@ -81,8 +83,8 @@ GS.deckShapeCount = function () {
   return n;
 };
 
-// 三类卡的独立出现概率（大王拍板 40/35/25）；改动只动这里
-GS.CARD_RATE = { shape: 0.40, hero: 0.35, building: 0.25 };
+// 三类卡的独立出现概率（v1.8v 大王令 50/35/15；沿革 40/35/25）；改动只动这里
+GS.CARD_RATE = { shape: 0.50, hero: 0.35, building: 0.15 };
 GS.rollCardKind = function () {
   var r = Math.random();
   if (r < GS.CARD_RATE.shape) return 'shape';
@@ -96,29 +98,45 @@ GS.rollCardKind = function () {
 //      扩张断链）。"首次"按**局**计：标记 `GS.__offerSeen` 由 newGame 清零（重开/换关/
 //      切模式都重置），发过一轮即置 true，之后按概率正常发牌。
 //   去重：形状按尺寸家族 / 英雄按元素 / 建筑按种类；撞重就重抽。
+//   ▍v1.8v 大王令：**同类型卡在三选一内最多 2 张**——抽到 3 张同类时**整组重抽**
+//      （不用"第三张强制换类"，否则会把概率洗成 37/30/22，偏离 50/35/15 口径）；
+//      重抽 20 次仍三连（概率≈3e-16）才兜底把第三张换类。
 //   ⚠️ 兜底：建筑有 4 种（v1.8u 十三令起），若长时间撞重（重抽 >30 次）改补**英雄卡**
-//      （4 种元素，三张必不撞）——保证一定凑满 3 张，且不写"抽重就重抽整组"的循环。
+//      （4 种元素，三张必不撞）——保证一定凑满 3 张，且不写"抽重就重抽整组"的循环；
 GS.drawCardOffer = function () {
-  var cards = [], sigs = {}, guard = 0;
   var first = !GS.__offerSeen;      // 本局首次发牌：首张保底清理形状卡
   GS.__offerSeen = true;
-  while (cards.length < 3) {
-    guard++;
-    var full = GS.deckShapeCount() >= GS.DECK_SHAPE_MAX;   // 形状卡满 → 顺延英雄
-    var kind = GS.rollCardKind();
-    if (first && cards.length === 0) kind = 'shape';       // 首次三选一：保底一张清理形状
-    if (kind === 'shape' && full) kind = 'hero';
-    var card, sig;
-    if (kind === 'shape') { card = GS.pickShapeCard(); sig = 'shape:' + GS.cardSig(card); }
-    else if (kind === 'hero') { card = GS.pickHeroCard(); sig = 'hero:' + card.elem; }
-    else { card = GS.pickBuildingCard(); sig = 'bld:' + card.bkey; }
-    if (sigs[sig]) {
-      if (guard <= 30) continue;
-      card = GS.pickHeroCard(); sig = 'hero:' + card.elem;   // 兜底顺延英雄
-      if (sigs[sig]) continue;
+  var cards = null;
+  for (var attempt = 0; attempt < 20; attempt++) {
+    cards = [];
+    var sigs = {}, guard = 0;
+    while (cards.length < 3) {
+      guard++;
+      var full = GS.deckShapeCount() >= GS.DECK_SHAPE_MAX;   // 形状卡满 → 顺延英雄
+      var kind = GS.rollCardKind();
+      if (first && cards.length === 0) kind = 'shape';       // 首次三选一：保底一张清理形状
+      if (kind === 'shape' && full) kind = 'hero';
+      var card, sig;
+      if (kind === 'shape') { card = GS.pickShapeCard(); sig = 'shape:' + GS.cardSig(card); }
+      else if (kind === 'hero') { card = GS.pickHeroCard(); sig = 'hero:' + card.elem; }
+      else { card = GS.pickBuildingCard(); sig = 'bld:' + card.bkey; }
+      if (sigs[sig]) {
+        if (guard <= 30) continue;
+        card = GS.pickHeroCard(); sig = 'hero:' + card.elem; // 兜底顺延英雄
+        if (sigs[sig]) continue;
+      }
+      sigs[sig] = 1;
+      cards.push(card);
     }
-    sigs[sig] = 1;
-    cards.push(card);
+    var kc = { shape: 0, hero: 0, building: 0 };
+    for (var i = 0; i < 3; i++) kc[cards[i].kind]++;
+    if (kc.shape <= 2 && kc.hero <= 2 && kc.building <= 2) return cards;   // 同类型 ≤2 张
   }
+  // 兜底（理论不可达）：三张同类 ⇒ 第三张换一个不同类
+  var bad = cards[0].kind;
+  var alt = bad === 'hero' ? 'building' : 'hero';
+  if (alt === 'shape' && GS.deckShapeCount() >= GS.DECK_SHAPE_MAX) alt = 'building';
+  cards[2] = alt === 'shape' ? GS.pickShapeCard()
+           : alt === 'hero' ? GS.pickHeroCard() : GS.pickBuildingCard();
   return cards;
 };

@@ -566,29 +566,43 @@ const isOuterRing = (c, r) => c === 0 || c === CFG.MAP_COLS - 1 || r === 0 || r 
     ENG.trainSpeedMul() === 1 && GS.buildings.every(b => b.type !== 'gas'));
 }
 
-  // ⑤ 三选一：三类卡同池 + 概率 40/35/25 + 去重
+  // ⑤ 三选一：三类卡同池 + 概率 50/35/15（v1.8v）+ 去重 + 同类型最多 2 张
   GS.newGame();
   const N = 3000, cnt = { shape: 0, hero: 0, building: 0 };
-  let sizeOk = true, dupOk = true, hasB = false;
+  let sizeOk = true, dupOk = true, capOk = true, hasB = false;
   for (let i = 0; i < N; i++) {
     const cards = GS.drawCardOffer();
     if (cards.length !== 3) sizeOk = false;
-    const sigs = {};
+    const sigs = {}, per = { shape: 0, hero: 0, building: 0 };
     for (const c of cards) {
       cnt[c.kind] = (cnt[c.kind] || 0) + 1;
+      per[c.kind] = (per[c.kind] || 0) + 1;
       if (c.kind === 'building') hasB = true;
       const sig = c.kind === 'shape' ? 's' + GS.cardSig(c) : c.kind === 'hero' ? 'h' + c.elem : 'b' + c.bkey;
       if (sigs[sig]) dupOk = false;
       sigs[sig] = 1;
     }
+    if (per.shape > 2 || per.hero > 2 || per.building > 2) capOk = false;
   }
-  const tot = N * 3;
   check('建筑14：三选一恒发满 3 张且互不重复', sizeOk && dupOk);
   check('建筑15：三类卡同池出现（清理/英雄/建筑）',
     cnt.shape > 0 && cnt.hero > 0 && cnt.building > 0 && hasB);
-  check('建筑16：建筑卡占比 ≈ 25%（20~30% 容差）',
-    cnt.building / tot > 0.20 && cnt.building / tot < 0.30,
-    '实测 ' + (cnt.building / tot * 100).toFixed(1) + '%');
+  check('建筑16：同类型卡单次最多 2 张（v1.8v 大王令）', capOk,
+    'shape=' + cnt.shape + ' hero=' + cnt.hero + ' bld=' + cnt.building);
+  // 基础抽类概率走 GS.rollCardKind（不受“最多 2 张”与保底影响）：50/35/15
+  {
+    const M = 20000, rc = { shape: 0, hero: 0, building: 0 };
+    for (let i = 0; i < M; i++) rc[GS.rollCardKind()]++;
+    check('建筑17：抽类基础概率 50/35/15（±2%）',
+      Math.abs(rc.shape / M - 0.50) < 0.02 &&
+      Math.abs(rc.hero / M - 0.35) < 0.02 &&
+      Math.abs(rc.building / M - 0.15) < 0.02,
+      '实测 ' + (rc.shape / M * 100).toFixed(1) + '/' + (rc.hero / M * 100).toFixed(1) +
+      '/' + (rc.building / M * 100).toFixed(1));
+  }
+  check('建筑18：CARD_RATE 常量 = 50/35/15',
+    GS.CARD_RATE.shape === 0.50 && GS.CARD_RATE.hero === 0.35 && GS.CARD_RATE.building === 0.15,
+    JSON.stringify(GS.CARD_RATE));
 }
 
 // ============================================================================

@@ -447,9 +447,29 @@ function ensureFree(n) {
     GS.expPending === 2 && GS.expTaken === 2 && EXP.need() === 4100);
   check('[T7] consume 取走一次', EXP.consume() === true && GS.expPending === 1);
   check('[T7] progress 口径', EXP.progress().need === 4100);
-  check('[T7] killGain = 波总额/怪数（w0 表底 2500 / count(0)=24）',
-    Math.abs(EXP.killGain() - 2500 / FOES.CFG.count(0)) < 1e-9 &&
-    CFG.waveExp(1) === 2500 && CFG.waveExp(10) === 110500 && CFG.waveExp(11) === 110500);
+  check('[T7] killGain = 波总额/怪数（w0 表底 1500 / count(0)=2）',
+    Math.abs(EXP.killGain() - 1500 / FOES.CFG.count(0)) < 1e-9 &&
+    CFG.waveExp(1) === 1500 && CFG.waveExp(10) === 5600 && CFG.waveExp(11) === 5600);
+  // v1.8v 波次经验曲线：前两波合计不够升级，第 3~10 波每波恰升 1 级，10 波打完 L9
+  {
+    var saved = { exp: GS.exp, taken: GS.expTaken, pend: GS.expPending, wave: FOES.wave };
+    GS.exp = 0; GS.expTaken = 0; GS.expPending = 0;
+    var kinds = [];
+    for (var w = 1; w <= 10; w++) {
+      var lvBefore = GS.expTaken;
+      GS.exp = GS.exp + CFG.waveExp(w);          // 模拟本波全部击杀后的经验账
+      var gd = 0;
+      while (GS.exp >= EXP.need() && gd++ < 999) {
+        GS.exp -= EXP.need(); GS.expTaken++; GS.expPending++;
+      }
+      kinds.push(GS.expTaken - lvBefore);
+    }
+    check('[T7] 前两波不升级，之后每波升 1 级，第 10 波到 L9',
+      kinds[0] === 0 && kinds[1] === 0 && kinds.slice(2).every(n => n === 1) &&
+      GS.expTaken === 8,
+      '每波升级=' + kinds.join(',') + ' 终等级=L' + (GS.expTaken + 1));
+    GS.exp = saved.exp; GS.expTaken = saved.taken; GS.expPending = saved.pend; FOES.wave = saved.wave;
+  }
   { // 25 级封顶：expTaken=24（L25）→ need=Infinity 永不满、progress 满条
     var savedTaken = GS.expTaken, savedExp = GS.exp, savedPend = GS.expPending;
     GS.expTaken = 24; GS.exp = 99999;
