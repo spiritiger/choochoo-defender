@@ -566,6 +566,109 @@ const isOuterRing = (c, r) => c === 0 || c === CFG.MAP_COLS - 1 || r === 0 || r 
     ENG.trainSpeedMul() === 1 && GS.buildings.every(b => b.type !== 'gas'));
 }
 
+// ============================================================================
+// [SS] 消耗提速（v1.8y 大王拍板 2026-10-21，**改版：仅抽卡计次、每 4 抽 1 级、
+//      最多 8 级**）：每档 +10%、8 档封顶 1.8×，与加油站/快进独立乘区相乘；
+//      进度源 = GS.drawCount（本局已付费抽卡次数），造塔走同一扣费入口但不计进度。
+// ============================================================================
+{
+  GS.newGame();
+  // ① 开局：零抽卡 ⇒ 档位 0、系数 1×
+  check('[SS] 开局：drawCount=0、tier=0、mul=1×',
+    GS.drawCount === 0 && (GS.speedTier || 0) === 0 && GS.spentSpeedMul() === 1,
+    'drawCount=' + GS.drawCount + ' tier=' + GS.speedTier + ' mul=' + GS.spentSpeedMul());
+  // ② 边界：3 抽不跨档、第 4 抽跨第一档（每 4 抽 1 级；模拟 ui.js 顺序先计数再扣费）
+  GS.drawCount = 3; GS.gold = 500; GS.spendGold(GS.drawCost());
+  check('[SS] 累计 3 抽不跨档（tier=0）',
+    GS.speedTier === 0 && GS.spentSpeedMul() === 1,
+    'drawCount=' + GS.drawCount + ' tier=' + GS.speedTier);
+  GS.drawCount = 4; GS.spendGold(GS.drawCost());
+  check('[SS] 第 4 抽跨第一档：tier=1、mul=1.10（每档 +10%）',
+    GS.speedTier === 1 && Math.abs(GS.spentSpeedMul() - 1.1) < 1e-9,
+    'drawCount=' + GS.drawCount + ' tier=' + GS.speedTier + ' mul=' + GS.spentSpeedMul());
+  // ③ 一次连抽跨多档：12 抽 ⇒ 阈值 4/8/12 全过
+  GS.drawCount = 12; GS.spendGold(GS.drawCost());
+  check('[SS] 累计 12 抽 ⇒ tier=3、mul=1.30',
+    GS.speedTier === 3 && Math.abs(GS.spentSpeedMul() - 1.3) < 1e-9,
+    'drawCount=' + GS.drawCount + ' tier=' + GS.speedTier + ' mul=' + GS.spentSpeedMul());
+  // ④ 封顶：32 抽 ⇒ 8 档全拿 = +80%（1.8×）
+  GS.drawCount = 32; GS.spendGold(GS.drawCost());
+  check('[SS] 32 抽封顶：tier=8、mul=1.8',
+    GS.speedTier === 8 && GS.spentSpeedMul() === 1.8,
+    'drawCount=' + GS.drawCount + ' tier=' + GS.speedTier + ' mul=' + GS.spentSpeedMul());
+  // ⑤ 消费点端到端：advanceTrain frac 增量 = 2.6 × spentSpeedMul × dt（无加油站、dt=0.1 不跨格）
+  const railSS = GS.railPath.slice();
+  GS.train.index = railSS.indexOf(railSS[5]);
+  GS.train.frac = 0.2;
+  const mulSS = GS.spentSpeedMul(), f0 = GS.train.frac;
+  ENG.advanceTrain(0.1);
+  check('[SS] advanceTrain 乘区：frac 增量 = 2.6 × ' + mulSS + ' × dt',
+    Math.abs((GS.train.frac - f0) - CFG.TRAIN_SPEED * mulSS * 0.1) < 1e-9,
+    'dFrac=' + (GS.train.frac - f0) + ' 期望 ' + CFG.TRAIN_SPEED * mulSS * 0.1);
+  // ⑥ 造塔不计进度：drawCount=5（tier=1），造塔扣款记账但 drawCount 不动 ⇒ tier 不变
+  GS.newGame();
+  GS.drawCount = 5; GS.gold = 500; GS.spendGold(GS.drawCost());
+  const gold0 = GS.gold, spent0 = GS.goldSpent, tier0 = GS.speedTier;
+  check('[SS] 前置：第 5 抽后 tier=1、金币足够造塔（需 ' + TOWERS.CFG.COST + '）',
+    tier0 === 1 && GS.gold > TOWERS.CFG.COST, 'tier=' + tier0 + ' gold=' + GS.gold);
+  check('[SS] 造塔成功 ⇒ 扣款 ' + TOWERS.CFG.COST + '、goldSpent 照加、tier 不变（仅抽卡计次）',
+    TOWERS.summon() === true && GS.gold === gold0 - TOWERS.CFG.COST &&
+    GS.goldSpent === spent0 + TOWERS.CFG.COST && GS.speedTier === tier0 &&
+    GS.drawCount === 5,
+    'gold=' + GS.gold + ' spent=' + GS.goldSpent + ' tier=' + GS.speedTier +
+    ' draws=' + GS.drawCount);
+  // ⑦ 余额不足：不扣款不计消耗、不跨档（COST=10，给 9 金卡在边界下）
+  GS.gold = TOWERS.CFG.COST - 1; GS.goldSpent = 0; GS.speedTier = 0; GS.drawCount = 0;
+  check('[SS] 余额不足造塔失败 ⇒ goldSpent/tier 不变',
+    TOWERS.summon() !== true && GS.goldSpent === 0 && GS.speedTier === 0,
+    'spent=' + GS.goldSpent + ' tier=' + GS.speedTier);
+  // ⑧ 进度查询 GS.spendProgress（镇中心 lv 刻度条数据源）：lv = 档数+1（lv1~lv9）、
+  //    档内比例按本档下界/下档阈值折算
+  GS.newGame();
+  const pr0 = GS.spendProgress();
+  check('[SS] spendProgress 开局：tier=0、lv=1、ratio=0、capped=false',
+    pr0.tier === 0 && pr0.lv === 1 && pr0.ratio === 0 && pr0.capped === false,
+    JSON.stringify(pr0));
+  GS.drawCount = 2; GS.gold = 500; GS.spendGold(GS.drawCost());   // 首档 4 抽 ⇒ 档内 2/4=0.5
+  const pr1 = GS.spendProgress();
+  check('[SS] spendProgress 档内进度：2 抽 ⇒ tier=0、lv=1、ratio=0.5',
+    pr1.tier === 0 && pr1.lv === 1 && Math.abs(pr1.ratio - 0.5) < 1e-9 && pr1.capped === false,
+    JSON.stringify(pr1));
+  GS.drawCount = 99; GS.spendGold(GS.drawCost());                 // 封顶 ⇒ lv9、ratio 恒 1
+  const pr2 = GS.spendProgress();
+  check('[SS] spendProgress 封顶：tier=8、lv=9、ratio=1、capped=true',
+    pr2.tier === 8 && pr2.lv === 9 && pr2.ratio === 1 && pr2.capped === true,
+    JSON.stringify(pr2));
+  // ⑨ 飘字挂起/补飘链沙箱守卫：无 UI（视为弹层关）+ 无 LAY ⇒ flushSpeedFloat 只清
+  //    挂起不生成飘字也不抛错（弹层遮挡/真渲染链在浏览器验）
+  GS.newGame();
+  GS._pendingSpeedFloat = true;
+  GS.flushSpeedFloat();
+  check('[SS] 补飘链沙箱守卫：flushSpeedFloat 清挂起不抛错',
+    GS._pendingSpeedFloat === false);
+  // ⑨b defer 挂起（v1.8y 补丁八修正·大王报「升级提示没有」根因=抽卡先扣费后弹层，
+  //    立即飘的字被 DOM 层盖满 1.6s）：spendGold(n, true) 跨档只置挂起位不立即飘，
+  //    flushSpeedFloat 补飘（沙箱无 UI/LAY，只验状态位流转）
+  GS.newGame();
+  GS.drawCount = 4;                        // 首档：4 抽跨档
+  GS.gold = 999;
+  const pendClean = GS._pendingSpeedFloat === false;
+  GS.spendGold(10, true);
+  check('[SS] defer 挂起：spendGold(n,true) 跨档只置挂起位、档位照常跨',
+    pendClean && GS._pendingSpeedFloat === true && GS.speedTier === 1,
+    'pending=' + GS._pendingSpeedFloat + ' tier=' + GS.speedTier);
+  GS.flushSpeedFloat();
+  check('[SS] defer 补飘：flushSpeedFloat 清挂起位（真飘字在浏览器验）',
+    GS._pendingSpeedFloat === false);
+  GS.newGame();                            // 复位，供 ⑩ 重开归零断言干净前提
+  // ⑩ 重开归零：跨波继承消耗与档位，新局清零（挂起飘字一并清）
+  check('[SS] 重开归零：drawCount=0、goldSpent=0、tier=0、mul=1×、挂起飘字=false',
+    GS.drawCount === 0 && GS.goldSpent === 0 && GS.speedTier === 0 &&
+    GS.spentSpeedMul() === 1 && GS._pendingSpeedFloat === false,
+    'draws=' + GS.drawCount + ' spent=' + GS.goldSpent + ' tier=' + GS.speedTier +
+    ' pending=' + GS._pendingSpeedFloat);
+}
+
   // ⑤ 三选一：三类卡同池 + 概率 50/35/15（v1.8v）+ 去重 + 同类型最多 2 张
   GS.newGame();
   const N = 3000, cnt = { shape: 0, hero: 0, building: 0 };
@@ -760,13 +863,18 @@ const isOuterRing = (c, r) => c === 0 || c === CFG.MAP_COLS - 1 || r === 0 || r 
   const d2 = Math.hypot(GS.foes[1].c - GS.foes[0].c, GS.foes[1].r - GS.foes[0].r);
   check('[SD] 距离 0.8 > SEP ⇒ 位置不动', Math.abs(d2 - 0.8) < 1e-9, 'd=' + d2.toFixed(3));
   // ④ 抖动：speedMul 恒 1（v1.6.60 ±8% 退役）、位置偏移 ≠ 原点
-  FOES.spawnQueue = [{ c: 2, r: -2 }, { c: 2, r: -2 }];
-  FOES.spawnOne(); FOES.spawnOne();
-  const [m1, m2] = GS.foes.slice(-2);
-  check('[SD] 出生抖动 ⇒ speedMul 恒 1、两怪不同位',
-    m1.speedMul === 1 && m2.speedMul === 1 &&
-    (Math.hypot(m1.c - m2.c, m1.r - m2.r) > 0.01),
-    'mul1=' + m1.speedMul + ' mul2=' + m2.speedMul);
+  //    （2026-10-21 防偶发：单对独立抖动有 ~1.25% 概率撞进 0.01 容差 ⇒ 改同点
+  //     发 8 只看离散度——抖动机制若失效则 8 只全重合，聚团概率可忽略）
+  FOES.spawnQueue = [];
+  for (let sj = 0; sj < 8; sj++) FOES.spawnQueue.push({ c: 2, r: -2 });
+  for (let sj = 0; sj < 8; sj++) FOES.spawnOne();
+  const last8 = GS.foes.slice(-8);
+  let maxSpread = 0;
+  for (const a of last8) for (const b of last8)
+    maxSpread = Math.max(maxSpread, Math.hypot(a.c - b.c, a.r - b.r));
+  check('[SD] 出生抖动 ⇒ speedMul 恒 1、同点 8 只离散（不同位）',
+    last8.every(f => f.speedMul === 1) && maxSpread > 0.01,
+    'muls=' + last8.map(f => f.speedMul).join(',') + ' spread=' + maxSpread.toFixed(3));
   // ⑤ 压测：144 只（w10 规模）separate 耗时
   GS.foes = [];
   for (let i = 0; i < 144; i++) {

@@ -56,6 +56,11 @@ GS.newGame = function () {
   // 交付飘字队列（v1.6.32 大王令"交付时飘字，包括生命和金币"）：**纯表现**，
   //   每条 = { kind:'gold'|'heal', text, x, y, t, ttl }。ENG 生成/衰减、REND 绘制。
   GS.floats = [];
+  // 消耗提速（v1.8y 改版：仅抽卡计次）：goldSpent 仅对账用（进度源 = drawCount，
+  //   上方已清零）；goldSpent/speedTier 跨波继承、新局清零。
+  GS.goldSpent = 0;
+  GS.speedTier = 0;
+  GS._pendingSpeedFloat = false;   // v1.8y 反馈：弹层挂起的跨档飘字，新局一并清掉
   // 粒子层（v1.6.43 大王令 B/E：怪死亡特效 + 爆炸视觉共用地基）。**纯表现**：
   //   每枚 = { kind:'ring'|'puff'|'spark', x, y, ... }（画布像素）。ENG 生成/衰减、REND 绘制。
   GS.fx = [];
@@ -2735,6 +2740,87 @@ GS.__recomputeRailsV1 = GS.recomputeRails;
 GS.recomputeRails = function () {
   if (GS.railV2) return GS.recomputeRailsV2();
   return GS.__recomputeRailsV1();
+};
+
+// ---- 消耗提速（v1.8y 大王拍板 2026-10-21，替换 §14.91 资源点方案；同日改版）------
+//   【改版·大王拍板「每次抽卡进度+1、每 4 抽 1 级、最多 8 级」】：进度源 =
+//   GS.drawCount（本局已付费抽卡次数），抽满 4 抽跨一档 → 列车永久提速一档
+//   （每档 +SPEND_SPEED_STEP，8 档全拿封顶 +80% = 1.8×）。金币金额不再计量——
+//   「每抽一卡亮一格」进度条最直白，抽卡是唯一推进行为（大王拍板仅抽卡计次）。
+//   · 统一入口 GS.spendGold：扣款 + goldSpent 对账累计 + 按 drawCount 重算档位；
+//     造塔（towers.js）走同一入口但不动 drawCount ⇒ 重算幂等、不计进度；
+//   · 调用序：ui.js 抽卡**先 drawCount++ 再 spendGold**（顺序颠倒会漏当抽跨档）；
+//   · 档位重算式（非增量式）：tier = 满足 drawCount >= 阈值 的档数，天然幂等防漂移；
+//   · 消费点：ENG.advanceTrain 乘区 = TRAIN_SPEED × trainSpeedMul(加油站) × spentSpeedMul；
+//   · 反馈：跨档瞬间飘字「提速 +X% · lv N」（kind='speed'，锚车头格）+ 常驻
+//     镇中心 lv 刻度条 REND.coreLvBar + LOG 'spendSpeedUp'。
+//   n 为扣费额；deferFloat=true 时跨档**只挂起不立即飘**——抽卡路径专用（大王报
+//   「升级之后的提示没有」根因：onSummon 先 spendGold 后 showOffer，立即飘的字被
+//   随后弹出的 DOM 三选一盖满 1.6s ⇒ 视同没有提示）。挂起后由 ENG.update 每帧
+//   GS.flushSpeedFloat 在弹层关闭瞬间补飘；造塔路径不传（立即飘，无遮挡）。
+//   兜底：offerOpen 已开时无论是否 defer 都挂起。
+GS.spendGold = function (n, deferFloat) {
+  var prevTier = GS.speedTier || 0;
+  GS.gold -= n;
+  GS.goldSpent = (GS.goldSpent || 0) + n;
+  var tier = 0, i;
+  for (i = 0; i < CFG.SPEND_SPEED_TIERS.length; i++)
+    if ((GS.drawCount || 0) >= CFG.SPEND_SPEED_TIERS[i]) tier++;
+  GS.speedTier = tier;
+  if (tier > prevTier) {
+    var mul = GS.spentSpeedMul();
+    if (typeof LOG !== 'undefined' && LOG.add)
+      LOG.add('spendSpeedUp', { tier: tier, mul: mul, draws: GS.drawCount, spent: GS.goldSpent });
+    if (deferFloat || (typeof UI !== 'undefined' && UI.offerOpen)) GS._pendingSpeedFloat = true;
+    else GS.emitSpeedFloat();
+  }
+  return tier;
+};
+GS.spentSpeedMul = function () {
+  var tier = Math.min(GS.speedTier || 0, CFG.SPEND_SPEED_TIERS.length);
+  return 1 + CFG.SPEND_SPEED_STEP * tier;
+};
+// 跨档飘字发射（挂起后补飘 / 立即飘共用）：锚**镇中心格**上方——升级是镇中心的事，
+//   飘在固定地标上比跟着车头跑更显眼（v1.8y 反馈补丁十一·大王令「镇中心位置飘、
+//   更显著」），**两行块状**（补丁十二·大王令「加换行」），**格式补丁十三定稿**
+//   （大王令「修改提示格式」）：行1 =「提速 +X%」、行2 =「车头攻击 +N」——N 为
+//   **本次攻击增量**（dmg(tier) − dmg(tier−1)，二次曲线下增量递增 +5/+7/+9…，
+//   直观传达"这级涨了多少"而非新总值；ENG.TRAIN_COMBAT 未加载时 dmgGain=0
+//   ⇒ 自动退回单行）。时长 2.4s（speed 条目显著长于交付飘字 1.15s）。
+//   无锚点（镇中心未落位）时放弃本次飘字并清挂起——补飘窗口早就过了，不补陈年旧账。
+GS.emitSpeedFloat = function () {
+  GS._pendingSpeedFloat = false;
+  if (typeof ENG === 'undefined' || !ENG.spawnFloat ||
+      typeof LAY === 'undefined' || !LAY || !GS.core) return;
+  var mul = GS.spentSpeedMul();
+  var tier = Math.min(GS.speedTier || 0, CFG.SPEND_SPEED_TIERS.length);
+  var dmgGain = 0;
+  if (typeof ENG.TRAIN_COMBAT === 'object' && ENG.TRAIN_COMBAT.dmg)
+    dmgGain = ENG.TRAIN_COMBAT.dmg(tier) - (tier > 0 ? ENG.TRAIN_COMBAT.dmg(tier - 1) : 0);
+  ENG.spawnFloat('speed', '提速 +' + Math.round((mul - 1) * 100) + '%' +
+                 (dmgGain ? '\n车头攻击 +' + dmgGain : ''),
+                 CFG.ccx(LAY, GS.core.c), CFG.ccy(LAY, GS.core.r) - 26, 2.4);
+};
+// 每帧补飘检查（ENG.update 调）：弹层还开着就继续等，关掉瞬间飘出。
+GS.flushSpeedFloat = function () {
+  if (!GS._pendingSpeedFloat) return;
+  if (typeof UI !== 'undefined' && UI.offerOpen) return;
+  GS.emitSpeedFloat();
+};
+// 常驻镇中心 lv 刻度条查询（renderer REND.coreLvBar 用）：
+//   { tier, lv, ratio, capped } —— lv = 速度等级 = 档数+1（lv1 = 未提速 1×，
+//   lv9 = 8 档全拿 1.8×；v1.8y 反馈补丁四·大王拍板「初始 lv1、最多 lv9」）。
+//   ratio = 当前档内进度（0~1，封顶时恒 1）= (drawCount − 本档下界)/(下档阈值 − 本档下界)；
+//   tier=0 下界为 0（首档 4 抽 ⇒ 每抽 +0.25）。进度源 = 抽卡次数（v1.8y 改版·大王拍板）。
+GS.spendProgress = function () {
+  var tiers = CFG.SPEND_SPEED_TIERS;
+  var draws = GS.drawCount || 0;
+  var tier = Math.min(GS.speedTier || 0, tiers.length);
+  var capped = tier >= tiers.length;
+  var lo = tier > 0 ? tiers[tier - 1] : 0;
+  var hi = capped ? tiers[tiers.length - 1] : tiers[tier];
+  var ratio = capped ? 1 : (hi > lo ? (draws - lo) / (hi - lo) : 0);
+  return { tier: tier, lv: tier + 1, ratio: Math.max(0, Math.min(1, ratio)), capped: capped };
 };
 
 // ---- 查询工具 ----

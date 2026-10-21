@@ -331,6 +331,7 @@ REND.draw = function (ctx, L, hover, drag) {
 
   // 建筑
   for (var k = 0; k < GS.buildings.length; k++) REND.building(ctx, L, GS.buildings[k]);
+  REND.coreLvBar(ctx, L);   // 镇中心 lv 刻度条（v1.8y 反馈补丁四：速度等级 lv1~lv9）
   // 塔（v1.3-rc 修复"地图里看不到塔"：TOWERS.placeAt 只写格子 + GS.towers 数组镜像，
   //   不进 GS.buildings —— 塔的权威列表是 GS.towers，渲染必须单独遍历它）
   for (var kt = 0; kt < GS.towers.length; kt++) REND.building(ctx, L, GS.towers[kt]);
@@ -522,6 +523,25 @@ REND.draw = function (ctx, L, hover, drag) {
         ctx.fillStyle = kill ? REND.C.gold : '#f2ede4';
         var tw = ctx.measureText(fl.text).width;
         ctx.fillText(fl.text, fl.x - tw / 2, fy);
+      } else if (fl.kind === 'speed') {
+        // v1.8y 消耗提速飘字：**两行块状**（补丁十二·大王令「加换行」）——state 侧
+        //   text 带 \n（行1「提速 +X% · lv N」/ 行2「车头 M」，单行沙箱自动兼容），
+        //   块体垂直居中锚点、行距 20px（> 16px 字号 ⇒ 不重叠）、整体上飘；
+        //   浅蓝 + 深色描边兜底——描边 3→4px、底色更深（上轮 3px 观感不足，
+        //   补丁十二·大王令「加描边」），保证任何背景都可读；ttl 2.4s。
+        ctx.font = 'bold 16px "PingFang SC",system-ui,sans-serif';
+        ctx.lineWidth = 4;
+        ctx.strokeStyle = 'rgba(10,20,35,0.95)';
+        ctx.lineJoin = 'round';
+        var spLines = fl.text.split('\n');
+        var spLH = 20, spSpan = (spLines.length - 1) * spLH;
+        for (var spI = 0; spI < spLines.length; spI++) {
+          var spY = fy - spSpan / 2 + spI * spLH;
+          var spW = ctx.measureText(spLines[spI]).width;
+          ctx.strokeText(spLines[spI], fl.x - spW / 2, spY);
+          ctx.fillStyle = '#7cc4ff';
+          ctx.fillText(spLines[spI], fl.x - spW / 2, spY);
+        }
       } else {
         ctx.font = 'bold 13px "PingFang SC",system-ui,sans-serif';
         var fw = ctx.measureText(fl.text).width;
@@ -657,14 +677,15 @@ REND.draw = function (ctx, L, hover, drag) {
     ctx.fillStyle = 'rgba(' + rgb2 + ',0.95)';             // 弹体
     ctx.beginPath(); ctx.arc(bx, by, rr2, 0, 7); ctx.fill();
   }
-  // 镇中心血条（画在 core 格正上方，全宽）
+  // 镇中心血条（画在 core 格正上方；v1.8y 反馈补丁七·大王令「一并纳入、不要出框」
+  // ——上收贴格顶，全宽 0.86 格不出格；低血仍红）
   var coreB = GS.core;
   if (coreB) {
-    var hx = CFG.ccx(L, coreB.c), hyTop = L.y + coreB.r * L.cell + 3;
+    var hx = CFG.ccx(L, coreB.c), hyTop = L.y + coreB.r * L.cell + 1.5;
     var hw = L.cell * 0.86;
     ctx.fillStyle = 'rgba(0,0,0,0.55)';
     ctx.fillRect(hx - hw / 2, hyTop, hw, 4);
-    ctx.fillStyle = GS.coreHP / GS.coreMaxHP > 0.3 ? '#e0b23f' : '#e8563f';
+    ctx.fillStyle = GS.coreHP / GS.coreMaxHP > 0.3 ? '#4fae52' : '#e8563f';
     ctx.fillRect(hx - hw / 2, hyTop, hw * Math.max(0, GS.coreHP / GS.coreMaxHP), 4);
   }
   // 拖动幽灵（v1.3-rc）：拖塔 = 半透明圆台跟指针；拖清理形状 = 形状格高亮
@@ -802,6 +823,9 @@ REND.draw = function (ctx, L, hover, drag) {
   // 词条经验条（v1.6.41）：**画在横幅之后** ⇒ 夜晚数字浮在横幅底条上（数字靠右、
   //   横幅文字居中，互不遮挡）；旧序（横幅前）会被半透明底条压暗看不清。
   REND.expBar(ctx, L);
+  // 镇中心 tips（v1.8y 反馈补丁八·大王令）：UI.coreTip 开启时画等级/速度气泡，
+  //   置于 draw 最末 ⇒ 盖在一切之上（血条/进度条/横幅都不挡它）
+  REND.coreTip(ctx, L);
 };
 
 // 建筑效果范围预览（手牌拖上场 / 场上建筑拖动**共用**，v1.6.23 建，抽出共用件）：
@@ -1695,24 +1719,44 @@ REND.spawnMarks = function (ctx, L) {
   ctx.restore();
 };
 
+// 进度条左端语义徽章（v1.8y 反馈·大王拍板「左端徽章块」）：带底色圆角小徽章 +
+//   8px 白字直书功能名，替代原裸图形徽标（经验 ◆ / 提速 ⏩）——两条常驻进度条
+//   并排后语义不明（大王报「看不懂两条各代表什么」），徽章写名字一眼可读。
+//   徽章压在条身左端（填充从底下穿过，与原 ◆/⏩ 压条同语言），比条身内缩 0.5px
+//   露出条底色一圈，呈「嵌在条上」的层次。expBar 专用（coreLvBar 的 lv 徽章自绘）。
+//   返回徽章宽（调用方如需避让可用；当前填充照旧全宽口径，不需避让）。
+REND.barBadge = function (ctx, x, y, h, bg, border, text) {
+  var w = 7 + text.length * 8 + 7;
+  ctx.save();
+  REND.rr(ctx, x, y, w, h, h / 2);
+  ctx.fillStyle = bg;
+  ctx.fill();
+  ctx.strokeStyle = border;
+  ctx.lineWidth = 1;
+  ctx.stroke();
+  ctx.fillStyle = '#f4f2ff';
+  ctx.font = 'bold 8px "PingFang SC",system-ui,sans-serif';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(text, x + w / 2, y + h / 2 + 0.5);
+  ctx.restore();
+};
+
 // 词条经验条（v1.6.34 建为左上角小条；v1.6.41 大王令改版 = **C 全宽细条 × A 胶囊语言**；
 //   v1.6.42 大王令：数字移到条的正中间、条的上层）：
 //   · 全宽胶囊贴 HUD 下沿（高 9px，占地近零、不挡建造、不进 HUD DOM —— HUD 一行已满）；
-//   · 左端 ◆ 徽标（词条语言）+ 紫色进度条（**v1.8u 四拍板：数字退役**——cur/need
-//     居中压条整段删，只留条身；大王令「把顶部经验条的数字干掉」）；
-//   · 进度 ≥80% 进入"呼吸脉冲"（整条亮度随时间正弦呼吸），提醒"词条快来了"；
+//   · 左端「经验」徽章块（v1.8y 反馈·大王拍板，替代裸 ◆ 徽标）+ 紫色进度条
+//     （**v1.8u 四拍板：数字退役**——cur/need 居中压条整段删，只留条身）；
+//   · v1.8y 反馈补丁九·大王令：「快满闪烁」退役——经验条恒常亮（hot/pulse 全清）；
 //   · 调用序在 battleBanner 之后 ⇒ 夜晚浮在横幅底条上。
 REND.expBar = function (ctx, L) {
   if (typeof EXP === 'undefined') return;
   var p = EXP.progress();
   if (!p.need) return;
   var ratio = Math.min(1, p.cur / p.need);
-  var hot = ratio >= 0.8;                        // 快满：呼吸脉冲
-  var pulse = hot ? 0.7 + 0.3 * Math.sin((typeof performance !== 'undefined'
-    ? performance.now() : 0) / 170) : 1;         // 0.7~1.0 之间呼吸
+  // v1.8y 反馈补丁九·大王令：取消「快满闪烁」——经验条恒常亮（呼吸脉冲退役）
   var W = CFG.CANVAS_W, H = 9;
   ctx.save();
-  ctx.globalAlpha = pulse;
   // ① 底槽：全宽胶囊，深底 + 紫描边（A 的胶囊语言拉成全宽 —— C 的占地）
   REND.rr(ctx, 0.5, 0.5, W - 1, H - 1, 4.5);
   ctx.fillStyle = 'rgba(19,22,33,0.92)';
@@ -1723,15 +1767,130 @@ REND.expBar = function (ctx, L) {
   // ② 进度：内缩 2px 的亮紫胶囊（比例 = cur/need）
   if (ratio > 0.02) {
     REND.rr(ctx, 2.5, 2.5, (W - 5) * ratio, H - 5, 2.5);
-    ctx.fillStyle = hot ? '#AFA9EC' : '#7F77DD';
+    ctx.fillStyle = '#7F77DD';
     ctx.fill();
   }
-  // ③ 左端 ◆ 徽标（词条语言，压在条上，白紫可辨）
-  ctx.beginPath();
-  ctx.moveTo(12, 0.5); ctx.lineTo(17.5, 5); ctx.lineTo(12, 9.5); ctx.lineTo(6.5, 5);
-  ctx.closePath();
-  ctx.fillStyle = '#EEEDFE';
+  // ③ 左端「经验」徽章块（v1.8y 反馈·大王拍板，替代裸 ◆ 徽标——两条进度条并排
+  //    后语义不明，徽章直书功能名一眼可读；压在条身左端，填充从底下穿过）
+  REND.barBadge(ctx, 1.5, 1, 8, 'rgba(83,74,183,0.92)', 'rgba(175,169,236,0.8)', '经验');
+  // ④ （v1.8u 四拍板）数字 cur/need 退役——只留胶囊 + 进度 + 徽章（v1.8y 补丁九：闪烁退役）
+  ctx.restore();
+};
+
+// 镇中心 lv 刻度条（v1.8y 反馈补丁四，大王拍板「进度条改为镇中心经验进度条、
+//   位置不放上面、初始 lv1 最多 lv9、沿用每级刻度方案」——顶部青条 spendBar 退役）：
+//   画在镇中心格底边（骑线居中，宽 1.1 格、高 9px），**青色系**（疾速坊速度家族色）：
+//   · 「lv N」角标：镇中心图标**左下角压角**（v1.8y 反馈补丁六·大王令，从条内徽章
+//     移出）——镇中心等级就是速度等级（lv1 = 1× → lv9 = 1.8×，每级 +10%）；
+//   · 条身 = **本级内进度**（v1.8y 反馈补丁五·大王拍板「每级经验就是 4，抽 4 次
+//     进度条就满，然后升级；升级后清零，等级提升」）：填充 = ratio（0~1），4 抽
+//     满条升级清零；3 道刻度线均分 4 格（每抽 1 格），跨过亮青 / 未跨暗青；
+//     档内 ≥75% 呼吸脉冲（还差 1 抽），封顶满条常亮；数据源 GS.spendProgress()。
+//   · 补丁六随角标移出：条不再让位徽章 → 宽度 1.4→1.1 格、加高 7→9px、内缩
+//     2→1.5px（填充更饱满）；角标为静态事实不随呼吸（呼吸只作用于条身）。
+REND.coreLvBar = function (ctx, L) {
+  if (typeof GS.spendProgress !== 'function' || !GS.core) return;
+  var p = GS.spendProgress();
+  var W = L.cell * 1.1, H = 7;
+  var x = CFG.ccx(L, GS.core.c) - W / 2;
+  // 收进本格（v1.8y 补丁七·大王令「lv/进度条都上移、血条一并纳入、不要过多压边
+  // 出框」）：条贴格底 0.5px 边距、H 回落 9→7（图标下方余量仅 0.14 格），填充内缩
+  // 2→1 保饱满；条顶与图标底间隙 ~0.3px、与角标上下错开不再重叠，零出框
+  var y = L.y + (GS.core.r + 1) * L.cell - H - 0.5;
+  var fill = p.capped ? 1 : p.ratio;                // 本级内进度（封顶满条）
+  // v1.8y 反馈补丁九·大王令：取消「快满闪烁」——进度条恒常亮（呼吸脉冲退役）
+  ctx.save();
+  // ① 底槽：深底 + 青描边（圆角胶囊）
+  REND.rr(ctx, x, y, W, H, H / 2);
+  ctx.fillStyle = 'rgba(19,22,33,0.88)';
   ctx.fill();
-  // ④ （v1.8u 四拍板）数字 cur/need 退役——只留胶囊 + 进度 + ◆ 徽标 + 呼吸脉冲
+  ctx.strokeStyle = 'rgba(80,220,180,0.45)';
+  ctx.lineWidth = 1;
+  ctx.stroke();
+  // ② 进度填充：内缩 1px 的青色胶囊（本级 4 折算；封顶换亮青）
+  if (fill > 0.02) {
+    REND.rr(ctx, x + 1, y + 1, Math.max(0, (W - 2) * fill), H - 2, (H - 2) / 2);
+    ctx.fillStyle = p.capped ? '#3fd0af' : '#2b9a7f';
+    ctx.fill();
+  }
+  // ③ 内部刻度线（本级 4 格 → 3 道分隔）：第 k 抽后 k/4 处以内的亮青、以外的暗青
+  var inner = W - 4;
+  for (var ti = 1; ti < 4; ti++) {
+    var tx = x + 2 + inner * (ti / 4);
+    ctx.beginPath();
+    ctx.moveTo(tx, y + 1.5); ctx.lineTo(tx, y + H - 1.5);
+    ctx.strokeStyle = fill >= ti / 4 ? 'rgba(130,235,205,0.9)' : 'rgba(80,220,180,0.28)';
+    ctx.lineWidth = 1;
+    ctx.stroke();
+  }
+  ctx.restore();
+  // ④ 「lv N」角标：镇中心图标左下角（v1.8y 补丁七定稿+微调·大王令「LV 再上移，
+  //    不要遮挡进度条」——底与图标底对齐后再上提 2px，给条顶留 ~2px 净隙；
+  //    青底白字 7px 小方块，静态事实不随呼吸；图标边长同 REND.building core）
+  var s2 = L.cell * 0.72;
+  var bx0 = CFG.ccx(L, GS.core.c) - s2 / 2, by0 = CFG.ccy(L, GS.core.r) + s2 / 2;
+  var bw = 17, bh = 11, blift = 2;                  // blift：额外上提量
+  ctx.save();
+  REND.rr(ctx, bx0 - bw / 2, by0 - bh - blift, bw, bh, 2.5);
+  ctx.fillStyle = 'rgba(31,122,104,0.95)';
+  ctx.fill();
+  ctx.strokeStyle = 'rgba(130,235,205,0.95)';
+  ctx.lineWidth = 1;
+  ctx.stroke();
+  ctx.fillStyle = '#eafff8';
+  ctx.font = 'bold 7px "PingFang SC",system-ui,sans-serif';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText('lv' + p.lv, bx0, by0 - bh / 2 - blift + 0.5);
+  ctx.restore();
+};
+
+// 镇中心 tips 气泡（v1.8y 反馈补丁八·大王令「点击镇中心出现 tips，告知等级和速度」）：
+//   UI.coreTip 开关由 ui.js onDown 控制（点镇中心切换、点其他任意处关闭，昼夜可用）；
+//   气泡悬在镇中心格上方（血条之上），青描边深底，三行文案：
+//   ①「镇中心 lv N」 ②「列车速度 ×M」 ③升级进度（再抽 X 次升级 / 已达满级）。
+//   UI 未加载（沙箱测试）或开关关闭时直接跳过。
+REND.coreTip = function (ctx, L) {
+  if (typeof UI === 'undefined' || !UI.coreTip) return;
+  if (!GS.core || typeof GS.spendProgress !== 'function') return;
+  var p = GS.spendProgress();
+  var cx = CFG.ccx(L, GS.core.c);
+  var cyTop = L.y + GS.core.r * L.cell;             // 镇中心格顶
+  var mul = (1 + p.tier * CFG.SPEND_SPEED_STEP).toFixed(1);
+  // 车头伤害行（v1.8y 反馈补丁十·大王拍板「tips 告知等级和速度」扩展 +「伤害值
+  //   应变化」可视化）——ENG 未加载（沙箱）时省略该行
+  var headDmg = (typeof ENG !== 'undefined' && ENG.TRAIN_COMBAT && ENG.TRAIN_COMBAT.dmg)
+    ? ENG.TRAIN_COMBAT.dmg(p.tier) : null;
+  var lines = [
+    '镇中心 lv' + p.lv,
+    '列车速度 ×' + mul
+  ];
+  if (headDmg !== null) lines.push('车头伤害 ' + headDmg);
+  lines.push(p.capped ? '已达满级' : '再抽 ' + (4 - Math.floor(p.ratio * 4 + 1e-6)) + ' 次升级');
+  var bw = 118, bh = headDmg !== null ? 60 : 46;
+  var bx = cx - bw / 2, by = cyTop - bh - 8;
+  ctx.save();
+  // 底板 + 青描边（速度家族色）+ 底部小三角指向镇中心
+  REND.rr(ctx, bx, by, bw, bh, 5);
+  ctx.fillStyle = 'rgba(19,22,33,0.94)';
+  ctx.fill();
+  ctx.strokeStyle = 'rgba(80,220,180,0.5)';
+  ctx.lineWidth = 1;
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.moveTo(cx - 5, by + bh); ctx.lineTo(cx + 5, by + bh); ctx.lineTo(cx, by + bh + 6);
+  ctx.closePath();
+  ctx.fillStyle = 'rgba(19,22,33,0.94)';
+  ctx.fill();
+  ctx.strokeStyle = 'rgba(80,220,180,0.5)';
+  ctx.stroke();
+  // 四行文字：标题亮青、正文白（左对齐，行高 14）
+  ctx.font = '9px "PingFang SC",system-ui,sans-serif';
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'middle';
+  for (var li = 0; li < lines.length; li++) {
+    ctx.fillStyle = li === 0 ? 'rgba(130,235,205,0.95)' : '#e8f6f1';
+    ctx.fillText(lines[li], bx + 10, by + 12 + li * 14);
+  }
   ctx.restore();
 };

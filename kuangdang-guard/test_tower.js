@@ -125,7 +125,7 @@ FOES.startWave();
 check('[28] 第 1 波共 8+6×(1−1)=8 只：首批 2 立即进场 + 队列 6（v1.8u 十一令）',
   GS.foes.length === 2 && FOES.pending === 6,
   'n=' + GS.foes.length + ' pending=' + FOES.pending);
-check('[28b] 怪血口径（v1.8k）：hp=8w，w1=8 恰被车头开局一炮（塔式 8+4×0 建筑数）收掉',
+check('[28b] 怪血口径（v1.8k）：hp=8w，w1=8 恰被车头开局一炮（塔式 dmg(0)，二次曲线 4+(0+2)²=8）收掉',
   FOES.CFG.hp(1) === 8 && FOES.CFG.hp(1) === ENG.TRAIN_COMBAT.dmg(0) &&
   FOES.CFG.hp(2) === 16 && FOES.CFG.hp(10) === 80,
   'hp(1)=' + FOES.CFG.hp(1) + ' hp(2)=' + FOES.CFG.hp(2) + ' hp(10)=' + FOES.CFG.hp(10));
@@ -215,8 +215,9 @@ check('[44] 清理形状压内区放行（v1.2 口径）', res === true, String(
 
 // ============================================================================
 // [45-52] v1.3.1 三项增量：初始金币 30 / 车头战斗（撞击+塔式）/ dusk 加速回站
-//   （规格 §13.4；车头伤害 v1.6.77 起锚**摆放建筑数**：dmg(n)=8+4×n，n=GS.buildings.length
-//   —— 与波次解耦；车厢 v1.6.79 起固定基数 12×star（不随波次/建筑数，§14.55））
+//   （规格 §13.4；车头伤害 v1.6.77 起锚摆放建筑数 → v1.8y 补丁九改锚**镇中心等级**
+//   （n=GS.speedTier）→ v1.8y 补丁十公式改**二次 4+(n+2)²**：8/13/20/…/104；
+//   车厢 v1.6.79 起固定基数 12×star（不随波次/建筑数，§14.55））
 // ============================================================================
 GS.gameOver = false;
 FOES.reset(); TOWERS.reset();
@@ -238,16 +239,17 @@ const tHead = () => {
   return { c: a.c + (b.c - a.c) * f, r: a.r + (b.r - a.r) * f };
 };
 const head = tHead();
-FOES.wave = 2;                            // 车厢伤害口径用；车头伤害已改锚建筑数（v1.6.77）
-// 摆 2 座假建筑 → 摆放建筑数 = 3−1(镇中心) = 2 → 车头 dmg = 8+4×2 = 16
-GS.buildings.push({ type: 'fake' }, { type: 'fake' });
+FOES.wave = 2;                            // 车厢伤害口径用；车头伤害已改锚镇中心等级（v1.8y 补丁九）
+// 设 speedTier=2（lv3）→ 车头 dmg = 4+(2+2)² = 20（v1.8y 补丁十：二次曲线，
+// 断言全部动态引用 dmg(2) ⇒ 公式改版自动跟随，无硬编码）
+GS.speedTier = 2;
 
 // [46-47] 塔式攻击：射程内扣血 + 1.0s 冷却
 //   ⚠️ 怪放 2 格处：在塔式射程 4.5 内、撞击圈 0.8 外 —— 单测塔式不被撞击干扰
 GS.foes = [mkFoe(head.c + 2, head.r, 100)];
 ENG.trainAtkCd = 0;
 ENG.trainCombat(0.01);
-check('[46] 车头塔式攻击伤害 = 8+4×建筑数(2)', GS.foes[0].hp === 100 - ENG.TRAIN_COMBAT.dmg(2),
+check('[46] 车头塔式攻击伤害 = dmg(2)（lv3 二次曲线 20）', GS.foes[0].hp === 100 - ENG.TRAIN_COMBAT.dmg(2),
   'hp=' + GS.foes[0].hp + ' 期望 ' + (100 - ENG.TRAIN_COMBAT.dmg(2)));
 ENG.trainCombat(0.01);
 check('[47] 塔式 1.0s 冷却内不连打', GS.foes[0].hp === 100 - ENG.TRAIN_COMBAT.dmg(2));
@@ -504,7 +506,8 @@ GS.towers[0].elem = 'ice';
 }
 
 // [80] 车头剥离车厢加成（v1.4.1 核心）：有车厢时撞击伤害仍是纯 dmg×BUMP_DMG_MUL（不吃车厢加成）
-GS.buildings.push({ type: 'fake' }, { type: 'fake' });   // [70] restart 清过 → 重摆 2 座（+镇中心=3，摆放数 2 → dmg=16）
+GS.buildings.push({ type: 'fake' }, { type: 'fake' });   // [70] restart 清过 → 重摆（旧锚点补偿，保留无碍）
+GS.speedTier = 2;                                // v1.8y 补丁九/十：锚=镇中心等级、二次曲线 → 重设 lv3（dmg=20）
 GS.foes = [mkFoe(head.c + 0.5, head.r, 100)];    // 撞击圈内
 GS.foes[0].bumpCd = 0;
 ENG.trainAtkCd = 5;                              // 屏蔽塔式，单测撞击

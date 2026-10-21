@@ -301,6 +301,37 @@ for (const [idx, fr, name] of HEADING) {
   GS.floats = [];
 }
 
+// [R7b] 消耗提速飘字（v1.8y 反馈补丁十一/十二）：镇中心锚、两行块状、描边、ttl 2.4s。
+//   state 侧 emitSpeedFloat 的逻辑（锚点/挂起补飘）在 test_rules [SS]；此处只验渲染：
+//   text 带 \n ⇒ split 两行、行距 20px、每行都走 strokeText（描边）+ fillText。
+{
+  GS.floats = [];
+  ENG.spawnFloat('speed', '提速 +30%\n车头攻击 +7', 200, 200, 2.4);
+  check('[R7b] 入队带 ttl 2.4s', GS.floats.length === 1 && GS.floats[0].ttl === 2.4);
+  const cS = makeCtx();
+  let errS = '';
+  try { REND.draw(cS, L, null, null); } catch (e) { errS = (e && e.message) || 'throw'; }
+  check('[R7b] 两行 speed 飘字渲染不抛异常（描边+分行）', !errS, errS);
+  const sTxt = cS.texts.filter(x => x.t === '提速 +30%' || x.t === '车头攻击 +7');
+  check('[R7b] 两行都画出、纵向错开 20px（> 16px 字号）',
+    sTxt.length === 2 && Math.abs(sTxt[0].y - sTxt[1].y) === 20,
+    JSON.stringify(sTxt.map(x => ({ t: x.t, y: x.y }))));
+  GS.floats = [];
+  // 补丁十三格式：真走 GS.emitSpeedFloat（需要 core/LAY/ENG）——行1「提速 +X%」、
+  //   行2「车头攻击 +增量」（增量 = dmg(tier) − dmg(tier−1)，二次曲线递增）。
+  const savedCoreF = GS.core, savedTierF = GS.speedTier;
+  GS.core = { c: 5, r: 5 }; GS.speedTier = 2;
+  GS.floats = [];
+  GS.emitSpeedFloat();
+  const pct2 = Math.round((GS.spentSpeedMul() - 1) * 100);        // tier2 ⇒ 20
+  const gain2 = ENG.TRAIN_COMBAT.dmg(2) - ENG.TRAIN_COMBAT.dmg(1); // 20−13 = 7
+  const fTxt = GS.floats.length === 1 ? GS.floats[0].text : '';
+  check('[R7b] emitSpeedFloat 行1 =「提速 +' + pct2 + '%」',
+    fTxt === '提速 +' + pct2 + '%\n车头攻击 +' + gain2,
+    JSON.stringify(fTxt));
+  GS.core = savedCoreF; GS.speedTier = savedTierF; GS.floats = [];
+}
+
 // [R5] REND.draw 全程不抛（各拖动/悬停态也走一遍）
 {
   let err = '';
@@ -509,7 +540,8 @@ for (const [idx, fr, name] of HEADING) {
 
 // ============================================================================
 // [R9] 经验条（v1.6.41 全宽胶囊；v1.8u 四拍板 §14.83：等级曲线 + 数字退役）：
-//      全宽胶囊贴 HUD 下沿 + ◆ 徽标 + ≥80% 呼吸脉冲；25 级封顶显示满条
+//      全宽胶囊贴 HUD 下沿 + 「经验」徽章块（v1.8y 反馈·大王拍板，替代裸 ◆）+
+//      ≥80% 呼吸脉冲；25 级封顶显示满条；数字退役口径 = 无数字字符（徽章语义标签放行）
 // ============================================================================
 {
   // 拦截 REND.rr 记录胶囊尺寸（进度宽 = (390-5) × ratio）
@@ -530,14 +562,22 @@ for (const [idx, fr, name] of HEADING) {
   check('[R9] 进度条宽 = (W-5)×ratio（1640/4100 ⇒ 154）',
     rrCalls.some(c => Math.abs(c.w - 154) < 0.01 && c.h === 4),
     JSON.stringify(rrCalls));
-  check('[R9] 数字退役：条上无任何 fillText（v1.8u 四拍板「干掉数字」）',
-    cN.texts.length === 0, JSON.stringify(cN.texts.map(x => x.t)));
+  check('[R9] 数字退役：条上无数字字符（「经验」徽章标签放行，v1.8u 拍板 + v1.8y 徽章补丁）',
+    cN.texts.every(x => !/[0-9]/.test(x.t)) && cN.texts.some(x => x.t === '经验'),
+    JSON.stringify(cN.texts.map(x => x.t)));
 
-  // ② 快满（3280/4100 = 80%）：呼吸分支不抛异常（pulse 走 performance.now）
+  // ② 快满（3280/4100 = 80%）：v1.8y 补丁九·大王令「取消快满闪烁」——呼吸分支退役，
+  //    恒常亮 #7F77DD（曾因删定义漏改此处 hot 引用致 ReferenceError 每帧炸停主循环=卡死）
   let errH = null;
   GS.exp = 3280;
-  try { REND.expBar(makeCtx(), L); } catch (e) { errH = (e && e.message) || 'throw'; }
-  check('[R9] ≥80% 呼吸脉冲分支执行不抛异常', !errH, errH);
+  const cHot = makeCtx();
+  const fillsH = [];
+  cHot.fill = function () { fillsH.push(this.fillStyle); };   // 记录每次 fill 时的填充色
+  try { REND.expBar(cHot, L); } catch (e) { errH = (e && e.message) || 'throw'; }
+  check('[R9] ≥80% 快满分支执行不抛异常（呼吸脉冲退役）', !errH, errH);
+  check('[R9] 快满填充恒 #7F77DD（无 #AFA9EC 高亮闪烁）',
+    fillsH.includes('#7F77DD') && !fillsH.includes('#AFA9EC'),
+    JSON.stringify(fillsH));
 
   // ③ 满（4100/4100）：进度宽 = 全宽 385
   rrCalls.length = 0;
@@ -546,14 +586,15 @@ for (const [idx, fr, name] of HEADING) {
   check('[R9] 满进度 ⇒ 进度宽 385（整条填满）',
     rrCalls.some(c => Math.abs(c.w - 385) < 0.01), JSON.stringify(rrCalls));
 
-  // ④ 经验为 0：条仍画（提醒攒头一杀），进度胶囊与数字都跳过
+  // ④ 经验为 0：条仍画（提醒攒头一杀），进度胶囊跳过（徽章照画）、无数字
   rrCalls.length = 0;
   GS.exp = 0;
   const cZ = makeCtx();
   REND.expBar(cZ, L);
-  check('[R9] 经验 0 ⇒ 画底槽、不画进度胶囊、无数字',
-    rrCalls.length === 1 && cZ.texts.length === 0,
-    'rr=' + rrCalls.length + ' texts=' + JSON.stringify(cZ.texts.map(x => x.t)));
+  check('[R9] 经验 0 ⇒ 画底槽+徽章、不画进度胶囊、无数字',
+    rrCalls.some(c => c.w === 389) && !rrCalls.some(c => c.h === 4) &&
+    cZ.texts.every(x => !/[0-9]/.test(x.t)),
+    'rr=' + JSON.stringify(rrCalls) + ' texts=' + JSON.stringify(cZ.texts.map(x => x.t)));
 
   // ⑤ 25 级封顶（expTaken=24 ⇒ need=Infinity）：progress 满条 {1,1} ⇒ 进度宽 385
   rrCalls.length = 0;
@@ -564,6 +605,61 @@ for (const [idx, fr, name] of HEADING) {
 
   REND.rr = rrOrig;
   GS.exp = savedExp.exp; GS.expTaken = savedExp.taken; GS.expPending = savedExp.pending;
+}
+
+// ============================================================================
+// [R9b] 镇中心 lv 刻度条（v1.8y 反馈补丁四，大王拍板「进度条改为镇中心经验进度条、
+//       初始 lv1 最多 lv9、沿用每级刻度方案」）：左端「lv N」徽章（lv 即速度等级，
+//       数字允许——是等级读数而非经验数值）+ 每级刻度；锚 GS.core，无镇中心跳过
+// ============================================================================
+{
+  const savedSS = { spent: GS.goldSpent, tier: GS.speedTier };
+  GS.goldSpent = 100; GS.speedTier = 1;   // tier=1 ⇒ lv2（本级 ratio=0，条空只画徽章+底槽）
+  const cB = makeCtx();
+  REND.coreLvBar(cB, L);
+  check('[R9b] 「lv2」徽章入队（lv 即速度等级，含数字为等级读数）',
+    cB.texts.some(x => x.t === 'lv2') && cB.texts.length === 1,
+    JSON.stringify(cB.texts.map(x => x.t)));
+  const cC = makeCtx();
+  GS.goldSpent = 99999; GS.speedTier = 8;   // 封顶（8 档 = lv9）⇒ 满填充分支不抛异常
+  let errC = null;
+  try { REND.coreLvBar(cC, L); } catch (e) { errC = (e && e.message) || 'throw'; }
+  check('[R9b] 封顶分支执行不抛异常', !errC, errC);
+  GS.goldSpent = savedSS.spent; GS.speedTier = savedSS.tier;
+}
+
+// ============================================================================
+// [R9c] 镇中心 tips 气泡（v1.8y 反馈补丁八，大王令「点击镇中心出现 tips，告知
+//       等级和速度」）：UI.coreTip 开关控制（ui.js onDown 切换）；三行 =
+//       「镇中心 lvN」/「列车速度 ×M」/ 升级进度（再抽 X 次升级 / 已达满级）
+// ============================================================================
+{
+  const savedTier = GS.speedTier, savedDC = GS.drawCount;
+  const savedUI = sandbox.UI;                        // renderer 用 typeof UI 守卫，无 UI 时跳过
+  const cOff = makeCtx();
+  let errOff = null;
+  try { REND.coreTip(cOff, L); } catch (e) { errOff = (e && e.message) || 'throw'; }
+  check('[R9c] 开关关闭（无 UI）时跳过不抛异常', !errOff && cOff.texts.length === 0,
+    errOff || JSON.stringify(cOff.texts.map(x => x.t)));
+
+  sandbox.UI = { coreTip: true };
+  GS.speedTier = 1; GS.drawCount = 4;                // tier=1 ⇒ lv2、本级 ratio=0
+  const cOn = makeCtx();
+  REND.coreTip(cOn, L);
+  check('[R9c] 开启后三行文案入队（lv2 / ×1.1 / 再抽 4 次升级）',
+    cOn.texts.some(x => x.t === '镇中心 lv2') &&
+    cOn.texts.some(x => x.t === '列车速度 ×1.1') &&
+    cOn.texts.some(x => x.t === '再抽 4 次升级'),
+    JSON.stringify(cOn.texts.map(x => x.t)));
+
+  GS.speedTier = 8; GS.drawCount = 99;               // 封顶（8 档 = lv9）
+  const cCap = makeCtx();
+  let errCap = null;
+  try { REND.coreTip(cCap, L); } catch (e) { errCap = (e && e.message) || 'throw'; }
+  check('[R9c] 封顶分支（已达满级）不抛异常',
+    !errCap && cCap.texts.some(x => x.t === '已达满级'), errCap);
+
+  sandbox.UI = savedUI; GS.speedTier = savedTier; GS.drawCount = savedDC;
 }
 
 // ============================================================================

@@ -211,6 +211,9 @@ ENG.update = function (dt) {
       if (GS.floats[kfl].t >= GS.floats[kfl].ttl) GS.floats.splice(kfl, 1);
     }
   }
+  // 消耗提速补飘（v1.8y 反馈）：抽卡弹层开着时跨档飘字被 DOM 盖住 ⇒ 挂起，
+  //   弹层关掉后的第一帧在这里补飘（GS.flushSpeedFloat 内部自检 offerOpen）。
+  if (typeof GS.flushSpeedFloat === 'function') GS.flushSpeedFloat();
   // 粒子衰减（v1.6.43）：死亡碎屑/爆炸火光随模拟走 —— 暂停（GS.paused）时一起冻住
   if (typeof ENG.updateFx === 'function') ENG.updateFx(dt);
   // v1.8u 十五令（§14.86，大王令）：奖励时间/dusk 收尾 = **全局时间快进** ——
@@ -292,7 +295,14 @@ ENG.TRAIN_COMBAT = {
   //   多摆放建筑，车头才强 = 建设驱动成长）。公式结构/斜率不变（8+4n），只换
   //   自变量；车厢 v1.6.79 起固定基数 12×star（不随波次/建筑数，§14.55）。撞击伤害 =
   //   dmg×BUMP_DMG_MUL 同吃新锚点。
-  dmg: function (n) { return 8 + 4 * n; },
+  //   ▍v1.8y 反馈补丁九（2026-10-21 大王令）：锚点再换——摆放建筑数 → **镇中心
+  //   等级**：n = GS.speedTier（lv1=0 … lv9=8）⇒ 开局 lv1 一刀收 w1=8 血怪不变；
+  //   抽卡升级 = 提速/车头火力双成长同源。函数结构不变只换实参。
+  //   ▍v1.8y 反馈补丁十（同日·大王拍板「伤害值应非线性变化」）：线性 8+4n →
+  //   **二次 4+(n+2)²**：8/13/20/29/40/53/68/85/104 —— 增量递增（+5/+7/+9…），
+  //   lv8=85 恰一刀收 w10 怪（8×10=80，里程碑锚）；开局锚点 dmg(0)=8 不变；
+  //   lv9 总 DPS≈136（塔式 104 + 撞击 26/0.8s），仍低于满词条机枪 ≈105+，不抢戏。
+  dmg: function (n) { return 4 + (n + 2) * (n + 2); },
   RATE: 1.0,           // 塔式攻击间隔秒
   RANGE: 4.5,          // 塔式射程（格，欧氏距离）⚠️ v1.4.3d 大王令：2.5×1.5=3.75；v1.6.8 大王令 2026-10-09：3.75→4.5（车厢同步）
   BUMP_RANGE: 0.8,     // 撞击判定半径（格，车头中心到怪中心）—— v1.8k：1.2→0.8 贴合车头体量（车头占格面积≈2 ⇒ r=√(2/π)≈0.8）
@@ -317,7 +327,9 @@ ENG.trainCombat = function (dt) {
   //   旧"+2 伤/节 + 全局元素特效"作废。
   // ▍v1.6.77 大王令：伤害锚点 wave → **摆放建筑数**（§14.53）——GS.buildings[0]
   //   恒为镇中心（state.newGame 初始 push，非玩家摆放）⇒ 排除：n = length − 1。
-  var dmg = ENG.TRAIN_COMBAT.dmg(Math.max(0, GS.buildings.length - 1));
+  //   ▍v1.8y 反馈补丁九·大王令：锚点再换 → **镇中心等级**：n = speedTier
+  //   （lv1=0 … lv9=8；开局 lv1 → dmg(0)=8 一刀收 w1 怪不变，升级即车头变强）。
+  var dmg = ENG.TRAIN_COMBAT.dmg(GS.speedTier || 0);
   var core = GS.core;
 
   // 车头浮点格坐标（advanceTrain 的插值同源）
@@ -940,8 +952,8 @@ ENG.advanceTrain = function (dt) {
   // 站台下标（-1 = 没解出站台 → 永不判到站）。判"回到站台下标"而不是"踩到站台格"：
   //   站台若是十字格（railPath 里出现两次），按格子判会一圈交付两次。
   var si = (typeof STATION !== 'undefined') ? STATION.index() : -1;
-  // 速度系数见 ENG.trainSpeedMul（v1.6.23：boost 加速 / 加油站提速二选一）
-  tr.frac += CFG.TRAIN_SPEED * ENG.trainSpeedMul() * dt;
+  // 速度系数三乘区（v1.8y）：TRAIN_SPEED × 加油站提速(trainSpeedMul) × 消耗提速(spentSpeedMul)
+  tr.frac += CFG.TRAIN_SPEED * ENG.trainSpeedMul() * GS.spentSpeedMul() * dt;
   while (tr.frac >= 1) {
     tr.frac -= 1;
     tr.index = (tr.index + 1) % n;
@@ -970,6 +982,10 @@ ENG.trainSpeedMul = function () {
 //     进速度系数；加油站与快进自然相乘（峰值 4× 快进 × 3× 双座 = 12× 体感）；
 //   · 平时 → 系数 = 1 + 覆盖**车头所在格**的加油站座数（每座 +100%、求和非连乘、
 //     无上限）——查询式即时生效/即时回落，无尾巴。实现见上方 ENG.trainSpeedMul。
+//   · v1.8y 新增独立乘区【消耗提速】GS.spentSpeedMul（累计抽卡次数跨档：每 4 抽
+//     1 级、8 级封顶 1.8×，阈值表 CFG.SPEND_SPEED_TIERS，仅抽卡计次——大王拍板），
+//     在 ENG.advanceTrain 与加油站系数相乘；扣费记账与跨档反馈实现见 state.js
+//     （GS.spendGold 统一入口，按 GS.drawCount 重算档位）。
 
 // ---- 交付飘字（v1.6.32 大王令"我需要交付的时候飘字，包括生命和金币"）--------------
 //   纯表现：队列 `GS.floats`（`{kind:'gold'|'heal', text, x, y, t, ttl}`），
@@ -986,14 +1002,16 @@ ENG.FLOAT_TTL = 1.15;        // 飘字存活秒数（越长越容易被下一圈
 ENG.FLOAT_DY_GOLD = -32;     // 金币行相对锚点的 y 偏移
 ENG.FLOAT_DY_HEAL = -52;     // 生命行相对锚点的 y 偏移（与金币行固定差 20px）
 
-// 入队一条（同 kind 的旧条目先清掉 —— 保证"同类只有一条"）
-ENG.spawnFloat = function (kind, text, x, y) {
+// 入队一条（同 kind 的旧条目先清掉 —— 保证"同类只有一条"）。
+//   v1.8y 反馈补丁：可选第 5 参 ttl（不传仍用 FLOAT_TTL）——消耗提速飘字带档位
+//   文案更长，单独放宽到 1.6s（在 engine.js 调用侧传，本函数不感知 kind）。
+ENG.spawnFloat = function (kind, text, x, y, ttl) {
   if (!GS.floats) GS.floats = [];
   var keep = [];
   for (var i = 0; i < GS.floats.length; i++)
     if (GS.floats[i].kind !== kind) keep.push(GS.floats[i]);
   GS.floats = keep;
-  GS.floats.push({ kind: kind, text: text, x: x, y: y, t: 0, ttl: ENG.FLOAT_TTL });
+  GS.floats.push({ kind: kind, text: text, x: x, y: y, t: 0, ttl: ttl || ENG.FLOAT_TTL });
 };
 
 // 交付瞬间生成两行。gold = 本次入账金币（已含站台 +10）；heal = **实际**回血量

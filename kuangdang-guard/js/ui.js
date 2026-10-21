@@ -25,6 +25,7 @@ UI.init = function (canvas) {
   UI.offerOverlay = document.getElementById('offerOverlay'); // v1.4 三选一弹层
   UI.offerCards = document.getElementById('offerCards');
   UI.move = null;        // 悬停格（鼠标）
+  UI.coreTip = false;    // v1.8y 反馈补丁八：镇中心 tips 开关（点击镇中心切换）
   UI.drag = null;        // {kind:'tower',tower,px,py} | {kind:'clean',shape,cardIdx,px,py}
                          // | {kind:'hero',elem,cardIdx,px,py}
   UI.trainSel = null;    // v1.6.13 长按的列车单元 {kind:'head'}|{kind:'wagon',i}，null=未按住
@@ -145,6 +146,17 @@ UI.onDown = function (e) {
     }
     UI.trainSel = null;    // 按在空白/塔/地面 = 无按住态（拖塔手势照常继续）
   }
+  // v1.8y 反馈补丁八（大王令）：点击镇中心 → 弹出 tips（等级/速度/升级进度）。
+  //   纯信息查看，白天夜晚都可用（同长按查射程放行，放 isDay 闸之前）；
+  //   再点镇中心切换开/关，点其他任意处关闭。
+  if (p) {
+    var tipCell = CFG.pickCell(LAY, p.mx, p.my);
+    if (tipCell && GS.core && tipCell.c === GS.core.c && tipCell.r === GS.core.r) {
+      UI.coreTip = !UI.coreTip;
+      return;              // 点镇中心只切 tips（镇中心本就不可拖）
+    }
+    UI.coreTip = false;
+  }
   if (!UI.isDay()) return;
   var cell = UI.cellFromEvent(e);
   if (!cell) return;
@@ -215,8 +227,13 @@ UI.onSummon = function () {
   var cost = GS.drawCost();
   if (!UI.isDay()) { UI.setStatus(GS.gameOver ? '挑战已失败' : '防守阶段施工暂停，等列车回到站台'); return; }
   if (GS.gold < cost) { UI.setStatus('金币不足（需 ' + cost + '）'); return; }
-  GS.gold -= cost;
+  // v1.8y 改版（大王拍板「每次抽卡进度+1」）：**先计数再扣费** —— drawCount 是
+  //   消耗提速的进度源，spendGold 内按 drawCount 重算档位；顺序颠倒会漏当抽跨档。
   GS.drawCount += 1;                       // 只在实际扣费时计数（放弃/选卡不退钱）
+  // v1.8y 补丁八修正（大王报「升级提示没有」）：抽卡必弹三选一/普通卡结算 DOM 层
+  //   ⇒ deferFloat=true 挂起跨档飘字，弹层关闭瞬间由 flushSpeedFloat 补飘，
+  //   避免立即飘的字被随后弹出的 DOM 层盖满 1.6s（造塔路径不传，立即飘）。
+  GS.spendGold(cost, true);   // v1.8y：统一扣费入口（扣款 + 按抽卡次数重算档位）
   if (typeof LOG !== 'undefined') LOG.add('drawPay', { cost: cost, count: GS.drawCount });
   UI.showOffer(GS.drawCardOffer());
 };

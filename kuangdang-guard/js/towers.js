@@ -109,7 +109,7 @@ TOWERS.summon = function () {
     return '没有可用的空地';
   }
   var p = spots[Math.floor(Math.random() * spots.length)];
-  GS.gold -= TOWERS.CFG.COST;
+  GS.spendGold(TOWERS.CFG.COST);   // v1.8y：统一扣费入口（造塔不计进度——drawCount 不动，重算幂等）
   var t = TOWERS.placeAt(p.c, p.r, TOWERS.randElem(), 1);
   if (typeof LOG !== 'undefined') LOG.add('summon',
     { elem: t.elem, star: t.star, at: p.c + ',' + p.r, cost: TOWERS.CFG.COST });

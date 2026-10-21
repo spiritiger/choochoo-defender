@@ -257,8 +257,8 @@ html,body { margin:0; padding:0; height:100%; background:#0b0c12; overflow:hidde
             <button id="btnModeRandom" class="btn" title="随机生成地图，无限波次（默认）">随机模式</button>
           </div>
           <div class="menuRow" id="levelBtnRow">
-            <button class="btn lvBtn" data-lv="0" title="第 1 关 · 外郭">第1关</button>
-            <button class="btn lvBtn" data-lv="1" title="第 2 关 · 双轴">第2关</button>
+            <button class="btn lvBtn" data-lv="0" title="第 1 关 · 双轴">第1关</button>
+            <button class="btn lvBtn" data-lv="1" title="第 2 关 · 外郭">第2关</button>
             <button class="btn lvBtn" data-lv="2" title="第 3 关 · 四缘">第3关</button>
             <button class="btn lvBtn" data-lv="3" title="第 4 关 · 环心">第4关</button>
             <button class="btn lvBtn" data-lv="4" title="第 5 关 · 边陲">第5关</button>
@@ -313,12 +313,22 @@ window.CFG = {
   TRAIN_SPEED: 2.6,   // 格/秒
   GOLD_RATE: 5,       // 列车驶入金币地块 +5 金币（2026-10-18 大王令 10→5；十字格一圈只算一次）
   MINT_BONUS: 1,      // 每覆盖一座【铸币所】，覆盖金币格拾取**枚数** +1（1枚→2枚，金额=枚数×GOLD_RATE；v1.8u 三拍板「数量+1 非价值+1」，§14.82）
-  // 【经验】波次总经验表（v1.8u 四拍板 §14.83，大王提供 1~10 波）：击杀经验 = 波总额按
-  //   本波怪数均分（EXP.killGain）；w>10 封顶取最后一项（关卡模式 LEVEL_WAVES=10 全清即胜）
-  WAVE_EXP: [2500, 6900, 13200, 21400, 31500, 43500, 57400, 73200, 90900, 110500],
+  // 【经验】波次总经验表（v1.8v 大王令 2026-10-20，§14.90；沿革 v1.8u 四拍板）：击杀经验 =
+  //   波总额按本波怪数均分（EXP.killGain）；w>10 封顶取最后一项（关卡模式 LEVEL_WAVES=10）。
+  //   设计口径：前 2 波合计 3300 < L1→L2 的 3500（不够升级）；第 3~10 波每波恰升 1 级，
+  //   10 波打完到 L9（累计 39700，落在 [36400, 42300) 区间内）。
+  WAVE_EXP: [1500, 1800, 3500, 3800, 4100, 4400, 4700, 5000, 5300, 5600],
   MINT_RANGE: 1,      // 【铸币所】作用半径（格，切比雪夫）：1 ⇒ 3×3（v1.8u 大王令「与加油站一致」，与 GAS_RANGE 同值独立）
   GAS_RANGE: 1,       // 【加油站】作用半径（格，切比雪夫）：1 ⇒ 3×3
   GAS_STEP: 1,        // 每座覆盖车头的【加油站】+1 倍速（大王拍板：**求和**不连乘，两座 = 3×）
+  // 【消耗提速】（v1.8y 大王拍板 2026-10-21，替换 §14.91 资源点方案；**同日改版**——
+  //   大王拍板「每次抽卡进度+1、每 4 抽 1 级、最多 8 级」）：
+  //   进度源 = GS.drawCount（本局已付费抽卡次数），抽满 4 抽跨一档 → 列车永久提速
+  //   一档（每档 +SPEND_SPEED_STEP），档数 = 表长，全拿封顶 +80%（1.8×）。
+  //   与加油站提速、奖励时间快进独立乘区相乘。造塔走同一扣费入口 GS.spendGold
+  //   但不动 drawCount ⇒ 重算幂等、不计进度（仅抽卡计次，大王拍板）。
+  SPEND_SPEED_TIERS: [4, 8, 12, 16, 20, 24, 28, 32],   // 累计抽卡次数阈值（每 4 抽一档）
+  SPEND_SPEED_STEP: 0.10,   // 每跨一档 +10% 车速
   // 【猛攻坊/疾速坊】（v1.8u 十三令，§14.84 大王令）：军工厂（FACTORY_*）退役。
   //   猛攻坊 = 同行**左右各一格**的车厢建筑攻击 +100%/座；疾速坊 = 同列**上下各一格**
   //   的车厢建筑攻速 +100%/座——均**求和非连乘**、无上限；攻速消费 = 间隔 ÷(1+加成)
@@ -564,6 +574,11 @@ GS.newGame = function () {
   // 交付飘字队列（v1.6.32 大王令"交付时飘字，包括生命和金币"）：**纯表现**，
   //   每条 = { kind:'gold'|'heal', text, x, y, t, ttl }。ENG 生成/衰减、REND 绘制。
   GS.floats = [];
+  // 消耗提速（v1.8y 改版：仅抽卡计次）：goldSpent 仅对账用（进度源 = drawCount，
+  //   上方已清零）；goldSpent/speedTier 跨波继承、新局清零。
+  GS.goldSpent = 0;
+  GS.speedTier = 0;
+  GS._pendingSpeedFloat = false;   // v1.8y 反馈：弹层挂起的跨档飘字，新局一并清掉
   // 粒子层（v1.6.43 大王令 B/E：怪死亡特效 + 爆炸视觉共用地基）。**纯表现**：
   //   每枚 = { kind:'ring'|'puff'|'spark', x, y, ... }（画布像素）。ENG 生成/衰减、REND 绘制。
   GS.fx = [];
@@ -3245,6 +3260,87 @@ GS.recomputeRails = function () {
   return GS.__recomputeRailsV1();
 };
 
+// ---- 消耗提速（v1.8y 大王拍板 2026-10-21，替换 §14.91 资源点方案；同日改版）------
+//   【改版·大王拍板「每次抽卡进度+1、每 4 抽 1 级、最多 8 级」】：进度源 =
+//   GS.drawCount（本局已付费抽卡次数），抽满 4 抽跨一档 → 列车永久提速一档
+//   （每档 +SPEND_SPEED_STEP，8 档全拿封顶 +80% = 1.8×）。金币金额不再计量——
+//   「每抽一卡亮一格」进度条最直白，抽卡是唯一推进行为（大王拍板仅抽卡计次）。
+//   · 统一入口 GS.spendGold：扣款 + goldSpent 对账累计 + 按 drawCount 重算档位；
+//     造塔（towers.js）走同一入口但不动 drawCount ⇒ 重算幂等、不计进度；
+//   · 调用序：ui.js 抽卡**先 drawCount++ 再 spendGold**（顺序颠倒会漏当抽跨档）；
+//   · 档位重算式（非增量式）：tier = 满足 drawCount >= 阈值 的档数，天然幂等防漂移；
+//   · 消费点：ENG.advanceTrain 乘区 = TRAIN_SPEED × trainSpeedMul(加油站) × spentSpeedMul；
+//   · 反馈：跨档瞬间飘字「提速 +X% · lv N」（kind='speed'，锚车头格）+ 常驻
+//     镇中心 lv 刻度条 REND.coreLvBar + LOG 'spendSpeedUp'。
+//   n 为扣费额；deferFloat=true 时跨档**只挂起不立即飘**——抽卡路径专用（大王报
+//   「升级之后的提示没有」根因：onSummon 先 spendGold 后 showOffer，立即飘的字被
+//   随后弹出的 DOM 三选一盖满 1.6s ⇒ 视同没有提示）。挂起后由 ENG.update 每帧
+//   GS.flushSpeedFloat 在弹层关闭瞬间补飘；造塔路径不传（立即飘，无遮挡）。
+//   兜底：offerOpen 已开时无论是否 defer 都挂起。
+GS.spendGold = function (n, deferFloat) {
+  var prevTier = GS.speedTier || 0;
+  GS.gold -= n;
+  GS.goldSpent = (GS.goldSpent || 0) + n;
+  var tier = 0, i;
+  for (i = 0; i < CFG.SPEND_SPEED_TIERS.length; i++)
+    if ((GS.drawCount || 0) >= CFG.SPEND_SPEED_TIERS[i]) tier++;
+  GS.speedTier = tier;
+  if (tier > prevTier) {
+    var mul = GS.spentSpeedMul();
+    if (typeof LOG !== 'undefined' && LOG.add)
+      LOG.add('spendSpeedUp', { tier: tier, mul: mul, draws: GS.drawCount, spent: GS.goldSpent });
+    if (deferFloat || (typeof UI !== 'undefined' && UI.offerOpen)) GS._pendingSpeedFloat = true;
+    else GS.emitSpeedFloat();
+  }
+  return tier;
+};
+GS.spentSpeedMul = function () {
+  var tier = Math.min(GS.speedTier || 0, CFG.SPEND_SPEED_TIERS.length);
+  return 1 + CFG.SPEND_SPEED_STEP * tier;
+};
+// 跨档飘字发射（挂起后补飘 / 立即飘共用）：锚**镇中心格**上方——升级是镇中心的事，
+//   飘在固定地标上比跟着车头跑更显眼（v1.8y 反馈补丁十一·大王令「镇中心位置飘、
+//   更显著」），**两行块状**（补丁十二·大王令「加换行」），**格式补丁十三定稿**
+//   （大王令「修改提示格式」）：行1 =「提速 +X%」、行2 =「车头攻击 +N」——N 为
+//   **本次攻击增量**（dmg(tier) − dmg(tier−1)，二次曲线下增量递增 +5/+7/+9…，
+//   直观传达"这级涨了多少"而非新总值；ENG.TRAIN_COMBAT 未加载时 dmgGain=0
+//   ⇒ 自动退回单行）。时长 2.4s（speed 条目显著长于交付飘字 1.15s）。
+//   无锚点（镇中心未落位）时放弃本次飘字并清挂起——补飘窗口早就过了，不补陈年旧账。
+GS.emitSpeedFloat = function () {
+  GS._pendingSpeedFloat = false;
+  if (typeof ENG === 'undefined' || !ENG.spawnFloat ||
+      typeof LAY === 'undefined' || !LAY || !GS.core) return;
+  var mul = GS.spentSpeedMul();
+  var tier = Math.min(GS.speedTier || 0, CFG.SPEND_SPEED_TIERS.length);
+  var dmgGain = 0;
+  if (typeof ENG.TRAIN_COMBAT === 'object' && ENG.TRAIN_COMBAT.dmg)
+    dmgGain = ENG.TRAIN_COMBAT.dmg(tier) - (tier > 0 ? ENG.TRAIN_COMBAT.dmg(tier - 1) : 0);
+  ENG.spawnFloat('speed', '提速 +' + Math.round((mul - 1) * 100) + '%' +
+                 (dmgGain ? '\n车头攻击 +' + dmgGain : ''),
+                 CFG.ccx(LAY, GS.core.c), CFG.ccy(LAY, GS.core.r) - 26, 2.4);
+};
+// 每帧补飘检查（ENG.update 调）：弹层还开着就继续等，关掉瞬间飘出。
+GS.flushSpeedFloat = function () {
+  if (!GS._pendingSpeedFloat) return;
+  if (typeof UI !== 'undefined' && UI.offerOpen) return;
+  GS.emitSpeedFloat();
+};
+// 常驻镇中心 lv 刻度条查询（renderer REND.coreLvBar 用）：
+//   { tier, lv, ratio, capped } —— lv = 速度等级 = 档数+1（lv1 = 未提速 1×，
+//   lv9 = 8 档全拿 1.8×；v1.8y 反馈补丁四·大王拍板「初始 lv1、最多 lv9」）。
+//   ratio = 当前档内进度（0~1，封顶时恒 1）= (drawCount − 本档下界)/(下档阈值 − 本档下界)；
+//   tier=0 下界为 0（首档 4 抽 ⇒ 每抽 +0.25）。进度源 = 抽卡次数（v1.8y 改版·大王拍板）。
+GS.spendProgress = function () {
+  var tiers = CFG.SPEND_SPEED_TIERS;
+  var draws = GS.drawCount || 0;
+  var tier = Math.min(GS.speedTier || 0, tiers.length);
+  var capped = tier >= tiers.length;
+  var lo = tier > 0 ? tiers[tier - 1] : 0;
+  var hi = capped ? tiers[tiers.length - 1] : tiers[tier];
+  var ratio = capped ? 1 : (hi > lo ? (draws - lo) / (hi - lo) : 0);
+  return { tier: tier, lv: tier + 1, ratio: Math.max(0, Math.min(1, ratio)), capped: capped };
+};
+
 // ---- 查询工具 ----
 GS.neighbors = function (c, r) {
   return [[c - 1, r], [c + 1, r], [c, r - 1], [c, r + 1]];
@@ -3475,8 +3571,8 @@ GS.importMap = function (text) {
 //         爱心：近带 0 / 中带 0-2 / 远带 3-5；总量 金 13 + 爱 5 = 18。
 //       ✅ 2026-10-18：五关**已全部**按「第 2 版标准 + 3×3 密度门」重排完
 //         （镜像对称 + 程序搜索求得，逐关过 test_levels 全部门）：
-//           ①外郭 近带 2 金 / 中带 3 金 2 爱 =5 / 远带 8 金 3 爱 =11
-//           ②双轴 近带 2 金 / 中带 4 金 2 爱 =6 / 远带 7 金 3 爱 =10
+//           ①双轴 近带 2 金 / 中带 4 金 2 爱 =6 / 远带 7 金 3 爱 =10
+//           ②外郭 近带 2 金 / 中带 3 金 2 爱 =5 / 远带 8 金 3 爱 =11
 //           ③四缘 近带 —  / 中带 2 金 2 爱 =4 / 远带 11 金 3 爱 =14
 //           ④环心 近带 2 金 / 中带 5 金 —  =5 / 远带 6 金 5 爱 =11
 //           ⑤边陲 近带 —  / 中带 3 金 2 爱 =5 / 远带 10 金 3 爱 =13
@@ -3506,21 +3602,8 @@ var LEVEL_WAVES = 10;
 //   ⚠️ 手绘图允许资源 1 格相邻（如左缘三连金币）——随机模式的 CFG.RES_GAP=2
 //     只管自动撒点；手工关卡以设计图点位为准，硬约束只有"不与同格叠放"。
 var LEVELS = [
-  { name: '外郭', rows: [
-    '#########',
-    '#g#####g#',   // 远带：顶缘两侧金币
-    '####g####',   // 中带：中轴金币（唯一中轴金）
-    '#g#####g#',   // 中带：内区正上两侧金币
-    'g##...##g',   // 远带：左右两缘上段金币
-    '###...###',
-    '#h#.C.#h#',   // 中带：内区正上两侧爱心
-    '###...###',
-    '##g...g##',   // 近带：内区正下外沿金币
-    'h#######h',   // 远带：左右两缘中段爱心
-    '#########',
-    '#########',
-    'gg##h##gg'    // 远带：底缘两角金币 + 两侧金币 + 中轴爱心
-  ] },
+  // ⚠️ 2026-10-21 大王令：原①「外郭」与原②「双轴」**整条互换**（名称+地图一起换，
+  //   保持名实相符）—— 现第 1 关 = 双轴（原第 2 关），现第 2 关 = 外郭（原第 1 关）。
   { name: '双轴', rows: [
     '#g#####g#',   // 双轴（c1/c7 两列）顶端金币 + 双轴左起
     '#g##g##g#',   //       双轴续 + 中轴金币（远带）
@@ -3535,6 +3618,21 @@ var LEVELS = [
     '#########',
     '#########',
     'h#g#h#g#h'    // 底缘：两角爱心 + 金币成对 + 中轴爱心
+  ] },
+  { name: '外郭', rows: [
+    '#########',
+    '#g#####g#',   // 远带：顶缘两侧金币
+    '####g####',   // 中带：中轴金币（唯一中轴金）
+    '#g#####g#',   // 中带：内区正上两侧金币
+    'g##...##g',   // 远带：左右两缘上段金币
+    '###...###',
+    '#h#.C.#h#',   // 中带：内区正上两侧爱心
+    '###...###',
+    '##g...g##',   // 近带：内区正下外沿金币
+    'h#######h',   // 远带：左右两缘中段爱心
+    '#########',
+    '#########',
+    'gg##h##gg'    // 远带：底缘两角金币 + 两侧金币 + 中轴爱心
   ] },
   { name: '四缘', rows: [
     '#g#g#g#g#',   // 顶缘：四金币均布
@@ -3911,15 +4009,16 @@ GS.aspBoostAt = function (c, r) {
 //   原先一起塞在 state.js 里。搬运时**逐行原样**，只换了宿主文件。
 //
 //   三类卡：清理形状卡（kind:shape）/ 英雄卡（kind:hero）/ 建筑卡（kind:building）
-//   概率：CFG 化的 GS.CARD_RATE（40% / 35% / 25%，大王拍板）；去重按尺寸家族 / 元素 / 建筑种类
+//   概率：CFG 化的 GS.CARD_RATE（50% / 35% / 15%，v1.8v 大王令）；去重按尺寸家族 / 元素 / 建筑种类
 //   依赖：CFG / GS / TOWERS（英雄元素表，仅运行时读）。
 //   加载序：resources.js 之后（函数体只在运行时被调，先定义后调用无环）。
 // ============================================================================
-// v1.6.15（大王令 2026-10-10）：下一抽的价格 = 10 + 10 × 已抽次数
-//   （首抽 10 → 20 → 30 → …，无上限封顶；沿革：v1.4.4 首抽 10 / v1.4.8 改 5 / 本次改回 10 起步步进 10）。
+// v1.8v（大王令 2026-10-20）：下一抽的价格 = 5 + 5 × 已抽次数
+//   （首抽 5 → 10 → 15 → …，无上限封顶；沿革：v1.4.4 首抽 10 / v1.4.8 改 5 /
+//   v1.6.15 改回 10 起步步进 10 / 本次改回 5 起步步进 5）。
 //   UI 层（按钮文案 / 禁用判断 / 扣费）一律走这里。
 GS.drawCost = function () {
-  return 10 + 10 * (GS.drawCount || 0);
+  return 5 + 5 * (GS.drawCount || 0);
 };
 
 // ---- 三选一：清理形状 + 经济建筑 ----
@@ -3948,10 +4047,11 @@ GS.cardSig = function (card) {
 // ============================================================================
 // v1.4 卡牌大改（规格 §14）：新三选一 + 牌库 + 车厢
 //   · v1.6.23：三类卡同池 —— 清理形状卡 / 英雄卡 / **建筑卡**（铸币所、加油站）；
-//     每张独立概率 CFG 化的 GS.CARD_RATE = 清理 40% / 英雄 35% / 建筑 25%（大王拍板）；
+//     每张独立概率 CFG 化的 GS.CARD_RATE = 清理 50% / 英雄 35% / 建筑 15%
+//     （v1.8v 大王令；沿革 40/35/25）；
 //     去重（形状按尺寸家族、英雄按元素、建筑按种类）；
 //   · 形状卡进牌库 ≤ GS.DECK_SHAPE_MAX 张（满了该位顺延英雄卡）；
-//   · 抽卡收费在 UI 层（价格 = GS.drawCost()，v1.6.15 起线性递增 10/20/30…），这里只管发牌。
+//   · 抽卡收费在 UI 层（价格 = GS.drawCost()，v1.8v 起线性递增 5/10/15…），这里只管发牌。
 // ============================================================================
 GS.DECK_SHAPE_MAX = 3;    // 牌库形状卡上限（大王拍板 ③：一次性消耗、攒≤3）
 
@@ -3987,8 +4087,8 @@ GS.deckShapeCount = function () {
   return n;
 };
 
-// 三类卡的独立出现概率（大王拍板 40/35/25）；改动只动这里
-GS.CARD_RATE = { shape: 0.40, hero: 0.35, building: 0.25 };
+// 三类卡的独立出现概率（v1.8v 大王令 50/35/15；沿革 40/35/25）；改动只动这里
+GS.CARD_RATE = { shape: 0.50, hero: 0.35, building: 0.15 };
 GS.rollCardKind = function () {
   var r = Math.random();
   if (r < GS.CARD_RATE.shape) return 'shape';
@@ -4002,30 +4102,46 @@ GS.rollCardKind = function () {
 //      扩张断链）。"首次"按**局**计：标记 `GS.__offerSeen` 由 newGame 清零（重开/换关/
 //      切模式都重置），发过一轮即置 true，之后按概率正常发牌。
 //   去重：形状按尺寸家族 / 英雄按元素 / 建筑按种类；撞重就重抽。
+//   ▍v1.8v 大王令：**同类型卡在三选一内最多 2 张**——抽到 3 张同类时**整组重抽**
+//      （不用"第三张强制换类"，否则会把概率洗成 37/30/22，偏离 50/35/15 口径）；
+//      重抽 20 次仍三连（概率≈3e-16）才兜底把第三张换类。
 //   ⚠️ 兜底：建筑有 4 种（v1.8u 十三令起），若长时间撞重（重抽 >30 次）改补**英雄卡**
-//      （4 种元素，三张必不撞）——保证一定凑满 3 张，且不写"抽重就重抽整组"的循环。
+//      （4 种元素，三张必不撞）——保证一定凑满 3 张，且不写"抽重就重抽整组"的循环；
 GS.drawCardOffer = function () {
-  var cards = [], sigs = {}, guard = 0;
   var first = !GS.__offerSeen;      // 本局首次发牌：首张保底清理形状卡
   GS.__offerSeen = true;
-  while (cards.length < 3) {
-    guard++;
-    var full = GS.deckShapeCount() >= GS.DECK_SHAPE_MAX;   // 形状卡满 → 顺延英雄
-    var kind = GS.rollCardKind();
-    if (first && cards.length === 0) kind = 'shape';       // 首次三选一：保底一张清理形状
-    if (kind === 'shape' && full) kind = 'hero';
-    var card, sig;
-    if (kind === 'shape') { card = GS.pickShapeCard(); sig = 'shape:' + GS.cardSig(card); }
-    else if (kind === 'hero') { card = GS.pickHeroCard(); sig = 'hero:' + card.elem; }
-    else { card = GS.pickBuildingCard(); sig = 'bld:' + card.bkey; }
-    if (sigs[sig]) {
-      if (guard <= 30) continue;
-      card = GS.pickHeroCard(); sig = 'hero:' + card.elem;   // 兜底顺延英雄
-      if (sigs[sig]) continue;
+  var cards = null;
+  for (var attempt = 0; attempt < 20; attempt++) {
+    cards = [];
+    var sigs = {}, guard = 0;
+    while (cards.length < 3) {
+      guard++;
+      var full = GS.deckShapeCount() >= GS.DECK_SHAPE_MAX;   // 形状卡满 → 顺延英雄
+      var kind = GS.rollCardKind();
+      if (first && cards.length === 0) kind = 'shape';       // 首次三选一：保底一张清理形状
+      if (kind === 'shape' && full) kind = 'hero';
+      var card, sig;
+      if (kind === 'shape') { card = GS.pickShapeCard(); sig = 'shape:' + GS.cardSig(card); }
+      else if (kind === 'hero') { card = GS.pickHeroCard(); sig = 'hero:' + card.elem; }
+      else { card = GS.pickBuildingCard(); sig = 'bld:' + card.bkey; }
+      if (sigs[sig]) {
+        if (guard <= 30) continue;
+        card = GS.pickHeroCard(); sig = 'hero:' + card.elem; // 兜底顺延英雄
+        if (sigs[sig]) continue;
+      }
+      sigs[sig] = 1;
+      cards.push(card);
     }
-    sigs[sig] = 1;
-    cards.push(card);
+    var kc = { shape: 0, hero: 0, building: 0 };
+    for (var i = 0; i < 3; i++) kc[cards[i].kind]++;
+    if (kc.shape <= 2 && kc.hero <= 2 && kc.building <= 2) return cards;   // 同类型 ≤2 张
   }
+  // 兜底（理论不可达）：三张同类 ⇒ 第三张换一个不同类
+  var bad = cards[0].kind;
+  var alt = bad === 'hero' ? 'building' : 'hero';
+  if (alt === 'shape' && GS.deckShapeCount() >= GS.DECK_SHAPE_MAX) alt = 'building';
+  cards[2] = alt === 'shape' ? GS.pickShapeCard()
+           : alt === 'hero' ? GS.pickHeroCard() : GS.pickBuildingCard();
   return cards;
 };
 
@@ -4230,7 +4346,7 @@ TOWERS.summon = function () {
     return '没有可用的空地';
   }
   var p = spots[Math.floor(Math.random() * spots.length)];
-  GS.gold -= TOWERS.CFG.COST;
+  GS.spendGold(TOWERS.CFG.COST);   // v1.8y：统一扣费入口（造塔不计进度——drawCount 不动，重算幂等）
   var t = TOWERS.placeAt(p.c, p.r, TOWERS.randElem(), 1);
   if (typeof LOG !== 'undefined') LOG.add('summon',
     { elem: t.elem, star: t.star, at: p.c + ',' + p.r, cost: TOWERS.CFG.COST });
@@ -5623,6 +5739,9 @@ ENG.update = function (dt) {
       if (GS.floats[kfl].t >= GS.floats[kfl].ttl) GS.floats.splice(kfl, 1);
     }
   }
+  // 消耗提速补飘（v1.8y 反馈）：抽卡弹层开着时跨档飘字被 DOM 盖住 ⇒ 挂起，
+  //   弹层关掉后的第一帧在这里补飘（GS.flushSpeedFloat 内部自检 offerOpen）。
+  if (typeof GS.flushSpeedFloat === 'function') GS.flushSpeedFloat();
   // 粒子衰减（v1.6.43）：死亡碎屑/爆炸火光随模拟走 —— 暂停（GS.paused）时一起冻住
   if (typeof ENG.updateFx === 'function') ENG.updateFx(dt);
   // v1.8u 十五令（§14.86，大王令）：奖励时间/dusk 收尾 = **全局时间快进** ——
@@ -5704,7 +5823,14 @@ ENG.TRAIN_COMBAT = {
   //   多摆放建筑，车头才强 = 建设驱动成长）。公式结构/斜率不变（8+4n），只换
   //   自变量；车厢 v1.6.79 起固定基数 12×star（不随波次/建筑数，§14.55）。撞击伤害 =
   //   dmg×BUMP_DMG_MUL 同吃新锚点。
-  dmg: function (n) { return 8 + 4 * n; },
+  //   ▍v1.8y 反馈补丁九（2026-10-21 大王令）：锚点再换——摆放建筑数 → **镇中心
+  //   等级**：n = GS.speedTier（lv1=0 … lv9=8）⇒ 开局 lv1 一刀收 w1=8 血怪不变；
+  //   抽卡升级 = 提速/车头火力双成长同源。函数结构不变只换实参。
+  //   ▍v1.8y 反馈补丁十（同日·大王拍板「伤害值应非线性变化」）：线性 8+4n →
+  //   **二次 4+(n+2)²**：8/13/20/29/40/53/68/85/104 —— 增量递增（+5/+7/+9…），
+  //   lv8=85 恰一刀收 w10 怪（8×10=80，里程碑锚）；开局锚点 dmg(0)=8 不变；
+  //   lv9 总 DPS≈136（塔式 104 + 撞击 26/0.8s），仍低于满词条机枪 ≈105+，不抢戏。
+  dmg: function (n) { return 4 + (n + 2) * (n + 2); },
   RATE: 1.0,           // 塔式攻击间隔秒
   RANGE: 4.5,          // 塔式射程（格，欧氏距离）⚠️ v1.4.3d 大王令：2.5×1.5=3.75；v1.6.8 大王令 2026-10-09：3.75→4.5（车厢同步）
   BUMP_RANGE: 0.8,     // 撞击判定半径（格，车头中心到怪中心）—— v1.8k：1.2→0.8 贴合车头体量（车头占格面积≈2 ⇒ r=√(2/π)≈0.8）
@@ -5729,7 +5855,9 @@ ENG.trainCombat = function (dt) {
   //   旧"+2 伤/节 + 全局元素特效"作废。
   // ▍v1.6.77 大王令：伤害锚点 wave → **摆放建筑数**（§14.53）——GS.buildings[0]
   //   恒为镇中心（state.newGame 初始 push，非玩家摆放）⇒ 排除：n = length − 1。
-  var dmg = ENG.TRAIN_COMBAT.dmg(Math.max(0, GS.buildings.length - 1));
+  //   ▍v1.8y 反馈补丁九·大王令：锚点再换 → **镇中心等级**：n = speedTier
+  //   （lv1=0 … lv9=8；开局 lv1 → dmg(0)=8 一刀收 w1 怪不变，升级即车头变强）。
+  var dmg = ENG.TRAIN_COMBAT.dmg(GS.speedTier || 0);
   var core = GS.core;
 
   // 车头浮点格坐标（advanceTrain 的插值同源）
@@ -6352,8 +6480,8 @@ ENG.advanceTrain = function (dt) {
   // 站台下标（-1 = 没解出站台 → 永不判到站）。判"回到站台下标"而不是"踩到站台格"：
   //   站台若是十字格（railPath 里出现两次），按格子判会一圈交付两次。
   var si = (typeof STATION !== 'undefined') ? STATION.index() : -1;
-  // 速度系数见 ENG.trainSpeedMul（v1.6.23：boost 加速 / 加油站提速二选一）
-  tr.frac += CFG.TRAIN_SPEED * ENG.trainSpeedMul() * dt;
+  // 速度系数三乘区（v1.8y）：TRAIN_SPEED × 加油站提速(trainSpeedMul) × 消耗提速(spentSpeedMul)
+  tr.frac += CFG.TRAIN_SPEED * ENG.trainSpeedMul() * GS.spentSpeedMul() * dt;
   while (tr.frac >= 1) {
     tr.frac -= 1;
     tr.index = (tr.index + 1) % n;
@@ -6382,6 +6510,10 @@ ENG.trainSpeedMul = function () {
 //     进速度系数；加油站与快进自然相乘（峰值 4× 快进 × 3× 双座 = 12× 体感）；
 //   · 平时 → 系数 = 1 + 覆盖**车头所在格**的加油站座数（每座 +100%、求和非连乘、
 //     无上限）——查询式即时生效/即时回落，无尾巴。实现见上方 ENG.trainSpeedMul。
+//   · v1.8y 新增独立乘区【消耗提速】GS.spentSpeedMul（累计抽卡次数跨档：每 4 抽
+//     1 级、8 级封顶 1.8×，阈值表 CFG.SPEND_SPEED_TIERS，仅抽卡计次——大王拍板），
+//     在 ENG.advanceTrain 与加油站系数相乘；扣费记账与跨档反馈实现见 state.js
+//     （GS.spendGold 统一入口，按 GS.drawCount 重算档位）。
 
 // ---- 交付飘字（v1.6.32 大王令"我需要交付的时候飘字，包括生命和金币"）--------------
 //   纯表现：队列 `GS.floats`（`{kind:'gold'|'heal', text, x, y, t, ttl}`），
@@ -6398,14 +6530,16 @@ ENG.FLOAT_TTL = 1.15;        // 飘字存活秒数（越长越容易被下一圈
 ENG.FLOAT_DY_GOLD = -32;     // 金币行相对锚点的 y 偏移
 ENG.FLOAT_DY_HEAL = -52;     // 生命行相对锚点的 y 偏移（与金币行固定差 20px）
 
-// 入队一条（同 kind 的旧条目先清掉 —— 保证"同类只有一条"）
-ENG.spawnFloat = function (kind, text, x, y) {
+// 入队一条（同 kind 的旧条目先清掉 —— 保证"同类只有一条"）。
+//   v1.8y 反馈补丁：可选第 5 参 ttl（不传仍用 FLOAT_TTL）——消耗提速飘字带档位
+//   文案更长，单独放宽到 1.6s（在 engine.js 调用侧传，本函数不感知 kind）。
+ENG.spawnFloat = function (kind, text, x, y, ttl) {
   if (!GS.floats) GS.floats = [];
   var keep = [];
   for (var i = 0; i < GS.floats.length; i++)
     if (GS.floats[i].kind !== kind) keep.push(GS.floats[i]);
   GS.floats = keep;
-  GS.floats.push({ kind: kind, text: text, x: x, y: y, t: 0, ttl: ENG.FLOAT_TTL });
+  GS.floats.push({ kind: kind, text: text, x: x, y: y, t: 0, ttl: ttl || ENG.FLOAT_TTL });
 };
 
 // 交付瞬间生成两行。gold = 本次入账金币（已含站台 +10）；heal = **实际**回血量
@@ -6847,6 +6981,7 @@ REND.draw = function (ctx, L, hover, drag) {
 
   // 建筑
   for (var k = 0; k < GS.buildings.length; k++) REND.building(ctx, L, GS.buildings[k]);
+  REND.coreLvBar(ctx, L);   // 镇中心 lv 刻度条（v1.8y 反馈补丁四：速度等级 lv1~lv9）
   // 塔（v1.3-rc 修复"地图里看不到塔"：TOWERS.placeAt 只写格子 + GS.towers 数组镜像，
   //   不进 GS.buildings —— 塔的权威列表是 GS.towers，渲染必须单独遍历它）
   for (var kt = 0; kt < GS.towers.length; kt++) REND.building(ctx, L, GS.towers[kt]);
@@ -7038,6 +7173,25 @@ REND.draw = function (ctx, L, hover, drag) {
         ctx.fillStyle = kill ? REND.C.gold : '#f2ede4';
         var tw = ctx.measureText(fl.text).width;
         ctx.fillText(fl.text, fl.x - tw / 2, fy);
+      } else if (fl.kind === 'speed') {
+        // v1.8y 消耗提速飘字：**两行块状**（补丁十二·大王令「加换行」）——state 侧
+        //   text 带 \n（行1「提速 +X% · lv N」/ 行2「车头 M」，单行沙箱自动兼容），
+        //   块体垂直居中锚点、行距 20px（> 16px 字号 ⇒ 不重叠）、整体上飘；
+        //   浅蓝 + 深色描边兜底——描边 3→4px、底色更深（上轮 3px 观感不足，
+        //   补丁十二·大王令「加描边」），保证任何背景都可读；ttl 2.4s。
+        ctx.font = 'bold 16px "PingFang SC",system-ui,sans-serif';
+        ctx.lineWidth = 4;
+        ctx.strokeStyle = 'rgba(10,20,35,0.95)';
+        ctx.lineJoin = 'round';
+        var spLines = fl.text.split('\n');
+        var spLH = 20, spSpan = (spLines.length - 1) * spLH;
+        for (var spI = 0; spI < spLines.length; spI++) {
+          var spY = fy - spSpan / 2 + spI * spLH;
+          var spW = ctx.measureText(spLines[spI]).width;
+          ctx.strokeText(spLines[spI], fl.x - spW / 2, spY);
+          ctx.fillStyle = '#7cc4ff';
+          ctx.fillText(spLines[spI], fl.x - spW / 2, spY);
+        }
       } else {
         ctx.font = 'bold 13px "PingFang SC",system-ui,sans-serif';
         var fw = ctx.measureText(fl.text).width;
@@ -7173,14 +7327,15 @@ REND.draw = function (ctx, L, hover, drag) {
     ctx.fillStyle = 'rgba(' + rgb2 + ',0.95)';             // 弹体
     ctx.beginPath(); ctx.arc(bx, by, rr2, 0, 7); ctx.fill();
   }
-  // 镇中心血条（画在 core 格正上方，全宽）
+  // 镇中心血条（画在 core 格正上方；v1.8y 反馈补丁七·大王令「一并纳入、不要出框」
+  // ——上收贴格顶，全宽 0.86 格不出格；低血仍红）
   var coreB = GS.core;
   if (coreB) {
-    var hx = CFG.ccx(L, coreB.c), hyTop = L.y + coreB.r * L.cell + 3;
+    var hx = CFG.ccx(L, coreB.c), hyTop = L.y + coreB.r * L.cell + 1.5;
     var hw = L.cell * 0.86;
     ctx.fillStyle = 'rgba(0,0,0,0.55)';
     ctx.fillRect(hx - hw / 2, hyTop, hw, 4);
-    ctx.fillStyle = GS.coreHP / GS.coreMaxHP > 0.3 ? '#e0b23f' : '#e8563f';
+    ctx.fillStyle = GS.coreHP / GS.coreMaxHP > 0.3 ? '#4fae52' : '#e8563f';
     ctx.fillRect(hx - hw / 2, hyTop, hw * Math.max(0, GS.coreHP / GS.coreMaxHP), 4);
   }
   // 拖动幽灵（v1.3-rc）：拖塔 = 半透明圆台跟指针；拖清理形状 = 形状格高亮
@@ -7268,56 +7423,7 @@ REND.draw = function (ctx, L, hover, drag) {
     var hcell2 = CFG.pickCell(LAY, drag.px, drag.py);
     if (hcell2) {
       var okHero = GS.isFreeSpot(hcell2.c, hcell2.r);
-      // v1.6.23 加油站：悬停时先铺 3×3 作用范围，让"提速盖到哪"一目了然。
-      //   v1.8u 六令（§4d/§14.82）：范围格**两态** —— 标准态蓝淡底 0.16；3×3 内
-      //   **在轨格**（有效目标，GS.onRail）整格高亮 0.38（对齐卡面图配色），
-      //   "哪几格真的吃到提速"一眼可辨。
-      if (drag.kind === 'building' && drag.bkey === 'gas') {
-        var gr = CFG.GAS_RANGE;
-        for (var gdr = -gr; gdr <= gr; gdr++) for (var gdc = -gr; gdc <= gr; gdc++) {
-          var gc2 = hcell2.c + gdc, gr3 = hcell2.r + gdr;
-          if (!CFG.inBounds(gc2, gr3)) continue;
-          ctx.fillStyle = GS.onRail(gc2, gr3) ? 'rgba(94,200,240,0.38)' : 'rgba(94,200,240,0.16)';
-          ctx.fillRect(L.x + gc2 * L.cell, L.y + gr3 * L.cell, L.cell, L.cell);
-        }
-      }
-      // v1.8u 铸币所（§14.82，三拍板补）：悬停时先铺 3×3 金淡底（与加油站蓝淡底同
-      //   语言，大王令"卡牌表现也把范围加上"）再描 3×3 内金币格淡金描边。
-      //   v1.8u 六令：范围格**两态** —— 标准态金淡底 0.14；3×3 内**金币格**
-      //   （有效目标）整格高亮 0.35（对齐卡面图配色），淡金描边保留。
-      if (drag.kind === 'building' && drag.bkey === 'mint') {
-        var mr = CFG.MINT_RANGE;
-        for (var mdr = -mr; mdr <= mr; mdr++) for (var mdc = -mr; mdc <= mr; mdc++) {
-          var mc2 = hcell2.c + mdc, mr3 = hcell2.r + mdr;
-          if (!CFG.inBounds(mc2, mr3)) continue;
-          ctx.fillStyle = GS.grid[mr3][mc2].gold ? 'rgba(240,180,41,0.35)' : 'rgba(240,180,41,0.14)';
-          ctx.fillRect(L.x + mc2 * L.cell, L.y + mr3 * L.cell, L.cell, L.cell);
-        }
-        for (var mdr2 = -mr; mdr2 <= mr; mdr2++) for (var mdc2 = -mr; mdc2 <= mr; mdc2++) {
-          var mc3 = hcell2.c + mdc2, mr4 = hcell2.r + mdr2;
-          if (!CFG.inBounds(mc3, mr4)) continue;
-          if (!GS.grid[mr4][mc3].gold) continue;
-          ctx.strokeStyle = 'rgba(240,180,41,0.45)';
-          ctx.lineWidth = 2;
-          ctx.strokeRect(L.x + mc3 * L.cell + 1.5, L.y + mr4 * L.cell + 1.5, L.cell - 3, L.cell - 3);
-        }
-      }
-      // v1.8u 十三令（§14.84）猛攻坊/疾速坊：悬停铺**横条/竖条**作用范围（各 3 格，
-      //   与实际范围同形）；两态（并入六令体系）—— 命中**车厢格**（有效目标）整格
-      //   高亮 0.38，其余淡底 0.16，"哪节车厢真的吃到加成"一眼可辨。
-      //   【v1.6.35 军工厂十字预览随建筑退役删除】
-      if (drag.kind === 'building' && (drag.bkey === 'atk' || drag.bkey === 'asp')) {
-        var axDirs = (drag.bkey === 'atk') ? [[0, 0], [1, 0], [-1, 0]] : [[0, 0], [0, 1], [0, -1]];
-        for (var d5 = 0; d5 < axDirs.length; d5++) {
-          var fc5 = hcell2.c + axDirs[d5][0], fr5 = hcell2.r + axDirs[d5][1];
-          if (!CFG.inBounds(fc5, fr5)) continue;
-          var axHit = GS.grid[fr5][fc5].b && GS.grid[fr5][fc5].b.type === 'tower';
-          ctx.fillStyle = (drag.bkey === 'atk')
-            ? (axHit ? 'rgba(224,86,63,0.38)' : 'rgba(224,86,63,0.16)')
-            : (axHit ? 'rgba(61,189,158,0.38)' : 'rgba(61,189,158,0.16)');
-          ctx.fillRect(L.x + fc5 * L.cell, L.y + fr5 * L.cell, L.cell, L.cell);
-        }
-      }
+      if (drag.kind === 'building') REND.buildingRange(ctx, L, hcell2.c, hcell2.r, drag.bkey);
       ctx.strokeStyle = okHero ? REND.C.okl : REND.C.bad;
       ctx.lineWidth = 2;
       ctx.strokeRect(L.x + hcell2.c * L.cell + 1, L.y + hcell2.r * L.cell + 1, L.cell - 2, L.cell - 2);
@@ -7332,6 +7438,10 @@ REND.draw = function (ctx, L, hover, drag) {
     //   跟指针；悬停格语义描边（绿=移动 / 金=交换 / 红=弹回）。源建筑原格照画
     //   （结算前数据不动，与拖塔同口径），判定与 UI.settleBuildingMove 完全同口径。
     var mbt = drag.building.type;
+    var mcell = CFG.pickCell(LAY, drag.px, drag.py);
+    // 拖动场上建筑时同样显示效果范围（与手牌拖上场同一套渲染件，落点即预览）——
+    //   先铺范围再画幽灵，幽灵方块保持清晰不被范围底色压暗。
+    if (mcell) REND.buildingRange(ctx, L, mcell.c, mcell.r, mbt);
     var mbody = (mbt === 'mint') ? '#8a6a12' : (mbt === 'gas') ? '#1b6a94'
               : (mbt === 'atk') ? '#a93b2e' : '#1f7a68';
     ctx.globalAlpha = 0.75;
@@ -7341,7 +7451,6 @@ REND.draw = function (ctx, L, hover, drag) {
     ctx.strokeStyle = 'rgba(255,255,255,0.8)';
     ctx.lineWidth = 1.2;
     ctx.strokeRect(drag.px - L.cell * 0.36, drag.py - L.cell * 0.36, L.cell * 0.72, L.cell * 0.72);
-    var mcell = CFG.pickCell(LAY, drag.px, drag.py);
     if (mcell && (mcell.c !== drag.building.c || mcell.r !== drag.building.r)) {
       var mdb = GS.grid[mcell.r][mcell.c].b;
       // v1.8u 十七令（§14.88）：塔也纳入交换（建筑 ⇄ 塔双向），只剩 core/非空地弹回
@@ -7364,6 +7473,57 @@ REND.draw = function (ctx, L, hover, drag) {
   // 词条经验条（v1.6.41）：**画在横幅之后** ⇒ 夜晚数字浮在横幅底条上（数字靠右、
   //   横幅文字居中，互不遮挡）；旧序（横幅前）会被半透明底条压暗看不清。
   REND.expBar(ctx, L);
+  // 镇中心 tips（v1.8y 反馈补丁八·大王令）：UI.coreTip 开启时画等级/速度气泡，
+  //   置于 draw 最末 ⇒ 盖在一切之上（血条/进度条/横幅都不挡它）
+  REND.coreTip(ctx, L);
+};
+
+// 建筑效果范围预览（手牌拖上场 / 场上建筑拖动**共用**，v1.6.23 建，抽出共用件）：
+//   以 (c,r) 为建筑中心，按建筑类型铺作用范围。两态口径（v1.8u 六令 §4d/§14.82）：
+//   标准态淡底；范围格内**有效目标**整格高亮 —— gas = 在轨格（GS.onRail）、
+//   mint = 金币格（grid.gold）、atk/asp = 车厢格（塔）。猛攻坊/疾速坊为横/竖 3 格条。
+REND.buildingRange = function (ctx, L, c, r, bkey) {
+  // 加油站：3×3 蓝淡底（在轨格提亮）
+  if (bkey === 'gas') {
+    var gr = CFG.GAS_RANGE;
+    for (var gdr = -gr; gdr <= gr; gdr++) for (var gdc = -gr; gdc <= gr; gdc++) {
+      var gc2 = c + gdc, gr3 = r + gdr;
+      if (!CFG.inBounds(gc2, gr3)) continue;
+      ctx.fillStyle = GS.onRail(gc2, gr3) ? 'rgba(94,200,240,0.38)' : 'rgba(94,200,240,0.16)';
+      ctx.fillRect(L.x + gc2 * L.cell, L.y + gr3 * L.cell, L.cell, L.cell);
+    }
+  }
+  // 铸币所：3×3 金淡底（金币格提亮）+ 金币格淡金描边
+  if (bkey === 'mint') {
+    var mr = CFG.MINT_RANGE;
+    for (var mdr = -mr; mdr <= mr; mdr++) for (var mdc = -mr; mdc <= mr; mdc++) {
+      var mc2 = c + mdc, mr3 = r + mdr;
+      if (!CFG.inBounds(mc2, mr3)) continue;
+      ctx.fillStyle = GS.grid[mr3][mc2].gold ? 'rgba(240,180,41,0.35)' : 'rgba(240,180,41,0.14)';
+      ctx.fillRect(L.x + mc2 * L.cell, L.y + mr3 * L.cell, L.cell, L.cell);
+    }
+    for (var mdr2 = -mr; mdr2 <= mr; mdr2++) for (var mdc2 = -mr; mdc2 <= mr; mdc2++) {
+      var mc3 = c + mdc2, mr4 = r + mdr2;
+      if (!CFG.inBounds(mc3, mr4)) continue;
+      if (!GS.grid[mr4][mc3].gold) continue;
+      ctx.strokeStyle = 'rgba(240,180,41,0.45)';
+      ctx.lineWidth = 2;
+      ctx.strokeRect(L.x + mc3 * L.cell + 1.5, L.y + mr4 * L.cell + 1.5, L.cell - 3, L.cell - 3);
+    }
+  }
+  // 猛攻坊（横条）/ 疾速坊（竖条）：各 3 格（车厢格提亮）
+  if (bkey === 'atk' || bkey === 'asp') {
+    var axDirs = (bkey === 'atk') ? [[0, 0], [1, 0], [-1, 0]] : [[0, 0], [0, 1], [0, -1]];
+    for (var d5 = 0; d5 < axDirs.length; d5++) {
+      var fc5 = c + axDirs[d5][0], fr5 = r + axDirs[d5][1];
+      if (!CFG.inBounds(fc5, fr5)) continue;
+      var axHit = GS.grid[fr5][fc5].b && GS.grid[fr5][fc5].b.type === 'tower';
+      ctx.fillStyle = (bkey === 'atk')
+        ? (axHit ? 'rgba(224,86,63,0.38)' : 'rgba(224,86,63,0.16)')
+        : (axHit ? 'rgba(61,189,158,0.38)' : 'rgba(61,189,158,0.16)');
+      ctx.fillRect(L.x + fc5 * L.cell, L.y + fr5 * L.cell, L.cell, L.cell);
+    }
+  }
 };
 
 // 人工地面纹理（v1.6.46 ①）：每格确定性 hash（同一格逐帧稳定）生成
@@ -8209,24 +8369,44 @@ REND.spawnMarks = function (ctx, L) {
   ctx.restore();
 };
 
+// 进度条左端语义徽章（v1.8y 反馈·大王拍板「左端徽章块」）：带底色圆角小徽章 +
+//   8px 白字直书功能名，替代原裸图形徽标（经验 ◆ / 提速 ⏩）——两条常驻进度条
+//   并排后语义不明（大王报「看不懂两条各代表什么」），徽章写名字一眼可读。
+//   徽章压在条身左端（填充从底下穿过，与原 ◆/⏩ 压条同语言），比条身内缩 0.5px
+//   露出条底色一圈，呈「嵌在条上」的层次。expBar 专用（coreLvBar 的 lv 徽章自绘）。
+//   返回徽章宽（调用方如需避让可用；当前填充照旧全宽口径，不需避让）。
+REND.barBadge = function (ctx, x, y, h, bg, border, text) {
+  var w = 7 + text.length * 8 + 7;
+  ctx.save();
+  REND.rr(ctx, x, y, w, h, h / 2);
+  ctx.fillStyle = bg;
+  ctx.fill();
+  ctx.strokeStyle = border;
+  ctx.lineWidth = 1;
+  ctx.stroke();
+  ctx.fillStyle = '#f4f2ff';
+  ctx.font = 'bold 8px "PingFang SC",system-ui,sans-serif';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(text, x + w / 2, y + h / 2 + 0.5);
+  ctx.restore();
+};
+
 // 词条经验条（v1.6.34 建为左上角小条；v1.6.41 大王令改版 = **C 全宽细条 × A 胶囊语言**；
 //   v1.6.42 大王令：数字移到条的正中间、条的上层）：
 //   · 全宽胶囊贴 HUD 下沿（高 9px，占地近零、不挡建造、不进 HUD DOM —— HUD 一行已满）；
-//   · 左端 ◆ 徽标（词条语言）+ 紫色进度条（**v1.8u 四拍板：数字退役**——cur/need
-//     居中压条整段删，只留条身；大王令「把顶部经验条的数字干掉」）；
-//   · 进度 ≥80% 进入"呼吸脉冲"（整条亮度随时间正弦呼吸），提醒"词条快来了"；
+//   · 左端「经验」徽章块（v1.8y 反馈·大王拍板，替代裸 ◆ 徽标）+ 紫色进度条
+//     （**v1.8u 四拍板：数字退役**——cur/need 居中压条整段删，只留条身）；
+//   · v1.8y 反馈补丁九·大王令：「快满闪烁」退役——经验条恒常亮（hot/pulse 全清）；
 //   · 调用序在 battleBanner 之后 ⇒ 夜晚浮在横幅底条上。
 REND.expBar = function (ctx, L) {
   if (typeof EXP === 'undefined') return;
   var p = EXP.progress();
   if (!p.need) return;
   var ratio = Math.min(1, p.cur / p.need);
-  var hot = ratio >= 0.8;                        // 快满：呼吸脉冲
-  var pulse = hot ? 0.7 + 0.3 * Math.sin((typeof performance !== 'undefined'
-    ? performance.now() : 0) / 170) : 1;         // 0.7~1.0 之间呼吸
+  // v1.8y 反馈补丁九·大王令：取消「快满闪烁」——经验条恒常亮（呼吸脉冲退役）
   var W = CFG.CANVAS_W, H = 9;
   ctx.save();
-  ctx.globalAlpha = pulse;
   // ① 底槽：全宽胶囊，深底 + 紫描边（A 的胶囊语言拉成全宽 —— C 的占地）
   REND.rr(ctx, 0.5, 0.5, W - 1, H - 1, 4.5);
   ctx.fillStyle = 'rgba(19,22,33,0.92)';
@@ -8237,16 +8417,131 @@ REND.expBar = function (ctx, L) {
   // ② 进度：内缩 2px 的亮紫胶囊（比例 = cur/need）
   if (ratio > 0.02) {
     REND.rr(ctx, 2.5, 2.5, (W - 5) * ratio, H - 5, 2.5);
-    ctx.fillStyle = hot ? '#AFA9EC' : '#7F77DD';
+    ctx.fillStyle = '#7F77DD';
     ctx.fill();
   }
-  // ③ 左端 ◆ 徽标（词条语言，压在条上，白紫可辨）
-  ctx.beginPath();
-  ctx.moveTo(12, 0.5); ctx.lineTo(17.5, 5); ctx.lineTo(12, 9.5); ctx.lineTo(6.5, 5);
-  ctx.closePath();
-  ctx.fillStyle = '#EEEDFE';
+  // ③ 左端「经验」徽章块（v1.8y 反馈·大王拍板，替代裸 ◆ 徽标——两条进度条并排
+  //    后语义不明，徽章直书功能名一眼可读；压在条身左端，填充从底下穿过）
+  REND.barBadge(ctx, 1.5, 1, 8, 'rgba(83,74,183,0.92)', 'rgba(175,169,236,0.8)', '经验');
+  // ④ （v1.8u 四拍板）数字 cur/need 退役——只留胶囊 + 进度 + 徽章（v1.8y 补丁九：闪烁退役）
+  ctx.restore();
+};
+
+// 镇中心 lv 刻度条（v1.8y 反馈补丁四，大王拍板「进度条改为镇中心经验进度条、
+//   位置不放上面、初始 lv1 最多 lv9、沿用每级刻度方案」——顶部青条 spendBar 退役）：
+//   画在镇中心格底边（骑线居中，宽 1.1 格、高 9px），**青色系**（疾速坊速度家族色）：
+//   · 「lv N」角标：镇中心图标**左下角压角**（v1.8y 反馈补丁六·大王令，从条内徽章
+//     移出）——镇中心等级就是速度等级（lv1 = 1× → lv9 = 1.8×，每级 +10%）；
+//   · 条身 = **本级内进度**（v1.8y 反馈补丁五·大王拍板「每级经验就是 4，抽 4 次
+//     进度条就满，然后升级；升级后清零，等级提升」）：填充 = ratio（0~1），4 抽
+//     满条升级清零；3 道刻度线均分 4 格（每抽 1 格），跨过亮青 / 未跨暗青；
+//     档内 ≥75% 呼吸脉冲（还差 1 抽），封顶满条常亮；数据源 GS.spendProgress()。
+//   · 补丁六随角标移出：条不再让位徽章 → 宽度 1.4→1.1 格、加高 7→9px、内缩
+//     2→1.5px（填充更饱满）；角标为静态事实不随呼吸（呼吸只作用于条身）。
+REND.coreLvBar = function (ctx, L) {
+  if (typeof GS.spendProgress !== 'function' || !GS.core) return;
+  var p = GS.spendProgress();
+  var W = L.cell * 1.1, H = 7;
+  var x = CFG.ccx(L, GS.core.c) - W / 2;
+  // 收进本格（v1.8y 补丁七·大王令「lv/进度条都上移、血条一并纳入、不要过多压边
+  // 出框」）：条贴格底 0.5px 边距、H 回落 9→7（图标下方余量仅 0.14 格），填充内缩
+  // 2→1 保饱满；条顶与图标底间隙 ~0.3px、与角标上下错开不再重叠，零出框
+  var y = L.y + (GS.core.r + 1) * L.cell - H - 0.5;
+  var fill = p.capped ? 1 : p.ratio;                // 本级内进度（封顶满条）
+  // v1.8y 反馈补丁九·大王令：取消「快满闪烁」——进度条恒常亮（呼吸脉冲退役）
+  ctx.save();
+  // ① 底槽：深底 + 青描边（圆角胶囊）
+  REND.rr(ctx, x, y, W, H, H / 2);
+  ctx.fillStyle = 'rgba(19,22,33,0.88)';
   ctx.fill();
-  // ④ （v1.8u 四拍板）数字 cur/need 退役——只留胶囊 + 进度 + ◆ 徽标 + 呼吸脉冲
+  ctx.strokeStyle = 'rgba(80,220,180,0.45)';
+  ctx.lineWidth = 1;
+  ctx.stroke();
+  // ② 进度填充：内缩 1px 的青色胶囊（本级 4 折算；封顶换亮青）
+  if (fill > 0.02) {
+    REND.rr(ctx, x + 1, y + 1, Math.max(0, (W - 2) * fill), H - 2, (H - 2) / 2);
+    ctx.fillStyle = p.capped ? '#3fd0af' : '#2b9a7f';
+    ctx.fill();
+  }
+  // ③ 内部刻度线（本级 4 格 → 3 道分隔）：第 k 抽后 k/4 处以内的亮青、以外的暗青
+  var inner = W - 4;
+  for (var ti = 1; ti < 4; ti++) {
+    var tx = x + 2 + inner * (ti / 4);
+    ctx.beginPath();
+    ctx.moveTo(tx, y + 1.5); ctx.lineTo(tx, y + H - 1.5);
+    ctx.strokeStyle = fill >= ti / 4 ? 'rgba(130,235,205,0.9)' : 'rgba(80,220,180,0.28)';
+    ctx.lineWidth = 1;
+    ctx.stroke();
+  }
+  ctx.restore();
+  // ④ 「lv N」角标：镇中心图标左下角（v1.8y 补丁七定稿+微调·大王令「LV 再上移，
+  //    不要遮挡进度条」——底与图标底对齐后再上提 2px，给条顶留 ~2px 净隙；
+  //    青底白字 7px 小方块，静态事实不随呼吸；图标边长同 REND.building core）
+  var s2 = L.cell * 0.72;
+  var bx0 = CFG.ccx(L, GS.core.c) - s2 / 2, by0 = CFG.ccy(L, GS.core.r) + s2 / 2;
+  var bw = 17, bh = 11, blift = 2;                  // blift：额外上提量
+  ctx.save();
+  REND.rr(ctx, bx0 - bw / 2, by0 - bh - blift, bw, bh, 2.5);
+  ctx.fillStyle = 'rgba(31,122,104,0.95)';
+  ctx.fill();
+  ctx.strokeStyle = 'rgba(130,235,205,0.95)';
+  ctx.lineWidth = 1;
+  ctx.stroke();
+  ctx.fillStyle = '#eafff8';
+  ctx.font = 'bold 7px "PingFang SC",system-ui,sans-serif';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText('lv' + p.lv, bx0, by0 - bh / 2 - blift + 0.5);
+  ctx.restore();
+};
+
+// 镇中心 tips 气泡（v1.8y 反馈补丁八·大王令「点击镇中心出现 tips，告知等级和速度」）：
+//   UI.coreTip 开关由 ui.js onDown 控制（点镇中心切换、点其他任意处关闭，昼夜可用）；
+//   气泡悬在镇中心格上方（血条之上），青描边深底，三行文案：
+//   ①「镇中心 lv N」 ②「列车速度 ×M」 ③升级进度（再抽 X 次升级 / 已达满级）。
+//   UI 未加载（沙箱测试）或开关关闭时直接跳过。
+REND.coreTip = function (ctx, L) {
+  if (typeof UI === 'undefined' || !UI.coreTip) return;
+  if (!GS.core || typeof GS.spendProgress !== 'function') return;
+  var p = GS.spendProgress();
+  var cx = CFG.ccx(L, GS.core.c);
+  var cyTop = L.y + GS.core.r * L.cell;             // 镇中心格顶
+  var mul = (1 + p.tier * CFG.SPEND_SPEED_STEP).toFixed(1);
+  // 车头伤害行（v1.8y 反馈补丁十·大王拍板「tips 告知等级和速度」扩展 +「伤害值
+  //   应变化」可视化）——ENG 未加载（沙箱）时省略该行
+  var headDmg = (typeof ENG !== 'undefined' && ENG.TRAIN_COMBAT && ENG.TRAIN_COMBAT.dmg)
+    ? ENG.TRAIN_COMBAT.dmg(p.tier) : null;
+  var lines = [
+    '镇中心 lv' + p.lv,
+    '列车速度 ×' + mul
+  ];
+  if (headDmg !== null) lines.push('车头伤害 ' + headDmg);
+  lines.push(p.capped ? '已达满级' : '再抽 ' + (4 - Math.floor(p.ratio * 4 + 1e-6)) + ' 次升级');
+  var bw = 118, bh = headDmg !== null ? 60 : 46;
+  var bx = cx - bw / 2, by = cyTop - bh - 8;
+  ctx.save();
+  // 底板 + 青描边（速度家族色）+ 底部小三角指向镇中心
+  REND.rr(ctx, bx, by, bw, bh, 5);
+  ctx.fillStyle = 'rgba(19,22,33,0.94)';
+  ctx.fill();
+  ctx.strokeStyle = 'rgba(80,220,180,0.5)';
+  ctx.lineWidth = 1;
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.moveTo(cx - 5, by + bh); ctx.lineTo(cx + 5, by + bh); ctx.lineTo(cx, by + bh + 6);
+  ctx.closePath();
+  ctx.fillStyle = 'rgba(19,22,33,0.94)';
+  ctx.fill();
+  ctx.strokeStyle = 'rgba(80,220,180,0.5)';
+  ctx.stroke();
+  // 四行文字：标题亮青、正文白（左对齐，行高 14）
+  ctx.font = '9px "PingFang SC",system-ui,sans-serif';
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'middle';
+  for (var li = 0; li < lines.length; li++) {
+    ctx.fillStyle = li === 0 ? 'rgba(130,235,205,0.95)' : '#e8f6f1';
+    ctx.fillText(lines[li], bx + 10, by + 12 + li * 14);
+  }
   ctx.restore();
 };
 
@@ -8280,6 +8575,7 @@ UI.init = function (canvas) {
   UI.offerOverlay = document.getElementById('offerOverlay'); // v1.4 三选一弹层
   UI.offerCards = document.getElementById('offerCards');
   UI.move = null;        // 悬停格（鼠标）
+  UI.coreTip = false;    // v1.8y 反馈补丁八：镇中心 tips 开关（点击镇中心切换）
   UI.drag = null;        // {kind:'tower',tower,px,py} | {kind:'clean',shape,cardIdx,px,py}
                          // | {kind:'hero',elem,cardIdx,px,py}
   UI.trainSel = null;    // v1.6.13 长按的列车单元 {kind:'head'}|{kind:'wagon',i}，null=未按住
@@ -8400,6 +8696,17 @@ UI.onDown = function (e) {
     }
     UI.trainSel = null;    // 按在空白/塔/地面 = 无按住态（拖塔手势照常继续）
   }
+  // v1.8y 反馈补丁八（大王令）：点击镇中心 → 弹出 tips（等级/速度/升级进度）。
+  //   纯信息查看，白天夜晚都可用（同长按查射程放行，放 isDay 闸之前）；
+  //   再点镇中心切换开/关，点其他任意处关闭。
+  if (p) {
+    var tipCell = CFG.pickCell(LAY, p.mx, p.my);
+    if (tipCell && GS.core && tipCell.c === GS.core.c && tipCell.r === GS.core.r) {
+      UI.coreTip = !UI.coreTip;
+      return;              // 点镇中心只切 tips（镇中心本就不可拖）
+    }
+    UI.coreTip = false;
+  }
   if (!UI.isDay()) return;
   var cell = UI.cellFromEvent(e);
   if (!cell) return;
@@ -8470,8 +8777,13 @@ UI.onSummon = function () {
   var cost = GS.drawCost();
   if (!UI.isDay()) { UI.setStatus(GS.gameOver ? '挑战已失败' : '防守阶段施工暂停，等列车回到站台'); return; }
   if (GS.gold < cost) { UI.setStatus('金币不足（需 ' + cost + '）'); return; }
-  GS.gold -= cost;
+  // v1.8y 改版（大王拍板「每次抽卡进度+1」）：**先计数再扣费** —— drawCount 是
+  //   消耗提速的进度源，spendGold 内按 drawCount 重算档位；顺序颠倒会漏当抽跨档。
   GS.drawCount += 1;                       // 只在实际扣费时计数（放弃/选卡不退钱）
+  // v1.8y 补丁八修正（大王报「升级提示没有」）：抽卡必弹三选一/普通卡结算 DOM 层
+  //   ⇒ deferFloat=true 挂起跨档飘字，弹层关闭瞬间由 flushSpeedFloat 补飘，
+  //   避免立即飘的字被随后弹出的 DOM 层盖满 1.6s（造塔路径不传，立即飘）。
+  GS.spendGold(cost, true);   // v1.8y：统一扣费入口（扣款 + 按抽卡次数重算档位）
   if (typeof LOG !== 'undefined') LOG.add('drawPay', { cost: cost, count: GS.drawCount });
   UI.showOffer(GS.drawCardOffer());
 };
