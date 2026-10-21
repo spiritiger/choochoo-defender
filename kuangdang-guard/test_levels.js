@@ -110,6 +110,34 @@ for (let li = 0; li < LEVELS.length; li++) {
   }
 }
 
+// ---- 1b) 关卡难度阶梯（v1.8ad，§14.97）：只缩放敌人 count/hp -----------------
+let diffOk = true, diffDetail = '', monoOk = true;
+for (let li = 0; li < LEVELS.length; li++) {
+  const d = LEVELS[li].diff;
+  if (!d || typeof d.count !== 'number' || typeof d.hp !== 'number' ||
+      d.count <= 0 || d.hp <= 0) { diffOk = false; diffDetail += 'L' + (li + 1) + '缺 '; }
+  if (li > 0) {
+    const p = LEVELS[li - 1].diff;
+    if (!(d && p && d.count >= p.count && d.hp >= p.hp)) monoOk = false;
+  }
+}
+check('五关 diff 齐全（count/hp 均为正数）', diffOk, diffDetail);
+check('难度系数逐关单调不降、L1 为 1.00 基准',
+  monoOk && LEVELS[0].diff.count === 1 && LEVELS[0].diff.hp === 1,
+  JSON.stringify(LEVELS.map(l => l.diff)));
+// 关卡模式下 CFG 确实缩放；随机模式恒不缩放
+GS.startLevel(0);
+const dC1 = FOES.CFG.count(10), dH1 = FOES.CFG.hp(10);
+GS.startLevel(4);
+const dC5 = FOES.CFG.count(10), dH5 = FOES.CFG.hp(10);
+GS.mode = 'random';
+const dCR = FOES.CFG.count(10), dHR = FOES.CFG.hp(10);
+check('关卡模式敌人系数生效（w10：L1=71/215 基准、L5=92/301）',
+  dC1 === 71 && dH1 === 215 && dC5 === 92 && dH5 === 301,
+  'L1=' + dC1 + '/' + dH1 + ' L5=' + dC5 + '/' + dH5);
+check('随机模式不缩放（w10 仍 71/215）', dCR === 71 && dHR === 215,
+  'R=' + dCR + '/' + dHR);
+
 // ---- 2) startLevel 冒烟（五关全解） -----------------------------------------
 for (let li = 0; li < LEVELS.length; li++) {
   GS.startLevel(li);

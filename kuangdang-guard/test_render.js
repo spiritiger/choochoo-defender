@@ -301,34 +301,51 @@ for (const [idx, fr, name] of HEADING) {
   GS.floats = [];
 }
 
-// [R7b] 消耗提速飘字（v1.8y 反馈补丁十一/十二）：镇中心锚、两行块状、描边、ttl 2.4s。
-//   state 侧 emitSpeedFloat 的逻辑（锚点/挂起补飘）在 test_rules [SS]；此处只验渲染：
-//   text 带 \n ⇒ split 两行、行距 20px、每行都走 strokeText（描边）+ fillText。
+// [R7b] 中心播报（v1.8z 通用方案，抽象自 v1.8y 升级飘字）：镇中心锚、多行块状、
+//   描边、按 style 取色（speed 浅蓝 / time 金色）。state 侧锚点/挂起补播在
+//   test_rules [SS]/[CT]；此处只验渲染：text 带 \n ⇒ split 两行、行距 20px。
 {
   GS.floats = [];
-  ENG.spawnFloat('speed', '提速 +30%\n车头攻击 +7', 200, 200, 2.4);
-  check('[R7b] 入队带 ttl 2.4s', GS.floats.length === 1 && GS.floats[0].ttl === 2.4);
+  ENG.spawnFloat('core', '提速 +30%\n车头攻击 +7', 200, 200, 2.4, 'speed');
+  check('[R7b] 入队带 ttl 2.4s / style=speed',
+    GS.floats.length === 1 && GS.floats[0].ttl === 2.4 && GS.floats[0].style === 'speed');
   const cS = makeCtx();
   let errS = '';
   try { REND.draw(cS, L, null, null); } catch (e) { errS = (e && e.message) || 'throw'; }
-  check('[R7b] 两行 speed 飘字渲染不抛异常（描边+分行）', !errS, errS);
+  check('[R7b] 两行中心播报渲染不抛异常（描边+分行）', !errS, errS);
   const sTxt = cS.texts.filter(x => x.t === '提速 +30%' || x.t === '车头攻击 +7');
   check('[R7b] 两行都画出、纵向错开 20px（> 16px 字号）',
     sTxt.length === 2 && Math.abs(sTxt[0].y - sTxt[1].y) === 20,
     JSON.stringify(sTxt.map(x => ({ t: x.t, y: x.y }))));
+  check('[R7b] speed 样式取 REND.CORE_STYLE.speed 色',
+    sTxt.length === 2 && sTxt.every(x => x.fill === REND.CORE_STYLE.speed),
+    JSON.stringify(sTxt.map(x => x.fill)));
   GS.floats = [];
-  // 补丁十三格式：真走 GS.emitSpeedFloat（需要 core/LAY/ENG）——行1「提速 +X%」、
-  //   行2「车头攻击 +增量」（增量 = dmg(tier) − dmg(tier−1)，二次曲线递增）。
+  // 加时播报同一通道、单行、金色（time 样式）
+  ENG.spawnFloat('core', '奖励时间 +5s', 200, 200, 1.2, 'time');
+  const cT = makeCtx();
+  REND.draw(cT, L, null, null);
+  const tTxt = cT.texts.filter(x => x.t === '奖励时间 +5s');
+  check('[R7b] 加时播报单行、取 CORE_STYLE.time 金色',
+    tTxt.length === 1 && tTxt[0].fill === REND.CORE_STYLE.time,
+    JSON.stringify(tTxt.map(x => x.fill)));
+  GS.floats = [];
+  // 补丁十三格式 + v1.8ab：真走 GS.emitSpeedFloat（需要 core/LAY/ENG）——
+  //   行1「提速 +X%」、行2「车头攻击 +增量」；**两行都是相比上一级的增加值**
+  //   （X = mul(tier)−mul(tier−1) = 10；增量 = dmg(tier) − dmg(tier−1)，二次曲线递增）。
   const savedCoreF = GS.core, savedTierF = GS.speedTier;
   GS.core = { c: 5, r: 5 }; GS.speedTier = 2;
   GS.floats = [];
   GS.emitSpeedFloat();
-  const pct2 = Math.round((GS.spentSpeedMul() - 1) * 100);        // tier2 ⇒ 20
+  const pct2 = Math.round(CFG.SPEND_SPEED_STEP * 100);              // 每级增量 ⇒ 10
   const gain2 = ENG.TRAIN_COMBAT.dmg(2) - ENG.TRAIN_COMBAT.dmg(1); // 20−13 = 7
   const fTxt = GS.floats.length === 1 ? GS.floats[0].text : '';
   check('[R7b] emitSpeedFloat 行1 =「提速 +' + pct2 + '%」',
     fTxt === '提速 +' + pct2 + '%\n车头攻击 +' + gain2,
     JSON.stringify(fTxt));
+  check('[R7b] 升级播报走中心播报通道（kind=core / style=speed）',
+    GS.floats.length === 1 && GS.floats[0].kind === 'core' && GS.floats[0].style === 'speed',
+    JSON.stringify(GS.floats.map(f => ({ k: f.kind, s: f.style }))));
   GS.core = savedCoreF; GS.speedTier = savedTierF; GS.floats = [];
 }
 

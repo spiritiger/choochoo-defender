@@ -27,6 +27,14 @@ REND.C = {
   foe: '#e8563f'
 };
 
+// v1.8z 中心播报样式表（GS.coreCall 的 style 键 → 主色；描边/字重/行距统一）：
+//   speed = 消耗提速升级（浅蓝，沿用 v1.8y 定稿观感）；time = 清场加时（金色，
+//   与顶部「奖励时间」横幅同色系，正反馈）；未登记 style 回落白字。
+REND.CORE_STYLE = {
+  speed: '#7cc4ff',
+  time: '#ffd166'
+};
+
 // v1.6.74 火车整体放大（规格 §14.50，大王令"火车的大小可以稍微放大一点"）：
 //   车头/车厢 save 块内 ctx.scale 等比放大（车头 22×14→25.3×16.1、车厢
 //   16×12→18.4×13.8）；链杆粗细、货堆尾巴锚点、速度线散布配套 ×s。
@@ -523,23 +531,22 @@ REND.draw = function (ctx, L, hover, drag) {
         ctx.fillStyle = kill ? REND.C.gold : '#f2ede4';
         var tw = ctx.measureText(fl.text).width;
         ctx.fillText(fl.text, fl.x - tw / 2, fy);
-      } else if (fl.kind === 'speed') {
-        // v1.8y 消耗提速飘字：**两行块状**（补丁十二·大王令「加换行」）——state 侧
-        //   text 带 \n（行1「提速 +X% · lv N」/ 行2「车头 M」，单行沙箱自动兼容），
-        //   块体垂直居中锚点、行距 20px（> 16px 字号 ⇒ 不重叠）、整体上飘；
-        //   浅蓝 + 深色描边兜底——描边 3→4px、底色更深（上轮 3px 观感不足，
-        //   补丁十二·大王令「加描边」），保证任何背景都可读；ttl 2.4s。
+      } else if (fl.kind === 'core') {
+        // v1.8z 中心播报（通用方案，升级播报的抽象）：**多行块状**（text 带 \n ⇒
+        //   split 分行），块体垂直居中锚点、行距 20px（> 16px 字号 ⇒ 不重叠）、
+        //   整体上飘；样式按 fl.style 查 REND.CORE_STYLE（speed 浅蓝 / time 金色），
+        //   统一 4px 深色描边保证任何背景都可读。
         ctx.font = 'bold 16px "PingFang SC",system-ui,sans-serif';
         ctx.lineWidth = 4;
         ctx.strokeStyle = 'rgba(10,20,35,0.95)';
         ctx.lineJoin = 'round';
+        ctx.fillStyle = REND.CORE_STYLE[fl.style] || '#f2ede4';
         var spLines = fl.text.split('\n');
         var spLH = 20, spSpan = (spLines.length - 1) * spLH;
         for (var spI = 0; spI < spLines.length; spI++) {
           var spY = fy - spSpan / 2 + spI * spLH;
           var spW = ctx.measureText(spLines[spI]).width;
           ctx.strokeText(spLines[spI], fl.x - spW / 2, spY);
-          ctx.fillStyle = '#7cc4ff';
           ctx.fillText(spLines[spI], fl.x - spW / 2, spY);
         }
       } else {

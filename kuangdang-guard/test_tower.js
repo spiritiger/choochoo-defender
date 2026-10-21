@@ -122,12 +122,12 @@ check('[24] 合成闪光衰减保留', b.flash < 0.4, 'flash=' + b.flash);
 GS.newGame(); GS.gold = 200;
 check('[27] 新局怪清空、波次归零', GS.foes.length === 0 && FOES.wave === 0 && GS.coreHP === CFG.CORE_HP);
 FOES.startWave();
-check('[28] 第 1 波共 8+6×(1−1)=8 只：首批 2 立即进场 + 队列 6（v1.8u 十一令）',
+check('[28] 第 1 波共 8+7×(1−1)=8 只：首批 2 立即进场 + 队列 6（v1.8ac）',
   GS.foes.length === 2 && FOES.pending === 6,
   'n=' + GS.foes.length + ' pending=' + FOES.pending);
-check('[28b] 怪血口径（v1.8k）：hp=8w，w1=8 恰被车头开局一炮（塔式 dmg(0)，二次曲线 4+(0+2)²=8）收掉',
+check('[28b] 怪血口径（v1.8ac）：hp=8+14(w−1)+(w−1)²，w1=8 恰被车头开局一炮（dmg(0)=4+(0+2)²=8）收掉',
   FOES.CFG.hp(1) === 8 && FOES.CFG.hp(1) === ENG.TRAIN_COMBAT.dmg(0) &&
-  FOES.CFG.hp(2) === 16 && FOES.CFG.hp(10) === 80,
+  FOES.CFG.hp(2) === 23 && FOES.CFG.hp(10) === 215,
   'hp(1)=' + FOES.CFG.hp(1) + ' hp(2)=' + FOES.CFG.hp(2) + ' hp(10)=' + FOES.CFG.hp(10));
 check('[29] 波次号 = 1', FOES.wave === 1);
 FOES.pending = 0; FOES.spawnCd = 0;    // 后续用例手工摆怪，别让节奏刷怪往里塞怪（首版踩过）
@@ -182,14 +182,16 @@ FOES.pending = 0;                        // 模拟后续全部刷完且被杀
 FOES.update(0.01);                       // 波次结束
 check('[37] 怪清空 → hasFoes=false + 进入奖励时间（v1.6.19 仍在 night）',
   CLOCK.hasFoes === false && CLOCK.isNight() && CLOCK.reward === true && FOES.active === false);
-CLOCK.tick(CLOCK.CFG.NIGHT_SEC + 1);     // 奖励倒计时走完 → 收尾
+// v1.8z 清场加时（每波清空 +5s）后，奖励窗口 = 剩余倒计时 + 5s，不是写死的
+//   NIGHT_SEC；此处按**当前剩余**走完奖励时间，避免调时后永远走不完。
+CLOCK.tick(CLOCK.remain + 1);            // 奖励倒计时走完 → 收尾
 check('[37b] 奖励倒计时走完 → 转收尾', CLOCK.isDusk());
 check('[38] coreHP 跨波继承（41 不回满）', GS.coreHP === 41);
 // dusk → 白天：收尾相位要"列车到站"才换日（tick 对 dusk 不生效 —— 死循环教训）
 check('[38b] 到站回白天', CLOCK.notifyStation() === true && CLOCK.isDay());
 ENG.startNight();                        // 第二波
-check('[39] 第二波共 8+6×(2−1)=14 只：首批 3 进场 + 队列 11（v1.8u 十一令）',
-  GS.foes.length === 3 && FOES.pending === 11,
+check('[39] 第二波共 8+7×(2−1)=15 只：首批 3 进场 + 队列 12（v1.8ac）',
+  GS.foes.length === 3 && FOES.pending === 12,
   'n=' + GS.foes.length + ' pending=' + FOES.pending);
 check('[40] 第二波 coreHP 仍继承', GS.coreHP === 41);
 
@@ -657,11 +659,11 @@ check('[94] 节奏刷怪：到点恰好 +2、队列 −2、cd 重置',
   'n=' + GS.foes.length + ' pending=' + FOES.pending + ' cd=' + FOES.spawnCd.toFixed(3));
 FOES.reset(); GS.foes.length = 0;
 
-// [95-97] v1.6.2 全局倍速（v1.8u 五令：干掉 ×3，只留 ×1/×2）；默认值与恢复
+// [95-97] v1.6.2 全局倍速；v1.8aa 大王令加入 ×4（档位 ×1/×2/×4）；默认值与恢复
 //   （mock sessionStorage 验证"档位记忆 + 非法档拒绝"）
 check('[95] 倍速默认 ×1', CLOCK.timeScale === 1, 'ts=' + CLOCK.timeScale);
-check('[96] 循环 ×1→×2→×1（×3 退役）',
-  CLOCK.cycleSpeed() === 2 && CLOCK.cycleSpeed() === 1 && CLOCK.cycleSpeed() === 2,
+check('[96] 循环 ×1→×2→×4→×1',
+  CLOCK.cycleSpeed() === 2 && CLOCK.cycleSpeed() === 4 && CLOCK.cycleSpeed() === 1,
   'ts=' + CLOCK.timeScale);
 { // 恢复守卫：表内档恢复；表外档（旧会话存过的 3）拒绝、保持当前档
   const store = {};
@@ -675,6 +677,9 @@ check('[96] 循环 ×1→×2→×1（×3 退役）',
   store.kdgSpeed = '3';
   CLOCK.speedInit();
   check('[97b] 存 3（旧会话非法档）→ 守卫拒绝、保持当前档', CLOCK.timeScale === 2, 'ts=' + CLOCK.timeScale);
+  store.kdgSpeed = '4';
+  CLOCK.speedInit();
+  check('[97c] 存 4 → speedInit 恢复 ×4', CLOCK.timeScale === 4, 'ts=' + CLOCK.timeScale);
   delete sb.sessionStorage;
 }
 CLOCK.timeScale = 1;

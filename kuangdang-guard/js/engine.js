@@ -211,9 +211,9 @@ ENG.update = function (dt) {
       if (GS.floats[kfl].t >= GS.floats[kfl].ttl) GS.floats.splice(kfl, 1);
     }
   }
-  // 消耗提速补飘（v1.8y 反馈）：抽卡弹层开着时跨档飘字被 DOM 盖住 ⇒ 挂起，
-  //   弹层关掉后的第一帧在这里补飘（GS.flushSpeedFloat 内部自检 offerOpen）。
-  if (typeof GS.flushSpeedFloat === 'function') GS.flushSpeedFloat();
+  // 中心播报补播（v1.8z 通用化）：抽卡弹层开着时播报被 DOM 盖住 ⇒ 挂起，
+  //   弹层关掉后的第一帧在这里补播（GS.flushCoreCalls 内部自检 offerOpen）。
+  if (typeof GS.flushCoreCalls === 'function') GS.flushCoreCalls();
   // 粒子衰减（v1.6.43）：死亡碎屑/爆炸火光随模拟走 —— 暂停（GS.paused）时一起冻住
   if (typeof ENG.updateFx === 'function') ENG.updateFx(dt);
   // v1.8u 十五令（§14.86，大王令）：奖励时间/dusk 收尾 = **全局时间快进** ——
@@ -1002,16 +1002,21 @@ ENG.FLOAT_TTL = 1.15;        // 飘字存活秒数（越长越容易被下一圈
 ENG.FLOAT_DY_GOLD = -32;     // 金币行相对锚点的 y 偏移
 ENG.FLOAT_DY_HEAL = -52;     // 生命行相对锚点的 y 偏移（与金币行固定差 20px）
 
-// 入队一条（同 kind 的旧条目先清掉 —— 保证"同类只有一条"）。
+// 入队一条（同 kind+style 的旧条目先清掉 —— 保证"同类只有一条"；
+//   v1.8z 中心播报同 kind='core' 但按 style 区分，升级播报与加时播报互不顶掉）。
 //   v1.8y 反馈补丁：可选第 5 参 ttl（不传仍用 FLOAT_TTL）——消耗提速飘字带档位
-//   文案更长，单独放宽到 1.6s（在 engine.js 调用侧传，本函数不感知 kind）。
-ENG.spawnFloat = function (kind, text, x, y, ttl) {
+//   文案更长，单独放宽到 1.6s（在 engine.js 调用侧传，本函数不感知 kind）；
+//   v1.8z 可选第 6 参 style（中心播报样式键，REND.CORE_STYLE 查色）。
+ENG.spawnFloat = function (kind, text, x, y, ttl, style) {
   if (!GS.floats) GS.floats = [];
   var keep = [];
-  for (var i = 0; i < GS.floats.length; i++)
-    if (GS.floats[i].kind !== kind) keep.push(GS.floats[i]);
+  for (var i = 0; i < GS.floats.length; i++) {
+    var fl0 = GS.floats[i];
+    if (fl0.kind !== kind || (fl0.style || '') !== (style || '')) keep.push(fl0);
+  }
   GS.floats = keep;
-  GS.floats.push({ kind: kind, text: text, x: x, y: y, t: 0, ttl: ttl || ENG.FLOAT_TTL });
+  GS.floats.push({ kind: kind, text: text, x: x, y: y, t: 0,
+                   ttl: ttl || ENG.FLOAT_TTL, style: style || null });
 };
 
 // 交付瞬间生成两行。gold = 本次入账金币（已含站台 +10）；heal = **实际**回血量

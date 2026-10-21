@@ -60,7 +60,7 @@ GS.newGame = function () {
   //   上方已清零）；goldSpent/speedTier 跨波继承、新局清零。
   GS.goldSpent = 0;
   GS.speedTier = 0;
-  GS._pendingSpeedFloat = false;   // v1.8y 反馈：弹层挂起的跨档飘字，新局一并清掉
+  GS._pendingCoreCalls = [];       // v1.8z 中心播报：弹层挂起的播报队列，新局一并清掉
   // 粒子层（v1.6.43 大王令 B/E：怪死亡特效 + 爆炸视觉共用地基）。**纯表现**：
   //   每枚 = { kind:'ring'|'puff'|'spark', x, y, ... }（画布像素）。ENG 生成/衰减、REND 绘制。
   GS.fx = [];
@@ -2752,12 +2752,13 @@ GS.recomputeRails = function () {
 //   · 调用序：ui.js 抽卡**先 drawCount++ 再 spendGold**（顺序颠倒会漏当抽跨档）；
 //   · 档位重算式（非增量式）：tier = 满足 drawCount >= 阈值 的档数，天然幂等防漂移；
 //   · 消费点：ENG.advanceTrain 乘区 = TRAIN_SPEED × trainSpeedMul(加油站) × spentSpeedMul；
-//   · 反馈：跨档瞬间飘字「提速 +X% · lv N」（kind='speed'，锚车头格）+ 常驻
-//     镇中心 lv 刻度条 REND.coreLvBar + LOG 'spendSpeedUp'。
-//   n 为扣费额；deferFloat=true 时跨档**只挂起不立即飘**——抽卡路径专用（大王报
-//   「升级之后的提示没有」根因：onSummon 先 spendGold 后 showOffer，立即飘的字被
+//   · 反馈：跨档瞬间**中心播报**「提速 +X% / 车头攻击 +N」（GS.emitSpeedFloat →
+//     GS.coreCall('speed')，锚镇中心格）——v1.8ab 起 **X/N 均为相比上一级的增量** + 常驻镇中心 lv 刻度条 REND.coreLvBar +
+//     LOG 'spendSpeedUp'。
+//   n 为扣费额；deferFloat=true 时跨档**只挂起不立即播**——抽卡路径专用（大王报
+//   「升级之后的提示没有」根因：onSummon 先 spendGold 后 showOffer，立即播的字被
 //   随后弹出的 DOM 三选一盖满 1.6s ⇒ 视同没有提示）。挂起后由 ENG.update 每帧
-//   GS.flushSpeedFloat 在弹层关闭瞬间补飘；造塔路径不传（立即飘，无遮挡）。
+//   GS.flushCoreCalls 在弹层关闭瞬间补播；造塔路径不传（立即播，无遮挡）。
 //   兜底：offerOpen 已开时无论是否 defer 都挂起。
 GS.spendGold = function (n, deferFloat) {
   var prevTier = GS.speedTier || 0;
@@ -2771,8 +2772,7 @@ GS.spendGold = function (n, deferFloat) {
     var mul = GS.spentSpeedMul();
     if (typeof LOG !== 'undefined' && LOG.add)
       LOG.add('spendSpeedUp', { tier: tier, mul: mul, draws: GS.drawCount, spent: GS.goldSpent });
-    if (deferFloat || (typeof UI !== 'undefined' && UI.offerOpen)) GS._pendingSpeedFloat = true;
-    else GS.emitSpeedFloat();
+    GS.emitSpeedFloat(deferFloat);   // 挂起判定统一在 GS.coreCall（defer / 弹层已开）
   }
   return tier;
 };
@@ -2780,32 +2780,69 @@ GS.spentSpeedMul = function () {
   var tier = Math.min(GS.speedTier || 0, CFG.SPEND_SPEED_TIERS.length);
   return 1 + CFG.SPEND_SPEED_STEP * tier;
 };
-// 跨档飘字发射（挂起后补飘 / 立即飘共用）：锚**镇中心格**上方——升级是镇中心的事，
-//   飘在固定地标上比跟着车头跑更显眼（v1.8y 反馈补丁十一·大王令「镇中心位置飘、
-//   更显著」），**两行块状**（补丁十二·大王令「加换行」），**格式补丁十三定稿**
-//   （大王令「修改提示格式」）：行1 =「提速 +X%」、行2 =「车头攻击 +N」——N 为
-//   **本次攻击增量**（dmg(tier) − dmg(tier−1)，二次曲线下增量递增 +5/+7/+9…，
-//   直观传达"这级涨了多少"而非新总值；ENG.TRAIN_COMBAT 未加载时 dmgGain=0
-//   ⇒ 自动退回单行）。时长 2.4s（speed 条目显著长于交付飘字 1.15s）。
-//   无锚点（镇中心未落位）时放弃本次飘字并清挂起——补飘窗口早就过了，不补陈年旧账。
-GS.emitSpeedFloat = function () {
-  GS._pendingSpeedFloat = false;
+// ---- 中心播报（v1.8z 通用方案，抽象自 v1.8y 升级飘字）------------------------
+//   任何「在镇中心地标上做一次性事件播报」的反馈统一走 GS.coreCall：
+//     · style = 渲染样式键（REND.CORE_STYLE：'speed' 浅蓝 / 'time' 金色），
+//       state 侧只管语义与文案，配色/描边全在渲染层；
+//     · text 可带 \n 多行（渲染侧分行、统一描边），ttl 不传用 1.2s；
+//     · 锚点 = **镇中心格**上方（升级是镇中心的事，固定地标比跟着车头跑显眼）；
+//       镇中心未落位 ⇒ 丢弃（无地标可挂）；
+//     · defer=true 或抽卡弹层已开 ⇒ 入挂起队列，弹层关闭后 GS.flushCoreCalls 补播
+//       ——DOM 三选一盖满画布，立即播 = 视同没有（v1.8y 补丁八根因）。
+//   挂起队列按 style 去重：同型只留最新一条，连击/连抽不会堆一长串。
+GS.CORE_CALL_TTL = 1.2;
+GS._pendingCoreCalls = [];
+GS.coreCall = function (style, text, ttl, defer) {
+  var item = { style: style, text: text, ttl: ttl || GS.CORE_CALL_TTL };
+  if (defer || (typeof UI !== 'undefined' && UI.offerOpen)) {
+    for (var i = 0; i < GS._pendingCoreCalls.length; i++) {
+      if (GS._pendingCoreCalls[i].style === style) {
+        GS._pendingCoreCalls[i] = item;
+        return false;
+      }
+    }
+    GS._pendingCoreCalls.push(item);
+    return false;
+  }
+  return GS.emitCoreCall(item);
+};
+// 真正入飘字队列（挂起后补播 / 立即播共用）：ENG 未加载或无布局 ⇒ 放弃（返回 false）
+GS.emitCoreCall = function (item) {
   if (typeof ENG === 'undefined' || !ENG.spawnFloat ||
-      typeof LAY === 'undefined' || !LAY || !GS.core) return;
-  var mul = GS.spentSpeedMul();
+      typeof LAY === 'undefined' || !LAY || !GS.core) return false;
+  ENG.spawnFloat('core', item.text, CFG.ccx(LAY, GS.core.c), CFG.ccy(LAY, GS.core.r) - 26,
+                 item.ttl, item.style);
+  return true;
+};
+// 每帧补播检查（ENG.update 调）：弹层还开着就继续等，关掉瞬间全部播完。
+GS.flushCoreCalls = function () {
+  if (!GS._pendingCoreCalls.length) return;
+  if (typeof UI !== 'undefined' && UI.offerOpen) return;
+  var q = GS._pendingCoreCalls;
+  GS._pendingCoreCalls = [];
+  for (var i = 0; i < q.length; i++) GS.emitCoreCall(q[i]);
+};
+// 升级播报（中心播报的第一个消费者）：文案 **两行块状**（补丁十二·大王令「加换行」）、
+//   **格式补丁十三定稿**（大王令「修改提示格式」）：行1 =「提速 +X%」、
+//   行2 =「车头攻击 +N」。**v1.8ab 大王令：两行都取「相比上一级的增加值」**——
+//   行1 X = mul(tier) − mul(tier−1)（= 每档 +10%，不再显示累计 1.8×）；
+//   行2 N = dmg(tier) − dmg(tier−1)（二次曲线下递增 +5/+7/+9…）。
+//   目的：每次升级播报回答「这一级涨了多少」，而非重复当前总值。
+//   ENG.TRAIN_COMBAT 未加载时 dmgGain=0 ⇒ 自动退回单行。ttl 2.4s（显著长于交付飘字 1.15s）。
+GS.emitSpeedFloat = function (defer) {
   var tier = Math.min(GS.speedTier || 0, CFG.SPEND_SPEED_TIERS.length);
+  var prev = tier > 0 ? tier - 1 : 0;
+  var spdGain = Math.round((GS.spentSpeedMul() - (1 + CFG.SPEND_SPEED_STEP * prev)) * 100);
   var dmgGain = 0;
   if (typeof ENG.TRAIN_COMBAT === 'object' && ENG.TRAIN_COMBAT.dmg)
-    dmgGain = ENG.TRAIN_COMBAT.dmg(tier) - (tier > 0 ? ENG.TRAIN_COMBAT.dmg(tier - 1) : 0);
-  ENG.spawnFloat('speed', '提速 +' + Math.round((mul - 1) * 100) + '%' +
-                 (dmgGain ? '\n车头攻击 +' + dmgGain : ''),
-                 CFG.ccx(LAY, GS.core.c), CFG.ccy(LAY, GS.core.r) - 26, 2.4);
+    dmgGain = ENG.TRAIN_COMBAT.dmg(tier) - ENG.TRAIN_COMBAT.dmg(prev);
+  GS.coreCall('speed', '提速 +' + spdGain + '%' +
+              (dmgGain ? '\n车头攻击 +' + dmgGain : ''), 2.4, defer);
 };
-// 每帧补飘检查（ENG.update 调）：弹层还开着就继续等，关掉瞬间飘出。
-GS.flushSpeedFloat = function () {
-  if (!GS._pendingSpeedFloat) return;
-  if (typeof UI !== 'undefined' && UI.offerOpen) return;
-  GS.emitSpeedFloat();
+// 清场加时播报（v1.8z）：倒计时内清完一波 → 奖励时间 +5s（每波最多一次，CLOCK.onCleared
+//   结算）；这里只负责中心播报反馈，数值由 clock 侧决定。
+GS.emitTimeBonus = function (sec) {
+  GS.coreCall('time', '奖励时间 +' + sec + 's', 1.2);
 };
 // 常驻镇中心 lv 刻度条查询（renderer REND.coreLvBar 用）：
 //   { tier, lv, ratio, capped } —— lv = 速度等级 = 档数+1（lv1 = 未提速 1×，

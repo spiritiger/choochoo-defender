@@ -51,11 +51,17 @@ FOES.CFG = {
   //         hp(1)=12=车头一刀、hp(2)=20∈(16,32] 两刀、hp(10)=84≤96 两刀）
   //       ④移速降一点（封顶 0.7→0.6，起点 0.35→0.28，斜率 0.025→0.02）
   //   ⑤dmg 2→1（泄漏怪单次威胁减半，与数量翻倍对冲）
-  //   ⚠️ v1.8k（2026-10-19 大王令）：hp 4+8w → **8w**——w1=8 恰被车头开局一炮
-  //      （塔式 8+4×0 建筑数）一刀收掉；v1.4.14"w1 一刀/w2+ 两刀"条件式口径退役
-  //      （车头锚点 v1.6.77 已换建筑数，两刀与否取决于建筑数，不再是恒等式）。
-  count: function (w) { return 8 + 6 * (w - 1); },                // 怪数量（v1.8u 十一令 2026-10-20 大王令：24+12w → 8+6(w−1)，w1=8 只起、每波 +6；沿革 v1.6.14 曾再翻倍 12+6w→24+12w）
-  hp:    function (w) { return 8 * w; },                          // 单怪血量（v1.8k：4+8w→8w，w1=8=车头开局一刀）
+  //   ⚠️ v1.8z（2026-10-21 大王令「难度太低，血量上调」）：hp 8w → **12w−4**——
+  //      斜率 +50%（w1=8 仍被车头开局 8 伤一刀收掉，保住「w1 一刀」口径；
+  //      w2=20 与旧 4+8w 同值，w10=116（原 80），第 10 波总血量 4960→7192）。
+  //      ⚠️ 不能直接用 12w：车头开局伤害是 8（4+(0+2)²），12w 会让第 1 波变两刀。
+  //   ⚠️ v1.8ac（2026-10-21 大王令「提升数量和生命的增幅」）：数量与血量**双双抬增幅**——
+  //      数量 8+6(w−1) → 8+7(w−1)（每波 +7）；血量 12w−4 → **8+14(w−1)+(w−1)²**
+  //      （线性斜率 12→14 + 二次项，w10 单怪 116→215、第 10 波总血 7192→15265 ≈2.1×）；
+  //      w1 仍 8 血（车头开局一刀口径不变）。依据：10 波通关记录 coreHit=0、
+  //      coreHP 全程 100、每波时长 9~12s 无增长 ⇒ 纯线性追不上玩家 DPS 膨胀。
+  count: function (w) { return Math.round((8 + 7 * (w - 1)) * FOES.levelMul('count')); }, // 怪数量（v1.8ac：6→7/波；v1.8ad：关卡模式乘 LEVELS[i].diff.count；w1=8、w10=71 为 L1 基准）
+  hp:    function (w) { var k = w - 1; return Math.max(1, Math.round((8 + 14 * k + k * k) * FOES.levelMul('hp'))); }, // 单怪血量（v1.8ac 基准 w1=8、w10=215；v1.8ad 乘关卡系数，L2~L5 首波 >8 属预期）
   speed: function (w) { return 0.3; },                            // 格/秒（v1.6.59 大王令"提速拉开分散"：0.2→0.3 +50%——批间距=速度×批间隔3s 由 0.6→0.9 格、±8% 抖动绝对差同步 +50%，怪才分得开；仍恒定不随 wave 增长（v1.6.19 大王令保持）；沿革 v1.6.19~58 恒 0.2、v1.6.18 曾 0.2+0.01w、v1.6.17 曾 0.22+0.015w、v1.6.14 曾 0.28+0.02w、v1.3.2 曾整体减半）
   gap:   function (w) { return Math.max(0.8, 1.6 - 0.1 * (w - 1)); }, // 逐只间隔秒（v1.6.16 起无消费者，留作历史参数与批数推导参考）
   // v1.6.16（大王令"固定批数和时间"）+ v1.6.20（大王令"缩短至 15s 或以内"）：
@@ -88,6 +94,19 @@ FOES.wave = 0;        // 已完成的波次号（startWave 后 = 当前正在打
 FOES.active = false;  // 本波是否进行中（防止 dusk/白天残留怪被误判）
 FOES.pending = 0;     // v1.4.13 节奏刷怪：本波还没放出来的怪数（startWave 置、update 消化）
 FOES.spawnCd = 0;     // 距下一次放怪的倒计时秒
+
+// ---- 关卡难度系数（v1.8ad · 规格 §14.97 / 待办「方案三」）---------------------
+//   只缩放**敌人两系数**（count / hp），关卡模式读 LEVELS[GS.levelIdx].diff[key]：
+//   L1 = 1.00 基准（当前标准难度）、L2~L5 逐关递增；随机模式 / 未开局 / 表缺项恒 1。
+//   移速、波数、镇中心血量、每波时长、WAVE_EXP、开局金币 30 一律不参与难度。
+//   ⚠️ 守卫全部用 typeof：精简沙箱（只载 state/foes 的测试）里 GS/LEVELS 可能不存在。
+FOES.levelMul = function (key) {
+  if (typeof GS === 'undefined' || GS.mode !== 'level') return 1;
+  if (typeof LEVELS === 'undefined') return 1;
+  var lv = LEVELS[GS.levelIdx];
+  if (!lv || !lv.diff || lv.diff[key] == null) return 1;
+  return (typeof lv.diff[key] === 'number' && lv.diff[key] > 0) ? lv.diff[key] : 1;
+};
 
 // ---- 刷怪落点（v1.3.3 加权偏置 → v1.6.50 固定刷怪点，大王令）-----------------
 // 边缘随机点：四边等概率、沿边均匀取点（含角），出生在地图外 OUT 格（v1.6.49
@@ -255,7 +274,10 @@ FOES.update = function (dt) {
   if (!GS.foes.length) {
     if (!FOES.pending) {
       FOES.active = false;
-      if (typeof CLOCK !== 'undefined') CLOCK.onCleared();
+      // v1.8z 清场加时（大王令）：倒计时内清完一波 → 奖励时间 +5s（每波最多一次），
+      //   返回值 = 本次加时秒数；onCleared 内部守卫 overtime / 已结算。
+      var clearBonus = (typeof CLOCK !== 'undefined' && CLOCK.onCleared) ? CLOCK.onCleared() : 0;
+      if (clearBonus > 0 && typeof GS.emitTimeBonus === 'function') GS.emitTimeBonus(clearBonus);
       if (typeof FOES.prepareNext === 'function') FOES.prepareNext();  // v1.6.50：白天预警就绪
     }
     return;                                // 队列还有：等下一只放出来再演

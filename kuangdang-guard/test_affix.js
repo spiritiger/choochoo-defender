@@ -447,7 +447,7 @@ function ensureFree(n) {
     GS.expPending === 2 && GS.expTaken === 2 && EXP.need() === 4100);
   check('[T7] consume 取走一次', EXP.consume() === true && GS.expPending === 1);
   check('[T7] progress 口径', EXP.progress().need === 4100);
-  check('[T7] killGain = 波总额/怪数（w0 表底 1500 / count(0)=2）',
+  check('[T7] killGain = 波总额/怪数（w0 表底 1500 / count(0)=1）',
     Math.abs(EXP.killGain() - 1500 / FOES.CFG.count(0)) < 1e-9 &&
     CFG.waveExp(1) === 1500 && CFG.waveExp(10) === 5600 && CFG.waveExp(11) === 5600);
   // v1.8v 波次经验曲线：前两波合计不够升级，第 3~10 波每波恰升 1 级，10 波打完 L9

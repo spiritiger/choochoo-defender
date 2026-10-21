@@ -13,7 +13,7 @@ UI.init = function (canvas) {
   UI.btnSummon = document.getElementById('btnSummon');
   UI.btnDepart = document.getElementById('btnDepart');
   UI.btnUndo = document.getElementById('btnUndo');   // v1.4.5：撤销最近一次形状卡清理
-  UI.btnSpeed = document.getElementById('btnSpeed'); // v1.6.2：全局倍速 ×1/×2 循环（v1.8u 五令干掉 ×3）
+  UI.btnSpeed = document.getElementById('btnSpeed'); // v1.6.2 全局倍速 ×1/×2/×4 循环（v1.8aa 大王令加 ×4）
   // 【v1.6.39 退役】UI.status = getElementById('status') 随提示行一并删除
   UI.overOverlay = document.getElementById('overOverlay');
   UI.overWave = document.getElementById('overWave');
@@ -231,8 +231,8 @@ UI.onSummon = function () {
   //   消耗提速的进度源，spendGold 内按 drawCount 重算档位；顺序颠倒会漏当抽跨档。
   GS.drawCount += 1;                       // 只在实际扣费时计数（放弃/选卡不退钱）
   // v1.8y 补丁八修正（大王报「升级提示没有」）：抽卡必弹三选一/普通卡结算 DOM 层
-  //   ⇒ deferFloat=true 挂起跨档飘字，弹层关闭瞬间由 flushSpeedFloat 补飘，
-  //   避免立即飘的字被随后弹出的 DOM 层盖满 1.6s（造塔路径不传，立即飘）。
+  //   ⇒ deferFloat=true 挂起中心播报，弹层关闭瞬间由 GS.flushCoreCalls 补播，
+  //   避免立即播的字被随后弹出的 DOM 层盖满 1.6s（造塔路径不传，立即播）。
   GS.spendGold(cost, true);   // v1.8y：统一扣费入口（扣款 + 按抽卡次数重算档位）
   if (typeof LOG !== 'undefined') LOG.add('drawPay', { cost: cost, count: GS.drawCount });
   UI.showOffer(GS.drawCardOffer());

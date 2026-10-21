@@ -33,6 +33,7 @@ window.CLOCK = {};
 
 CLOCK.CFG = {
   NIGHT_SEC: 40,        // 防守阶段倒计时秒数（v1.6.21 大王令 30→40：奖励时间机制下清场越早跑得越久）
+  CLEAR_BONUS_SEC: 5,   // v1.8z 大王令：倒计时内清完一波 → 奖励时间 +5s（每波最多 +5s，见 onCleared）
   REWARD_HINT: '奖励时间' // 状态栏文案（label 用）
 };
 
@@ -42,13 +43,14 @@ CLOCK.overtime = false;   // 倒计时已走完但怪物还没清空 → 继续�
 CLOCK.reward = false;     // v1.6.19 奖励时间：倒计时内清空怪物 → 剩余倒计时继续跑圈不停靠
 CLOCK.hasFoes = false;    // 场上是否有活怪（foes.js 维护）
 
-// ---- 全局倍速（v1.6.2 大王令：循环按钮；v1.8u 五令：干掉 ×3，只保留 ×1/×2）----
+// ---- 全局倍速（v1.6.2 大王令：循环按钮；v1.8u 五令：干掉 ×3；
+//      v1.8aa 大王令：加入 ×4）----
 // main.js 把帧 dt 乘上 timeScale 后再喂给 ENG.update，游戏整体（倒计时/刷怪/列车/
-// 攻击冷却）等比加速。档位循环 1→2→1；档位记在 sessionStorage —— 关掉网页
+// 攻击冷却）等比加速。档位循环 1→2→4→1；档位记在 sessionStorage —— 关掉网页
 // 才重置回 1，同一会话内刷新/开新局都保持（大王口径："除非重新打开网页才重置"）。
-// 旧会话存过 3 的，恢复守卫（indexOf 表内校验）拒绝、回落 ×1。
+// 旧会话存过 3 的，恢复守卫（indexOf 表内校验）拒绝、保持当前档。
 CLOCK.timeScale = 1;
-CLOCK.SPEEDS = [1, 2];
+CLOCK.SPEEDS = [1, 2, 4];
 
 CLOCK.speedInit = function () {
   try {
@@ -106,17 +108,28 @@ CLOCK.tick = function (dt) {
   else CLOCK.toDusk();
 };
 
-// 怪物清空钩子（v1.6.19 奖励时间）：
+// 怪物清空钩子（v1.6.19 奖励时间 + v1.8z 清场加时）：
 //   · 倒计时内清空 → **进入奖励时间**：留在 night 相位继续倒计时，列车继续跑圈
 //     不停靠（到站照常交付、不停车），直到倒计时走完 → toDusk → 下一圈到站停。
 //     奖励时长 = 剩余倒计时（清得越快跑得越久）。
-//   · overtime（倒计时走完才清空）→ 维持旧口径：此刻收尾到站即停。
+//   · v1.8z 大王令「提前清完一波 → 奖励时间 +5s」：清空那一刻 **一次性** 剩余倒计时
+//     +5s（每波最多 +5s —— 本波已进入 reward / 已在 overtime 时不再加，返回 0）。
+//     返回值 = 本次加时秒数，调用方（foes.js → GS.emitTimeBonus）负责播报，
+//     本模块仍不依赖 GS。
+//   · overtime（倒计时走完才清空）→ 维持旧口径：此刻收尾到站即停，不加时。
 CLOCK.onCleared = function () {
   CLOCK.hasFoes = false;
   if (CLOCK.phase === 'night') {
-    if (CLOCK.overtime) CLOCK.toDusk();
-    else CLOCK.reward = true;
+    if (CLOCK.overtime) {
+      CLOCK.toDusk();
+      return 0;
+    }
+    if (CLOCK.reward) return 0;      // 本波清场奖励已结算过（每波最多 +5s）
+    CLOCK.reward = true;
+    CLOCK.remain += CLOCK.CFG.CLEAR_BONUS_SEC;
+    return CLOCK.CFG.CLEAR_BONUS_SEC;
   }
+  return 0;
 };
 
 // 列车到站钩子：收尾相位到站 = 这一夜结束 → 回到白天。返回是否真的换相位。

@@ -200,7 +200,7 @@ html,body { margin:0; padding:0; height:100%; background:#0b0c12; overflow:hidde
       <!-- v1.4.7：HUD「车斗」格子退役（大王定"冗余"）—— 车上浮字 +N 仍实时显示车斗量 -->
       <div class="hud-cell"><span class="hud-key">城墙</span><span id="hudCore" class="hud-val">100</span></div>
       <div class="hud-cell"><span class="hud-key">波次</span><span id="hudWave" class="hud-val">-</span></div>
-      <button id="btnSpeed" class="hud-btn" title="游戏倍速循环 ×1→×2；本会话内保持，关掉网页重置">×1</button>
+      <button id="btnSpeed" class="hud-btn" title="游戏倍速循环 ×1→×2→×4；本会话内保持，关掉网页重置">×1</button>
       <!-- v1.6.67（大王令）：导出地图/导出记录/强制刷新 收编进【菜单】弹层，右上角只留一个入口 -->
       <button id="btnMenu" class="hud-btn" title="工具菜单：导入/导出地图、导出记录、强制刷新">菜单</button>
     </header>
@@ -578,7 +578,7 @@ GS.newGame = function () {
   //   上方已清零）；goldSpent/speedTier 跨波继承、新局清零。
   GS.goldSpent = 0;
   GS.speedTier = 0;
-  GS._pendingSpeedFloat = false;   // v1.8y 反馈：弹层挂起的跨档飘字，新局一并清掉
+  GS._pendingCoreCalls = [];       // v1.8z 中心播报：弹层挂起的播报队列，新局一并清掉
   // 粒子层（v1.6.43 大王令 B/E：怪死亡特效 + 爆炸视觉共用地基）。**纯表现**：
   //   每枚 = { kind:'ring'|'puff'|'spark', x, y, ... }（画布像素）。ENG 生成/衰减、REND 绘制。
   GS.fx = [];
@@ -3270,12 +3270,13 @@ GS.recomputeRails = function () {
 //   · 调用序：ui.js 抽卡**先 drawCount++ 再 spendGold**（顺序颠倒会漏当抽跨档）；
 //   · 档位重算式（非增量式）：tier = 满足 drawCount >= 阈值 的档数，天然幂等防漂移；
 //   · 消费点：ENG.advanceTrain 乘区 = TRAIN_SPEED × trainSpeedMul(加油站) × spentSpeedMul；
-//   · 反馈：跨档瞬间飘字「提速 +X% · lv N」（kind='speed'，锚车头格）+ 常驻
-//     镇中心 lv 刻度条 REND.coreLvBar + LOG 'spendSpeedUp'。
-//   n 为扣费额；deferFloat=true 时跨档**只挂起不立即飘**——抽卡路径专用（大王报
-//   「升级之后的提示没有」根因：onSummon 先 spendGold 后 showOffer，立即飘的字被
+//   · 反馈：跨档瞬间**中心播报**「提速 +X% / 车头攻击 +N」（GS.emitSpeedFloat →
+//     GS.coreCall('speed')，锚镇中心格）——v1.8ab 起 **X/N 均为相比上一级的增量** + 常驻镇中心 lv 刻度条 REND.coreLvBar +
+//     LOG 'spendSpeedUp'。
+//   n 为扣费额；deferFloat=true 时跨档**只挂起不立即播**——抽卡路径专用（大王报
+//   「升级之后的提示没有」根因：onSummon 先 spendGold 后 showOffer，立即播的字被
 //   随后弹出的 DOM 三选一盖满 1.6s ⇒ 视同没有提示）。挂起后由 ENG.update 每帧
-//   GS.flushSpeedFloat 在弹层关闭瞬间补飘；造塔路径不传（立即飘，无遮挡）。
+//   GS.flushCoreCalls 在弹层关闭瞬间补播；造塔路径不传（立即播，无遮挡）。
 //   兜底：offerOpen 已开时无论是否 defer 都挂起。
 GS.spendGold = function (n, deferFloat) {
   var prevTier = GS.speedTier || 0;
@@ -3289,8 +3290,7 @@ GS.spendGold = function (n, deferFloat) {
     var mul = GS.spentSpeedMul();
     if (typeof LOG !== 'undefined' && LOG.add)
       LOG.add('spendSpeedUp', { tier: tier, mul: mul, draws: GS.drawCount, spent: GS.goldSpent });
-    if (deferFloat || (typeof UI !== 'undefined' && UI.offerOpen)) GS._pendingSpeedFloat = true;
-    else GS.emitSpeedFloat();
+    GS.emitSpeedFloat(deferFloat);   // 挂起判定统一在 GS.coreCall（defer / 弹层已开）
   }
   return tier;
 };
@@ -3298,32 +3298,69 @@ GS.spentSpeedMul = function () {
   var tier = Math.min(GS.speedTier || 0, CFG.SPEND_SPEED_TIERS.length);
   return 1 + CFG.SPEND_SPEED_STEP * tier;
 };
-// 跨档飘字发射（挂起后补飘 / 立即飘共用）：锚**镇中心格**上方——升级是镇中心的事，
-//   飘在固定地标上比跟着车头跑更显眼（v1.8y 反馈补丁十一·大王令「镇中心位置飘、
-//   更显著」），**两行块状**（补丁十二·大王令「加换行」），**格式补丁十三定稿**
-//   （大王令「修改提示格式」）：行1 =「提速 +X%」、行2 =「车头攻击 +N」——N 为
-//   **本次攻击增量**（dmg(tier) − dmg(tier−1)，二次曲线下增量递增 +5/+7/+9…，
-//   直观传达"这级涨了多少"而非新总值；ENG.TRAIN_COMBAT 未加载时 dmgGain=0
-//   ⇒ 自动退回单行）。时长 2.4s（speed 条目显著长于交付飘字 1.15s）。
-//   无锚点（镇中心未落位）时放弃本次飘字并清挂起——补飘窗口早就过了，不补陈年旧账。
-GS.emitSpeedFloat = function () {
-  GS._pendingSpeedFloat = false;
+// ---- 中心播报（v1.8z 通用方案，抽象自 v1.8y 升级飘字）------------------------
+//   任何「在镇中心地标上做一次性事件播报」的反馈统一走 GS.coreCall：
+//     · style = 渲染样式键（REND.CORE_STYLE：'speed' 浅蓝 / 'time' 金色），
+//       state 侧只管语义与文案，配色/描边全在渲染层；
+//     · text 可带 \n 多行（渲染侧分行、统一描边），ttl 不传用 1.2s；
+//     · 锚点 = **镇中心格**上方（升级是镇中心的事，固定地标比跟着车头跑显眼）；
+//       镇中心未落位 ⇒ 丢弃（无地标可挂）；
+//     · defer=true 或抽卡弹层已开 ⇒ 入挂起队列，弹层关闭后 GS.flushCoreCalls 补播
+//       ——DOM 三选一盖满画布，立即播 = 视同没有（v1.8y 补丁八根因）。
+//   挂起队列按 style 去重：同型只留最新一条，连击/连抽不会堆一长串。
+GS.CORE_CALL_TTL = 1.2;
+GS._pendingCoreCalls = [];
+GS.coreCall = function (style, text, ttl, defer) {
+  var item = { style: style, text: text, ttl: ttl || GS.CORE_CALL_TTL };
+  if (defer || (typeof UI !== 'undefined' && UI.offerOpen)) {
+    for (var i = 0; i < GS._pendingCoreCalls.length; i++) {
+      if (GS._pendingCoreCalls[i].style === style) {
+        GS._pendingCoreCalls[i] = item;
+        return false;
+      }
+    }
+    GS._pendingCoreCalls.push(item);
+    return false;
+  }
+  return GS.emitCoreCall(item);
+};
+// 真正入飘字队列（挂起后补播 / 立即播共用）：ENG 未加载或无布局 ⇒ 放弃（返回 false）
+GS.emitCoreCall = function (item) {
   if (typeof ENG === 'undefined' || !ENG.spawnFloat ||
-      typeof LAY === 'undefined' || !LAY || !GS.core) return;
-  var mul = GS.spentSpeedMul();
+      typeof LAY === 'undefined' || !LAY || !GS.core) return false;
+  ENG.spawnFloat('core', item.text, CFG.ccx(LAY, GS.core.c), CFG.ccy(LAY, GS.core.r) - 26,
+                 item.ttl, item.style);
+  return true;
+};
+// 每帧补播检查（ENG.update 调）：弹层还开着就继续等，关掉瞬间全部播完。
+GS.flushCoreCalls = function () {
+  if (!GS._pendingCoreCalls.length) return;
+  if (typeof UI !== 'undefined' && UI.offerOpen) return;
+  var q = GS._pendingCoreCalls;
+  GS._pendingCoreCalls = [];
+  for (var i = 0; i < q.length; i++) GS.emitCoreCall(q[i]);
+};
+// 升级播报（中心播报的第一个消费者）：文案 **两行块状**（补丁十二·大王令「加换行」）、
+//   **格式补丁十三定稿**（大王令「修改提示格式」）：行1 =「提速 +X%」、
+//   行2 =「车头攻击 +N」。**v1.8ab 大王令：两行都取「相比上一级的增加值」**——
+//   行1 X = mul(tier) − mul(tier−1)（= 每档 +10%，不再显示累计 1.8×）；
+//   行2 N = dmg(tier) − dmg(tier−1)（二次曲线下递增 +5/+7/+9…）。
+//   目的：每次升级播报回答「这一级涨了多少」，而非重复当前总值。
+//   ENG.TRAIN_COMBAT 未加载时 dmgGain=0 ⇒ 自动退回单行。ttl 2.4s（显著长于交付飘字 1.15s）。
+GS.emitSpeedFloat = function (defer) {
   var tier = Math.min(GS.speedTier || 0, CFG.SPEND_SPEED_TIERS.length);
+  var prev = tier > 0 ? tier - 1 : 0;
+  var spdGain = Math.round((GS.spentSpeedMul() - (1 + CFG.SPEND_SPEED_STEP * prev)) * 100);
   var dmgGain = 0;
   if (typeof ENG.TRAIN_COMBAT === 'object' && ENG.TRAIN_COMBAT.dmg)
-    dmgGain = ENG.TRAIN_COMBAT.dmg(tier) - (tier > 0 ? ENG.TRAIN_COMBAT.dmg(tier - 1) : 0);
-  ENG.spawnFloat('speed', '提速 +' + Math.round((mul - 1) * 100) + '%' +
-                 (dmgGain ? '\n车头攻击 +' + dmgGain : ''),
-                 CFG.ccx(LAY, GS.core.c), CFG.ccy(LAY, GS.core.r) - 26, 2.4);
+    dmgGain = ENG.TRAIN_COMBAT.dmg(tier) - ENG.TRAIN_COMBAT.dmg(prev);
+  GS.coreCall('speed', '提速 +' + spdGain + '%' +
+              (dmgGain ? '\n车头攻击 +' + dmgGain : ''), 2.4, defer);
 };
-// 每帧补飘检查（ENG.update 调）：弹层还开着就继续等，关掉瞬间飘出。
-GS.flushSpeedFloat = function () {
-  if (!GS._pendingSpeedFloat) return;
-  if (typeof UI !== 'undefined' && UI.offerOpen) return;
-  GS.emitSpeedFloat();
+// 清场加时播报（v1.8z）：倒计时内清完一波 → 奖励时间 +5s（每波最多一次，CLOCK.onCleared
+//   结算）；这里只负责中心播报反馈，数值由 clock 侧决定。
+GS.emitTimeBonus = function (sec) {
+  GS.coreCall('time', '奖励时间 +' + sec + 's', 1.2);
 };
 // 常驻镇中心 lv 刻度条查询（renderer REND.coreLvBar 用）：
 //   { tier, lv, ratio, capped } —— lv = 速度等级 = 档数+1（lv1 = 未提速 1×，
@@ -3601,10 +3638,14 @@ var LEVEL_WAVES = 10;
 //   地形恒与随机模式同构：内区 3×5 空地 + 其余废墟。
 //   ⚠️ 手绘图允许资源 1 格相邻（如左缘三连金币）——随机模式的 CFG.RES_GAP=2
 //     只管自动撒点；手工关卡以设计图点位为准，硬约束只有"不与同格叠放"。
+//   ⚠️ v1.8ad（2026-10-21 大王令）：关卡难度阶梯（只缩放敌人 count/hp，见 §14.97）——
+//      **第 1 关 = 标准难度基准 1.00**（= v1.8ac 定稿的 8+7(w−1) / 8+14k+k²），
+//      L2~L5 逐关递增、只增不减：1.06/1.08 → 1.12/1.16 → 1.20/1.26 → 1.30/1.40。
+//      移速/波数/镇中心血量/每波时长/经验/开局金币一律不参与难度。
 var LEVELS = [
   // ⚠️ 2026-10-21 大王令：原①「外郭」与原②「双轴」**整条互换**（名称+地图一起换，
   //   保持名实相符）—— 现第 1 关 = 双轴（原第 2 关），现第 2 关 = 外郭（原第 1 关）。
-  { name: '双轴', rows: [
+  { name: '双轴', diff: { count: 1.00, hp: 1.00 }, rows: [
     '#g#####g#',   // 双轴（c1/c7 两列）顶端金币 + 双轴左起
     '#g##g##g#',   //       双轴续 + 中轴金币（远带）
     '#########',
@@ -3619,7 +3660,7 @@ var LEVELS = [
     '#########',
     'h#g#h#g#h'    // 底缘：两角爱心 + 金币成对 + 中轴爱心
   ] },
-  { name: '外郭', rows: [
+  { name: '外郭', diff: { count: 1.06, hp: 1.08 }, rows: [
     '#########',
     '#g#####g#',   // 远带：顶缘两侧金币
     '####g####',   // 中带：中轴金币（唯一中轴金）
@@ -3634,7 +3675,7 @@ var LEVELS = [
     '#########',
     'gg##h##gg'    // 远带：底缘两角金币 + 两侧金币 + 中轴爱心
   ] },
-  { name: '四缘', rows: [
+  { name: '四缘', diff: { count: 1.12, hp: 1.16 }, rows: [
     '#g#g#g#g#',   // 顶缘：四金币均布
     '#########',
     '#########',
@@ -3649,7 +3690,7 @@ var LEVELS = [
     '####h####',   // 底缘：中轴爱心
     '#h##g##h#'    // 底缘：两侧爱心 + 中轴金币
   ] },
-  { name: '环心', rows: [
+  { name: '环心', diff: { count: 1.20, hp: 1.26 }, rows: [
     'g#######g',   // 两上角金币
     'h#######h',   // 两缘爱心
     '####g####',   // 中轴金币（中带）
@@ -3664,7 +3705,7 @@ var LEVELS = [
     '#h#####h#',   // 两缘爱心
     '#g##h##g#'    // 两下角金币 + 中轴爱心
   ] },
-  { name: '边陲', rows: [
+  { name: '边陲', diff: { count: 1.30, hp: 1.40 }, rows: [
     'hg#####gh',   // 顶角爱心 + 顶缘金币
     '####h####',   // 中轴爱心
     '####g####',   // 中轴金币（中带）
@@ -4690,11 +4731,17 @@ FOES.CFG = {
   //         hp(1)=12=车头一刀、hp(2)=20∈(16,32] 两刀、hp(10)=84≤96 两刀）
   //       ④移速降一点（封顶 0.7→0.6，起点 0.35→0.28，斜率 0.025→0.02）
   //   ⑤dmg 2→1（泄漏怪单次威胁减半，与数量翻倍对冲）
-  //   ⚠️ v1.8k（2026-10-19 大王令）：hp 4+8w → **8w**——w1=8 恰被车头开局一炮
-  //      （塔式 8+4×0 建筑数）一刀收掉；v1.4.14"w1 一刀/w2+ 两刀"条件式口径退役
-  //      （车头锚点 v1.6.77 已换建筑数，两刀与否取决于建筑数，不再是恒等式）。
-  count: function (w) { return 8 + 6 * (w - 1); },                // 怪数量（v1.8u 十一令 2026-10-20 大王令：24+12w → 8+6(w−1)，w1=8 只起、每波 +6；沿革 v1.6.14 曾再翻倍 12+6w→24+12w）
-  hp:    function (w) { return 8 * w; },                          // 单怪血量（v1.8k：4+8w→8w，w1=8=车头开局一刀）
+  //   ⚠️ v1.8z（2026-10-21 大王令「难度太低，血量上调」）：hp 8w → **12w−4**——
+  //      斜率 +50%（w1=8 仍被车头开局 8 伤一刀收掉，保住「w1 一刀」口径；
+  //      w2=20 与旧 4+8w 同值，w10=116（原 80），第 10 波总血量 4960→7192）。
+  //      ⚠️ 不能直接用 12w：车头开局伤害是 8（4+(0+2)²），12w 会让第 1 波变两刀。
+  //   ⚠️ v1.8ac（2026-10-21 大王令「提升数量和生命的增幅」）：数量与血量**双双抬增幅**——
+  //      数量 8+6(w−1) → 8+7(w−1)（每波 +7）；血量 12w−4 → **8+14(w−1)+(w−1)²**
+  //      （线性斜率 12→14 + 二次项，w10 单怪 116→215、第 10 波总血 7192→15265 ≈2.1×）；
+  //      w1 仍 8 血（车头开局一刀口径不变）。依据：10 波通关记录 coreHit=0、
+  //      coreHP 全程 100、每波时长 9~12s 无增长 ⇒ 纯线性追不上玩家 DPS 膨胀。
+  count: function (w) { return Math.round((8 + 7 * (w - 1)) * FOES.levelMul('count')); }, // 怪数量（v1.8ac：6→7/波；v1.8ad：关卡模式乘 LEVELS[i].diff.count；w1=8、w10=71 为 L1 基准）
+  hp:    function (w) { var k = w - 1; return Math.max(1, Math.round((8 + 14 * k + k * k) * FOES.levelMul('hp'))); }, // 单怪血量（v1.8ac 基准 w1=8、w10=215；v1.8ad 乘关卡系数，L2~L5 首波 >8 属预期）
   speed: function (w) { return 0.3; },                            // 格/秒（v1.6.59 大王令"提速拉开分散"：0.2→0.3 +50%——批间距=速度×批间隔3s 由 0.6→0.9 格、±8% 抖动绝对差同步 +50%，怪才分得开；仍恒定不随 wave 增长（v1.6.19 大王令保持）；沿革 v1.6.19~58 恒 0.2、v1.6.18 曾 0.2+0.01w、v1.6.17 曾 0.22+0.015w、v1.6.14 曾 0.28+0.02w、v1.3.2 曾整体减半）
   gap:   function (w) { return Math.max(0.8, 1.6 - 0.1 * (w - 1)); }, // 逐只间隔秒（v1.6.16 起无消费者，留作历史参数与批数推导参考）
   // v1.6.16（大王令"固定批数和时间"）+ v1.6.20（大王令"缩短至 15s 或以内"）：
@@ -4727,6 +4774,19 @@ FOES.wave = 0;        // 已完成的波次号（startWave 后 = 当前正在打
 FOES.active = false;  // 本波是否进行中（防止 dusk/白天残留怪被误判）
 FOES.pending = 0;     // v1.4.13 节奏刷怪：本波还没放出来的怪数（startWave 置、update 消化）
 FOES.spawnCd = 0;     // 距下一次放怪的倒计时秒
+
+// ---- 关卡难度系数（v1.8ad · 规格 §14.97 / 待办「方案三」）---------------------
+//   只缩放**敌人两系数**（count / hp），关卡模式读 LEVELS[GS.levelIdx].diff[key]：
+//   L1 = 1.00 基准（当前标准难度）、L2~L5 逐关递增；随机模式 / 未开局 / 表缺项恒 1。
+//   移速、波数、镇中心血量、每波时长、WAVE_EXP、开局金币 30 一律不参与难度。
+//   ⚠️ 守卫全部用 typeof：精简沙箱（只载 state/foes 的测试）里 GS/LEVELS 可能不存在。
+FOES.levelMul = function (key) {
+  if (typeof GS === 'undefined' || GS.mode !== 'level') return 1;
+  if (typeof LEVELS === 'undefined') return 1;
+  var lv = LEVELS[GS.levelIdx];
+  if (!lv || !lv.diff || lv.diff[key] == null) return 1;
+  return (typeof lv.diff[key] === 'number' && lv.diff[key] > 0) ? lv.diff[key] : 1;
+};
 
 // ---- 刷怪落点（v1.3.3 加权偏置 → v1.6.50 固定刷怪点，大王令）-----------------
 // 边缘随机点：四边等概率、沿边均匀取点（含角），出生在地图外 OUT 格（v1.6.49
@@ -4894,7 +4954,10 @@ FOES.update = function (dt) {
   if (!GS.foes.length) {
     if (!FOES.pending) {
       FOES.active = false;
-      if (typeof CLOCK !== 'undefined') CLOCK.onCleared();
+      // v1.8z 清场加时（大王令）：倒计时内清完一波 → 奖励时间 +5s（每波最多一次），
+      //   返回值 = 本次加时秒数；onCleared 内部守卫 overtime / 已结算。
+      var clearBonus = (typeof CLOCK !== 'undefined' && CLOCK.onCleared) ? CLOCK.onCleared() : 0;
+      if (clearBonus > 0 && typeof GS.emitTimeBonus === 'function') GS.emitTimeBonus(clearBonus);
       if (typeof FOES.prepareNext === 'function') FOES.prepareNext();  // v1.6.50：白天预警就绪
     }
     return;                                // 队列还有：等下一只放出来再演
@@ -5052,6 +5115,7 @@ window.CLOCK = {};
 
 CLOCK.CFG = {
   NIGHT_SEC: 40,        // 防守阶段倒计时秒数（v1.6.21 大王令 30→40：奖励时间机制下清场越早跑得越久）
+  CLEAR_BONUS_SEC: 5,   // v1.8z 大王令：倒计时内清完一波 → 奖励时间 +5s（每波最多 +5s，见 onCleared）
   REWARD_HINT: '奖励时间' // 状态栏文案（label 用）
 };
 
@@ -5061,13 +5125,14 @@ CLOCK.overtime = false;   // 倒计时已走完但怪物还没清空 → 继续�
 CLOCK.reward = false;     // v1.6.19 奖励时间：倒计时内清空怪物 → 剩余倒计时继续跑圈不停靠
 CLOCK.hasFoes = false;    // 场上是否有活怪（foes.js 维护）
 
-// ---- 全局倍速（v1.6.2 大王令：循环按钮；v1.8u 五令：干掉 ×3，只保留 ×1/×2）----
+// ---- 全局倍速（v1.6.2 大王令：循环按钮；v1.8u 五令：干掉 ×3；
+//      v1.8aa 大王令：加入 ×4）----
 // main.js 把帧 dt 乘上 timeScale 后再喂给 ENG.update，游戏整体（倒计时/刷怪/列车/
-// 攻击冷却）等比加速。档位循环 1→2→1；档位记在 sessionStorage —— 关掉网页
+// 攻击冷却）等比加速。档位循环 1→2→4→1；档位记在 sessionStorage —— 关掉网页
 // 才重置回 1，同一会话内刷新/开新局都保持（大王口径："除非重新打开网页才重置"）。
-// 旧会话存过 3 的，恢复守卫（indexOf 表内校验）拒绝、回落 ×1。
+// 旧会话存过 3 的，恢复守卫（indexOf 表内校验）拒绝、保持当前档。
 CLOCK.timeScale = 1;
-CLOCK.SPEEDS = [1, 2];
+CLOCK.SPEEDS = [1, 2, 4];
 
 CLOCK.speedInit = function () {
   try {
@@ -5125,17 +5190,28 @@ CLOCK.tick = function (dt) {
   else CLOCK.toDusk();
 };
 
-// 怪物清空钩子（v1.6.19 奖励时间）：
+// 怪物清空钩子（v1.6.19 奖励时间 + v1.8z 清场加时）：
 //   · 倒计时内清空 → **进入奖励时间**：留在 night 相位继续倒计时，列车继续跑圈
 //     不停靠（到站照常交付、不停车），直到倒计时走完 → toDusk → 下一圈到站停。
 //     奖励时长 = 剩余倒计时（清得越快跑得越久）。
-//   · overtime（倒计时走完才清空）→ 维持旧口径：此刻收尾到站即停。
+//   · v1.8z 大王令「提前清完一波 → 奖励时间 +5s」：清空那一刻 **一次性** 剩余倒计时
+//     +5s（每波最多 +5s —— 本波已进入 reward / 已在 overtime 时不再加，返回 0）。
+//     返回值 = 本次加时秒数，调用方（foes.js → GS.emitTimeBonus）负责播报，
+//     本模块仍不依赖 GS。
+//   · overtime（倒计时走完才清空）→ 维持旧口径：此刻收尾到站即停，不加时。
 CLOCK.onCleared = function () {
   CLOCK.hasFoes = false;
   if (CLOCK.phase === 'night') {
-    if (CLOCK.overtime) CLOCK.toDusk();
-    else CLOCK.reward = true;
+    if (CLOCK.overtime) {
+      CLOCK.toDusk();
+      return 0;
+    }
+    if (CLOCK.reward) return 0;      // 本波清场奖励已结算过（每波最多 +5s）
+    CLOCK.reward = true;
+    CLOCK.remain += CLOCK.CFG.CLEAR_BONUS_SEC;
+    return CLOCK.CFG.CLEAR_BONUS_SEC;
   }
+  return 0;
 };
 
 // 列车到站钩子：收尾相位到站 = 这一夜结束 → 回到白天。返回是否真的换相位。
@@ -5739,9 +5815,9 @@ ENG.update = function (dt) {
       if (GS.floats[kfl].t >= GS.floats[kfl].ttl) GS.floats.splice(kfl, 1);
     }
   }
-  // 消耗提速补飘（v1.8y 反馈）：抽卡弹层开着时跨档飘字被 DOM 盖住 ⇒ 挂起，
-  //   弹层关掉后的第一帧在这里补飘（GS.flushSpeedFloat 内部自检 offerOpen）。
-  if (typeof GS.flushSpeedFloat === 'function') GS.flushSpeedFloat();
+  // 中心播报补播（v1.8z 通用化）：抽卡弹层开着时播报被 DOM 盖住 ⇒ 挂起，
+  //   弹层关掉后的第一帧在这里补播（GS.flushCoreCalls 内部自检 offerOpen）。
+  if (typeof GS.flushCoreCalls === 'function') GS.flushCoreCalls();
   // 粒子衰减（v1.6.43）：死亡碎屑/爆炸火光随模拟走 —— 暂停（GS.paused）时一起冻住
   if (typeof ENG.updateFx === 'function') ENG.updateFx(dt);
   // v1.8u 十五令（§14.86，大王令）：奖励时间/dusk 收尾 = **全局时间快进** ——
@@ -6530,16 +6606,21 @@ ENG.FLOAT_TTL = 1.15;        // 飘字存活秒数（越长越容易被下一圈
 ENG.FLOAT_DY_GOLD = -32;     // 金币行相对锚点的 y 偏移
 ENG.FLOAT_DY_HEAL = -52;     // 生命行相对锚点的 y 偏移（与金币行固定差 20px）
 
-// 入队一条（同 kind 的旧条目先清掉 —— 保证"同类只有一条"）。
+// 入队一条（同 kind+style 的旧条目先清掉 —— 保证"同类只有一条"；
+//   v1.8z 中心播报同 kind='core' 但按 style 区分，升级播报与加时播报互不顶掉）。
 //   v1.8y 反馈补丁：可选第 5 参 ttl（不传仍用 FLOAT_TTL）——消耗提速飘字带档位
-//   文案更长，单独放宽到 1.6s（在 engine.js 调用侧传，本函数不感知 kind）。
-ENG.spawnFloat = function (kind, text, x, y, ttl) {
+//   文案更长，单独放宽到 1.6s（在 engine.js 调用侧传，本函数不感知 kind）；
+//   v1.8z 可选第 6 参 style（中心播报样式键，REND.CORE_STYLE 查色）。
+ENG.spawnFloat = function (kind, text, x, y, ttl, style) {
   if (!GS.floats) GS.floats = [];
   var keep = [];
-  for (var i = 0; i < GS.floats.length; i++)
-    if (GS.floats[i].kind !== kind) keep.push(GS.floats[i]);
+  for (var i = 0; i < GS.floats.length; i++) {
+    var fl0 = GS.floats[i];
+    if (fl0.kind !== kind || (fl0.style || '') !== (style || '')) keep.push(fl0);
+  }
   GS.floats = keep;
-  GS.floats.push({ kind: kind, text: text, x: x, y: y, t: 0, ttl: ttl || ENG.FLOAT_TTL });
+  GS.floats.push({ kind: kind, text: text, x: x, y: y, t: 0,
+                   ttl: ttl || ENG.FLOAT_TTL, style: style || null });
 };
 
 // 交付瞬间生成两行。gold = 本次入账金币（已含站台 +10）；heal = **实际**回血量
@@ -6675,6 +6756,14 @@ REND.C = {
   // 【v1.6.41 退役】expBar: '#c58cff' —— 经验条改版后颜色内联在 REND.expBar（紫 #7F77DD/#AFA9EC）
   trainRGB: '143,134,255',
   foe: '#e8563f'
+};
+
+// v1.8z 中心播报样式表（GS.coreCall 的 style 键 → 主色；描边/字重/行距统一）：
+//   speed = 消耗提速升级（浅蓝，沿用 v1.8y 定稿观感）；time = 清场加时（金色，
+//   与顶部「奖励时间」横幅同色系，正反馈）；未登记 style 回落白字。
+REND.CORE_STYLE = {
+  speed: '#7cc4ff',
+  time: '#ffd166'
 };
 
 // v1.6.74 火车整体放大（规格 §14.50，大王令"火车的大小可以稍微放大一点"）：
@@ -7173,23 +7262,22 @@ REND.draw = function (ctx, L, hover, drag) {
         ctx.fillStyle = kill ? REND.C.gold : '#f2ede4';
         var tw = ctx.measureText(fl.text).width;
         ctx.fillText(fl.text, fl.x - tw / 2, fy);
-      } else if (fl.kind === 'speed') {
-        // v1.8y 消耗提速飘字：**两行块状**（补丁十二·大王令「加换行」）——state 侧
-        //   text 带 \n（行1「提速 +X% · lv N」/ 行2「车头 M」，单行沙箱自动兼容），
-        //   块体垂直居中锚点、行距 20px（> 16px 字号 ⇒ 不重叠）、整体上飘；
-        //   浅蓝 + 深色描边兜底——描边 3→4px、底色更深（上轮 3px 观感不足，
-        //   补丁十二·大王令「加描边」），保证任何背景都可读；ttl 2.4s。
+      } else if (fl.kind === 'core') {
+        // v1.8z 中心播报（通用方案，升级播报的抽象）：**多行块状**（text 带 \n ⇒
+        //   split 分行），块体垂直居中锚点、行距 20px（> 16px 字号 ⇒ 不重叠）、
+        //   整体上飘；样式按 fl.style 查 REND.CORE_STYLE（speed 浅蓝 / time 金色），
+        //   统一 4px 深色描边保证任何背景都可读。
         ctx.font = 'bold 16px "PingFang SC",system-ui,sans-serif';
         ctx.lineWidth = 4;
         ctx.strokeStyle = 'rgba(10,20,35,0.95)';
         ctx.lineJoin = 'round';
+        ctx.fillStyle = REND.CORE_STYLE[fl.style] || '#f2ede4';
         var spLines = fl.text.split('\n');
         var spLH = 20, spSpan = (spLines.length - 1) * spLH;
         for (var spI = 0; spI < spLines.length; spI++) {
           var spY = fy - spSpan / 2 + spI * spLH;
           var spW = ctx.measureText(spLines[spI]).width;
           ctx.strokeText(spLines[spI], fl.x - spW / 2, spY);
-          ctx.fillStyle = '#7cc4ff';
           ctx.fillText(spLines[spI], fl.x - spW / 2, spY);
         }
       } else {
@@ -8563,7 +8651,7 @@ UI.init = function (canvas) {
   UI.btnSummon = document.getElementById('btnSummon');
   UI.btnDepart = document.getElementById('btnDepart');
   UI.btnUndo = document.getElementById('btnUndo');   // v1.4.5：撤销最近一次形状卡清理
-  UI.btnSpeed = document.getElementById('btnSpeed'); // v1.6.2：全局倍速 ×1/×2 循环（v1.8u 五令干掉 ×3）
+  UI.btnSpeed = document.getElementById('btnSpeed'); // v1.6.2 全局倍速 ×1/×2/×4 循环（v1.8aa 大王令加 ×4）
   // 【v1.6.39 退役】UI.status = getElementById('status') 随提示行一并删除
   UI.overOverlay = document.getElementById('overOverlay');
   UI.overWave = document.getElementById('overWave');
@@ -8781,8 +8869,8 @@ UI.onSummon = function () {
   //   消耗提速的进度源，spendGold 内按 drawCount 重算档位；顺序颠倒会漏当抽跨档。
   GS.drawCount += 1;                       // 只在实际扣费时计数（放弃/选卡不退钱）
   // v1.8y 补丁八修正（大王报「升级提示没有」）：抽卡必弹三选一/普通卡结算 DOM 层
-  //   ⇒ deferFloat=true 挂起跨档飘字，弹层关闭瞬间由 flushSpeedFloat 补飘，
-  //   避免立即飘的字被随后弹出的 DOM 层盖满 1.6s（造塔路径不传，立即飘）。
+  //   ⇒ deferFloat=true 挂起中心播报，弹层关闭瞬间由 GS.flushCoreCalls 补播，
+  //   避免立即播的字被随后弹出的 DOM 层盖满 1.6s（造塔路径不传，立即播）。
   GS.spendGold(cost, true);   // v1.8y：统一扣费入口（扣款 + 按抽卡次数重算档位）
   if (typeof LOG !== 'undefined') LOG.add('drawPay', { cost: cost, count: GS.drawCount });
   UI.showOffer(GS.drawCardOffer());
@@ -9773,9 +9861,10 @@ UI.tick = function () {
   function frame(now) {
     // 原始帧时长（真实秒）：镜头过渡用它，与游戏倍速无关。
     var rawDt = Math.min(0.05, (now - last) / 1000);
-    // 倍速（v1.6.2）：真实帧时长 × CLOCK.timeScale，再钳 0.05 防大跳帧。
-    // 60fps 下 ×2 = 每帧 0.033（v1.8u 五令干掉 ×3 后两档全速有效）；掉帧时游戏只慢不炸。
-    var dt = Math.min(0.05, rawDt * CLOCK.timeScale);
+    // 倍速（v1.6.2；v1.8aa 加 ×4）：真实帧时长 × CLOCK.timeScale。
+    //   rawDt 已钳 0.05 真实秒 ⇒ 游戏秒上限 = 0.05 × 倍速，倍速全程有效。
+    //   ⚠️ 不能再对乘积钳 0.05：60fps 下 ×4 每帧 0.067 会被砍成 0.05（实际只剩 ×3）。
+    var dt = rawDt * CLOCK.timeScale;
     last = now;
     // v1.6.38+39 作战拉远：夜晚 ⇒ battleLayout（真缩小 41→34 + 全画布居中）+ footer 隐藏；
     //   白天 ⇒ 原 layout。CAM.t 朝目标平滑推进，LAY 在两套布局间插值 ⇒

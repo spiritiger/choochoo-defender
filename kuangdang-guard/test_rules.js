@@ -164,7 +164,7 @@ CLOCK.onCleared();                       // 模拟"倒计时内清空怪物" →
 check('端到端：倒计时内清空 → 进入奖励时间（仍 night 不停靠）',
   CLOCK.isNight() && CLOCK.reward === true && CLOCK.isRunning(),
   'phase=' + CLOCK.phase + ' reward=' + CLOCK.reward);
-CLOCK.tick(CLOCK.CFG.NIGHT_SEC + 1);     // 奖励倒计时走完 → 收尾（hasFoes=false）
+CLOCK.tick(CLOCK.remain + 1);            // 奖励倒计时走完 → 收尾（含 v1.8z 清场 +5s）
 check('端到端：奖励倒计时走完转入收尾相位', CLOCK.isDusk());
 
 let steps = 0;
@@ -181,7 +181,7 @@ check('端到端：圈末所有金币地块已重置',
 // ---- 第二夜：再跑一圈，累计 50（每圈站台额外 +10）----
 check('端到端：第二夜发车成功', ENG.startNight() === true);
 CLOCK.onCleared();
-CLOCK.tick(CLOCK.CFG.NIGHT_SEC + 1);     // 奖励时间走完 → 收尾，下面到站才停
+CLOCK.tick(CLOCK.remain + 1);            // 奖励时间走完 → 收尾，下面到站才停（含清场 +5s）
 steps = 0;
 while (!CLOCK.isDay() && steps < 500) { ENG.advanceTrain(0.5); steps++; }
 check('端到端：两圈累计 +' + (2 * oneLap), GS.gold - gold0 === 2 * oneLap, '实际 +' + (GS.gold - gold0));
@@ -218,11 +218,11 @@ CLOCK.hasFoes = true;
 CLOCK.onCleared();                        // 倒计时内清空（不 overtime）
 check('奖励时间：倒计时内清空 → reward=true 仍在 night',
   CLOCK.isNight() && CLOCK.reward === true && !CLOCK.overtime);
-check('奖励时间：剩余倒计时 = NIGHT_SEC - 已流逝',
-  Math.abs(CLOCK.remain - (CLOCK.CFG.NIGHT_SEC - 1)) < 1e-9,
+check('奖励时间：剩余倒计时 = NIGHT_SEC - 已流逝 + 清场 +5s',
+  Math.abs(CLOCK.remain - (CLOCK.CFG.NIGHT_SEC - 1 + CLOCK.CFG.CLEAR_BONUS_SEC)) < 1e-9,
   'remain=' + CLOCK.remain);
 check('奖励时间：isRunning 保持 true（列车不停）', CLOCK.isRunning() === true);
-CLOCK.tick(CLOCK.CFG.NIGHT_SEC - 1);      // 奖励倒计时走完
+CLOCK.tick(CLOCK.remain + 1);             // 奖励倒计时走完（含清场 +5s）
 check('奖励时间：倒计时走完 → dusk（下一圈到站停）',
   CLOCK.isDusk() && CLOCK.reward === false);
 check('奖励时间：收尾到站 → 回白天', CLOCK.notifyStation() === true && CLOCK.isDay());
@@ -639,34 +639,120 @@ const isOuterRing = (c, r) => c === 0 || c === CFG.MAP_COLS - 1 || r === 0 || r 
   check('[SS] spendProgress 封顶：tier=8、lv=9、ratio=1、capped=true',
     pr2.tier === 8 && pr2.lv === 9 && pr2.ratio === 1 && pr2.capped === true,
     JSON.stringify(pr2));
-  // ⑨ 飘字挂起/补飘链沙箱守卫：无 UI（视为弹层关）+ 无 LAY ⇒ flushSpeedFloat 只清
-  //    挂起不生成飘字也不抛错（弹层遮挡/真渲染链在浏览器验）
+  // ⑨ 播报挂起/补播链沙箱守卫：无 UI（视为弹层关）+ 无 LAY ⇒ flushCoreCalls 只清
+  //    挂起不生成播报也不抛错（弹层遮挡/真渲染链在浏览器验）
   GS.newGame();
-  GS._pendingSpeedFloat = true;
-  GS.flushSpeedFloat();
-  check('[SS] 补飘链沙箱守卫：flushSpeedFloat 清挂起不抛错',
-    GS._pendingSpeedFloat === false);
+  GS._pendingCoreCalls = [{ style: 'speed', text: '提速 +10%', ttl: 2.4 }];
+  GS.flushCoreCalls();
+  check('[SS] 补播链沙箱守卫：flushCoreCalls 清挂起不抛错',
+    GS._pendingCoreCalls.length === 0);
   // ⑨b defer 挂起（v1.8y 补丁八修正·大王报「升级提示没有」根因=抽卡先扣费后弹层，
-  //    立即飘的字被 DOM 层盖满 1.6s）：spendGold(n, true) 跨档只置挂起位不立即飘，
-  //    flushSpeedFloat 补飘（沙箱无 UI/LAY，只验状态位流转）
+  //    立即播的字被 DOM 层盖满 1.6s）：spendGold(n, true) 跨档只入挂起队列不立即播，
+  //    flushCoreCalls 补播（沙箱无 LAY，只验队列流转）
   GS.newGame();
   GS.drawCount = 4;                        // 首档：4 抽跨档
   GS.gold = 999;
-  const pendClean = GS._pendingSpeedFloat === false;
+  const pendClean = GS._pendingCoreCalls.length === 0;
   GS.spendGold(10, true);
-  check('[SS] defer 挂起：spendGold(n,true) 跨档只置挂起位、档位照常跨',
-    pendClean && GS._pendingSpeedFloat === true && GS.speedTier === 1,
-    'pending=' + GS._pendingSpeedFloat + ' tier=' + GS.speedTier);
-  GS.flushSpeedFloat();
-  check('[SS] defer 补飘：flushSpeedFloat 清挂起位（真飘字在浏览器验）',
-    GS._pendingSpeedFloat === false);
+  check('[SS] defer 挂起：spendGold(n,true) 跨档只入挂起队列、档位照常跨',
+    pendClean && GS._pendingCoreCalls.length === 1 && GS.speedTier === 1,
+    'pending=' + GS._pendingCoreCalls.length + ' tier=' + GS.speedTier);
+  GS.flushCoreCalls();
+  check('[SS] defer 补播：flushCoreCalls 清空挂起队列（真播报在浏览器验）',
+    GS._pendingCoreCalls.length === 0);
   GS.newGame();                            // 复位，供 ⑩ 重开归零断言干净前提
-  // ⑩ 重开归零：跨波继承消耗与档位，新局清零（挂起飘字一并清）
-  check('[SS] 重开归零：drawCount=0、goldSpent=0、tier=0、mul=1×、挂起飘字=false',
+  // ⑩ 重开归零：跨波继承消耗与档位，新局清零（挂起播报一并清）
+  check('[SS] 重开归零：drawCount=0、goldSpent=0、tier=0、mul=1×、挂起播报=空',
     GS.drawCount === 0 && GS.goldSpent === 0 && GS.speedTier === 0 &&
-    GS.spentSpeedMul() === 1 && GS._pendingSpeedFloat === false,
+    GS.spentSpeedMul() === 1 && GS._pendingCoreCalls.length === 0,
     'draws=' + GS.drawCount + ' spent=' + GS.goldSpent + ' tier=' + GS.speedTier +
-    ' pending=' + GS._pendingSpeedFloat);
+    ' pending=' + GS._pendingCoreCalls.length);
+}
+
+// ============================================================================
+// [CT] 中心播报（v1.8z 通用方案）+ 清场加时（大王令「提前清完一波 → 奖励时间 +5s」）
+// ============================================================================
+{
+  // ① 中心播报：锚镇中心格上方、kind='core' + style、ttl 默认 1.2s；
+  //    同 style 只留最新一条（连击不堆队列），不同 style 互不顶掉
+  const LAYr = CFG.layout();
+  sandbox.LAY = LAYr;
+  GS.newGame();
+  GS.floats = [];
+  GS._pendingCoreCalls = [];
+  GS.emitTimeBonus(5);
+  const coreF = GS.floats.filter(f => f.kind === 'core');
+  check('[CT] 加时播报入队：kind=core / style=time / ttl=1.2 / 文案「奖励时间 +5s」',
+    coreF.length === 1 && coreF[0].style === 'time' && coreF[0].ttl === 1.2 &&
+    coreF[0].text === '奖励时间 +5s', JSON.stringify(coreF));
+  check('[CT] 播报锚点 = 镇中心格上方（x=格心、y=格心−26）',
+    coreF.length === 1 && coreF[0].x === CFG.ccx(LAYr, GS.core.c) &&
+    coreF[0].y === CFG.ccy(LAYr, GS.core.r) - 26, JSON.stringify(coreF));
+  GS.emitTimeBonus(5);
+  check('[CT] 同 style 连播只留最新一条（不叠字）',
+    GS.floats.filter(f => f.kind === 'core').length === 1);
+  GS.coreCall('speed', '提速 +20%\n车头攻击 +7', 2.4);
+  check('[CT] 不同 style 互不顶掉（time + speed 并存两条）',
+    GS.floats.filter(f => f.kind === 'core').length === 2,
+    JSON.stringify(GS.floats.map(f => f.style)));
+  // ② 弹层挂着时播报入队，关层后 flush 补播
+  sandbox.UI = { offerOpen: true };
+  GS.floats = []; GS._pendingCoreCalls = [];
+  GS.emitTimeBonus(5);
+  check('[CT] 弹层开着 ⇒ 播报只入挂起队列、不立即入飘字',
+    GS.floats.length === 0 && GS._pendingCoreCalls.length === 1);
+  sandbox.UI.offerOpen = false;
+  GS.flushCoreCalls();
+  check('[CT] 弹层关闭 ⇒ flushCoreCalls 补播入飘字队列并清空挂起',
+    GS.floats.filter(f => f.kind === 'core').length === 1 &&
+    GS._pendingCoreCalls.length === 0);
+  delete sandbox.UI;
+  // ③ 清场加时规则：倒计时内清空 → +5s / 进奖励时间 / 返回 5；每波最多一次；
+  //    overtime 清空不加时（直接收尾）；dusk / day 不加
+  CLOCK.reset();
+  CLOCK.startNight();
+  CLOCK.remain = 20;
+  const cb1 = CLOCK.onCleared();
+  check('[CT] 限时内清场：remain 20→25、返回 5、进入奖励时间',
+    cb1 === 5 && CLOCK.remain === 25 && CLOCK.reward === true,
+    'bonus=' + cb1 + ' remain=' + CLOCK.remain + ' reward=' + CLOCK.reward);
+  const cb2 = CLOCK.onCleared();
+  check('[CT] 同一波重复清空不加时（每波最多 +5s）',
+    cb2 === 0 && CLOCK.remain === 25);
+  CLOCK.reset();
+  CLOCK.startNight();
+  CLOCK.overtime = true;
+  CLOCK.remain = 0;
+  check('[CT] overtime 清场不加时、直接收尾',
+    CLOCK.onCleared() === 0 && CLOCK.isDusk() && CLOCK.remain === 0);
+  check('[CT] dusk 清空不加时', CLOCK.onCleared() === 0 && CLOCK.remain === 0);
+  CLOCK.reset();
+  check('[CT] 建造阶段清空不加时', CLOCK.onCleared() === 0 && CLOCK.remain === 0);
+  // ④ 端到端：FOES.update 清场分支 → CLOCK 加时 + 中心播报（清空帧触发）
+  CLOCK.reset(); CLOCK.startNight(); CLOCK.remain = 30;
+  FOES.active = true; FOES.pending = 0; GS.foes = [];
+  GS.floats = [];
+  FOES.update(0.016);
+  check('[CT] 端到端：清场 → 倒计时 30→35、进入奖励时间、播报「奖励时间 +5s」',
+    CLOCK.remain === 35 && CLOCK.reward === true && FOES.active === false &&
+    GS.floats.some(f => f.kind === 'core' && f.style === 'time' &&
+                        f.text === '奖励时间 +5s'),
+    'remain=' + CLOCK.remain + ' reward=' + CLOCK.reward +
+    ' floats=' + JSON.stringify(GS.floats.map(f => f.text)));
+  // ⑤ 真杀怪链路：清尸帧移除怪，下一帧（场上已空）才结算清场加时
+  CLOCK.reset(); CLOCK.startNight(); CLOCK.remain = 30;
+  FOES.active = true; FOES.pending = 0;
+  GS.foes = [{ hp: -1, c: 6, r: 6 }];
+  FOES.update(0.016);                     // 这一帧清尸，场上已空
+  FOES.update(0.016);                     // 下一帧走清场分支 → +5s
+  check('[CT] 真杀怪链路：清尸后下一帧结算 +5s（remain 30→35）',
+    CLOCK.remain === 35 && CLOCK.reward === true && GS.foes.length === 0,
+    'remain=' + CLOCK.remain + ' foes=' + GS.foes.length);
+  FOES.active = false;
+  CLOCK.reset();
+  GS.newGame();
+  delete sandbox.LAY;
+  GS.floats = [];
 }
 
   // ⑤ 三选一：三类卡同池 + 概率 50/35/15（v1.8v）+ 去重 + 同类型最多 2 张
@@ -814,11 +900,11 @@ const isOuterRing = (c, r) => c === 0 || c === CFG.MAP_COLS - 1 || r === 0 || r 
   check('[SP] 点间距 ≥ 3 格（2a）', gapOk);
   const outOk = ns.every(p => p.r <= -2 || p.r >= 12 + 2 || p.c <= -2 || p.c >= 8 + 2);
   check('[SP] 点位均在地图外 ≥ 2 格', outOk, JSON.stringify(ns));
-  // ② 数量梯度（1a）：v1.8u 十一令 count=6w+2 下移 —— w1=3 w3=3 w10=3 w13=4 w20=7 w25=8
-  check('[SP] 点数梯度 min(8,max(3,round(per/3)))：w1=3 w3=3 w10=3 w13=4 w20=7 w25=8',
+  // ② 数量梯度（1a）：v1.8ac count=8+7(w−1) 下移 —— w1=3 w3=3 w10=4 w13=5 w20=8 w25=8
+  check('[SP] 点数梯度 min(8,max(3,round(count/18)))：w1=3 w3=3 w10=4 w13=5 w20=8 w25=8（v1.8ac 数量上调后同步）',
     FOES.nextPointCount(1) === 3 && FOES.nextPointCount(3) === 3 &&
-    FOES.nextPointCount(10) === 3 && FOES.nextPointCount(13) === 4 &&
-    FOES.nextPointCount(20) === 7 && FOES.nextPointCount(25) === 8);
+    FOES.nextPointCount(10) === 4 && FOES.nextPointCount(13) === 5 &&
+    FOES.nextPointCount(20) === 8 && FOES.nextPointCount(25) === 8);
   // ③ 避重（3a）：带 prev 生成的新点全部距 prev ≥ 2 格
   const gen2 = FOES.genSpawns(2, ns);
   check('[SP] 下一波点位避开上一波（距离 ≥ 2 格）',
